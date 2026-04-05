@@ -960,7 +960,7 @@ def download(instance_id: str, remote_path: str, local_dir: str, recursive: bool
 
 @main.group()
 def setup():
-    """Bootstrap storage, ComfyUI, or SwarmUI on a running instance."""
+    """Install, start, and stop frameworks on a running instance."""
 
 
 @setup.command(name="storage")
@@ -1055,60 +1055,142 @@ def setup_storage(instance_id: str, provider: str):
     )
 
 
-@setup.command()
+@setup.command(name="install")
+@click.argument("framework_name")
+@click.argument("instance_id")
+def setup_install(framework_name: str, instance_id: str):
+    """Install a framework on a running instance.
+
+    \b
+    Examples:
+      swm setup install comfyui runpod:abc123
+      swm setup install axolotl runpod:abc123
+      swm setup install llm-studio runpod:abc123
+
+    \b
+    See available frameworks: swm setup list
+    """
+    from swm.bootstrap import install_framework
+    from swm.frameworks import get_framework
+    from swm.remote.ssh import session_from_instance
+
+    fw = get_framework(framework_name)
+    inst = _instance_for(instance_id)
+    console.print(
+        f"\n[bold]Installing {fw.label} on {inst.name or inst.id}[/bold] "
+        f"({inst.provider})"
+    )
+
+    with session_from_instance(inst) as sess:
+        install_framework(sess, framework_name)
+
+    console.print(f"\n[green]✓ {fw.label} installed[/green]")
+    if fw.ports:
+        port = next(iter(fw.ports))
+        console.print(f"  Start:  swm setup start {fw.name} {instance_id}")
+        console.print(f"  Access: https://<pod-id>-{port}.proxy.runpod.net")
+    else:
+        console.print(f"  Run:    swm run {instance_id} 'cd {fw.install_dir} && {fw.launch_cmd}'")
+
+
+@setup.command(name="start")
+@click.argument("framework_name")
+@click.argument("instance_id")
+@click.option("--port", "-p", type=int, default=None, help="Override the default listen port")
+def setup_start(framework_name: str, instance_id: str, port: int | None):
+    """Start a framework on a running instance.
+
+    \b
+    Examples:
+      swm setup start comfyui runpod:abc123
+      swm setup start swarmui runpod:abc123 --port 8888
+    """
+    from swm.bootstrap import start_framework
+    from swm.frameworks import get_framework
+    from swm.remote.ssh import session_from_instance
+
+    fw = get_framework(framework_name)
+    inst = _instance_for(instance_id)
+
+    with session_from_instance(inst) as sess:
+        start_framework(sess, framework_name, port=port)
+
+    listen_port = port or (next(iter(fw.ports)) if fw.ports else None)
+    if listen_port:
+        console.print(f"  URL: https://{inst.id}-{listen_port}.proxy.runpod.net")
+
+
+@setup.command(name="stop")
+@click.argument("framework_name")
+@click.argument("instance_id")
+def setup_stop(framework_name: str, instance_id: str):
+    """Stop a framework on a running instance.
+
+    \b
+    Examples:
+      swm setup stop comfyui runpod:abc123
+    """
+    from swm.bootstrap import stop_framework
+    from swm.remote.ssh import session_from_instance
+
+    inst = _instance_for(instance_id)
+
+    with session_from_instance(inst) as sess:
+        stop_framework(sess, framework_name)
+
+
+@setup.command(name="list")
+def setup_list():
+    """List available frameworks.
+
+    \b
+    Example: swm setup list
+    """
+    from rich.table import Table
+    from swm.frameworks import list_frameworks
+
+    table = Table(title="Available Frameworks")
+    table.add_column("Name", style="bold")
+    table.add_column("Label")
+    table.add_column("Category")
+    table.add_column("Ports")
+    table.add_column("Repo")
+
+    for fw in list_frameworks():
+        ports = ", ".join(f"{p}/{t}" for p, t in fw.ports.items()) if fw.ports else "—"
+        table.add_row(fw.name, fw.label, fw.category, ports, fw.repo)
+
+    console.print(table)
+
+
+# backward-compat aliases
+@setup.command(hidden=True)
 @click.argument("instance_id")
 @click.option("--link-models", is_flag=True, default=True, help="Symlink /workspace/models into ComfyUI")
 def comfyui(instance_id: str, link_models: bool):
-    """Install ComfyUI + Manager on a running instance.
-
-    Example: swm setup comfyui runpod:abc123
-    """
-    from swm.bootstrap import install_comfyui, link_models_to_comfyui
+    """Install ComfyUI (alias for 'swm setup install comfyui')."""
+    from swm.bootstrap import install_framework, link_models_to_comfyui
     from swm.remote.ssh import session_from_instance
 
     inst = _instance_for(instance_id)
-    console.print(
-        f"\n[bold]Installing ComfyUI on {inst.name or inst.id}[/bold] "
-        f"({inst.provider})"
-    )
-
     with session_from_instance(inst) as sess:
-        install_comfyui(sess)
+        install_framework(sess, "comfyui")
         if link_models:
             link_models_to_comfyui(sess)
-
     console.print("\n[green]✓ ComfyUI installed[/green]")
-    console.print(
-        f"  Launch: swm run {instance_id} "
-        "'cd /workspace/ComfyUI && python main.py --listen 0.0.0.0'"
-    )
-    console.print(f"  Access: http://<pod-ip>:8188")
 
 
-@setup.command()
+@setup.command(hidden=True)
 @click.argument("instance_id")
 def swarmui(instance_id: str):
-    """Install SwarmUI on a running instance.
-
-    Example: swm setup swarmui runpod:abc123
-    """
-    from swm.bootstrap import install_swarmui
+    """Install SwarmUI (alias for 'swm setup install swarmui')."""
+    from swm.bootstrap import install_framework
     from swm.remote.ssh import session_from_instance
 
     inst = _instance_for(instance_id)
-    console.print(
-        f"\n[bold]Installing SwarmUI on {inst.name or inst.id}[/bold] "
-        f"({inst.provider})"
-    )
-
     with session_from_instance(inst) as sess:
-        install_swarmui(sess)
-
+        install_framework(sess, "swarmui")
     console.print("\n[green]✓ SwarmUI installed[/green]")
-    console.print(
-        f"  Launch: swm run {instance_id} "
-        "'cd /workspace/SwarmUI && bash launch-linux.sh --launch'"
-    )
 
 
 # ── sync ────────────────────────────────────────────────────────────

@@ -222,6 +222,14 @@ class VastAIProvider(CloudProvider):
         if raw.get("start_date"):
             uptime = int(time.time() - raw["start_date"])
 
+        ports: dict[int, int] = {}
+        for container_port, mappings in (raw.get("ports") or {}).items():
+            private = int(container_port.split("/")[0])
+            if mappings:
+                public = int(mappings[0].get("HostPort", 0))
+                if public:
+                    ports[private] = public
+
         return Instance(
             provider=self.slug,
             id=str(raw["id"]),
@@ -235,6 +243,7 @@ class VastAIProvider(CloudProvider):
             ssh_host=raw.get("ssh_host"),
             ssh_port=raw.get("ssh_port"),
             ssh_user="root",
+            ports=ports,
             image=raw.get("image_uuid"),
             volume_gb=int(raw["disk_space"]) if raw.get("disk_space") else None,
         )

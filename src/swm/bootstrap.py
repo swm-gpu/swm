@@ -258,61 +258,89 @@ def preflight_check(
     return check
 
 
-# ── ComfyUI ─────────────────────────────────────────────────────────
+# ── framework installer ─────────────────────────────────────────────
+
+
+def install_framework(session: RemoteSession, name: str) -> None:
+    """Install a framework by name using its declarative step list."""
+    from swm.frameworks import Framework, get_framework
+
+    fw: Framework = get_framework(name)
+    console.print(f"\n[bold]Installing {fw.label}[/bold]")
+
+    for step in fw.steps:
+        workdir = step.workdir or fw.install_dir
+        if step.check:
+            cmd = f"{step.check} && echo '{step.label}: already done' || (cd {workdir} && {step.command})"
+        else:
+            cmd = f"cd {workdir} && {step.command}"
+        _step(session, step.label, cmd)
+
+    for step in fw.post_install:
+        workdir = step.workdir or fw.install_dir
+        if step.check:
+            cmd = f"{step.check} && echo '{step.label}: already done' || (cd {workdir} && {step.command})"
+        else:
+            cmd = f"cd {workdir} && {step.command}"
+        _step(session, step.label, cmd)
+
+
+def start_framework(session: RemoteSession, name: str, port: int | None = None) -> str | None:
+    """Launch a framework in the background. Returns proxy URL if applicable."""
+    from swm.frameworks import get_framework
+
+    fw = get_framework(name)
+
+    if fw.process_pattern:
+        _, out, _ = session.exec(
+            f"pgrep -fa '{fw.process_pattern}' | grep -v grep || true",
+            stream=False,
+        )
+        if out.strip():
+            pid = out.strip().split("\n")[0].split()[0]
+            console.print(
+                f"  [yellow]{fw.label} is already running (PID {pid})[/yellow]"
+            )
+            return None
+
+    console.print(f"\n[bold cyan]▸ Starting {fw.label}[/bold cyan]")
+    launch = fw.launch_cmd
+    if port and fw.ports:
+        default_port = str(next(iter(fw.ports)))
+        launch = launch.replace(default_port, str(port))
+
+    session.exec(
+        f"cd {fw.launch_workdir} && "
+        f"nohup {launch} > /tmp/{fw.name}.log 2>&1 &",
+        stream=False,
+    )
+    console.print(f"  [green]✓ {fw.label} started[/green]")
+    console.print(f"  Logs: swm run <pod> 'tail -f /tmp/{fw.name}.log'")
+    return None
+
+
+def stop_framework(session: RemoteSession, name: str) -> None:
+    """Stop a running framework."""
+    from swm.frameworks import get_framework
+
+    fw = get_framework(name)
+    if not fw.stop_cmd:
+        console.print(f"  [yellow]{fw.label} has no stop command defined[/yellow]")
+        return
+
+    console.print(f"\n[bold cyan]▸ Stopping {fw.label}[/bold cyan]")
+    session.exec(fw.stop_cmd, stream=False)
+    console.print(f"  [green]✓ {fw.label} stopped[/green]")
 
 
 def install_comfyui(session: RemoteSession) -> None:
-    """Clone and install ComfyUI with Manager and standard model dirs."""
-    _step(
-        session,
-        "Cloning ComfyUI",
-        "cd /workspace && "
-        "[ -d ComfyUI ] && echo 'ComfyUI already cloned' || "
-        "git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git",
-    )
-    _step(
-        session,
-        "Installing Python requirements",
-        "cd /workspace/ComfyUI && pip install -r requirements.txt",
-    )
-    _step(
-        session,
-        "Installing ComfyUI Manager",
-        "cd /workspace/ComfyUI/custom_nodes && "
-        "[ -d ComfyUI-Manager ] && echo 'Manager already installed' || "
-        "git clone --depth 1 https://github.com/ltdrdata/ComfyUI-Manager.git",
-    )
-    _step(
-        session,
-        "Creating model directories",
-        "mkdir -p /workspace/ComfyUI/models/"
-        "{checkpoints,loras,vae,controlnet,clip,upscale_models,unet}",
-    )
+    """Backward-compatible wrapper."""
+    install_framework(session, "comfyui")
 
 
 def install_swarmui(session: RemoteSession) -> None:
-    """Clone and install SwarmUI."""
-    _step(
-        session,
-        "Installing .NET SDK (SwarmUI dependency)",
-        "command -v dotnet >/dev/null 2>&1 && echo '.NET already installed' || "
-        "(wget -q https://dot.net/v1/dotnet-install.sh -O /tmp/dotnet-install.sh "
-        "&& chmod +x /tmp/dotnet-install.sh "
-        "&& /tmp/dotnet-install.sh --channel 8.0 --install-dir /usr/share/dotnet "
-        "&& ln -sf /usr/share/dotnet/dotnet /usr/bin/dotnet)",
-    )
-    _step(
-        session,
-        "Cloning SwarmUI",
-        "cd /workspace && "
-        "[ -d SwarmUI ] && echo 'SwarmUI already cloned' || "
-        "git clone --depth 1 https://github.com/mcmonkeyprojects/SwarmUI.git",
-    )
-    _step(
-        session,
-        "Building SwarmUI",
-        "cd /workspace/SwarmUI && dotnet build src/SwarmUI.csproj --configuration Release",
-    )
+    """Backward-compatible wrapper."""
+    install_framework(session, "swarmui")
 
 
 # ── symlinks ────────────────────────────────────────────────────────

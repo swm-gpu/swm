@@ -58,17 +58,23 @@ class RemoteSession:
 
     def connect(self, retries: int = 12, delay: int = 10) -> RemoteSession:
         """Verify SSH connectivity by running a probe command."""
+        probe_cmd = ["ssh", *_SSH_OPTS]
+        if self.key_path:
+            probe_cmd.extend(["-i", self.key_path])
+        if self.port != 22:
+            probe_cmd.extend(["-p", str(self.port)])
+        probe_cmd.append(f"{self.user}@{self.host}")
+        probe_cmd.append("echo __SWM_OK__")
+
         for attempt in range(retries):
             try:
                 proc = subprocess.Popen(
-                    self._ssh_cmd(),
-                    stdin=subprocess.PIPE,
+                    probe_cmd,
+                    stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
                 )
-                out, _ = proc.communicate(
-                    input=b"echo __SWM_OK__\nexit\n", timeout=30,
-                )
+                out, _ = proc.communicate(timeout=30)
                 if b"__SWM_OK__" in out:
                     return self
             except subprocess.TimeoutExpired:
@@ -89,58 +95,39 @@ class RemoteSession:
         stream: bool = True,
         line_callback: "Callable[[str], None] | None" = None,
     ) -> tuple[int, str, str]:
-        """Run a command via stdin-piping through an interactive SSH shell.
-
-        Wraps the command in start/end markers on a single compound line
-        so that output between markers is clean (no prompt pollution).
+        """Run a command over SSH in non-interactive mode.
 
         If *line_callback* is provided it is called with each output line
         instead of writing to stdout (regardless of *stream*).
         """
-        compound = f"echo {_START}; ({command}); echo {_END}$?__"
-        stdin_data = f"stty -echo 2>/dev/null\n{compound}\nexit\n"
+        cmd = ["ssh", *_SSH_OPTS]
+        if self.key_path:
+            cmd.extend(["-i", self.key_path])
+        if self.port != 22:
+            cmd.extend(["-p", str(self.port)])
+        cmd.append(f"{self.user}@{self.host}")
+        cmd.append(command)
 
         proc = subprocess.Popen(
-            self._ssh_cmd(),
-            stdin=subprocess.PIPE,
+            cmd,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
         )
-        assert proc.stdin is not None
-        proc.stdin.write(stdin_data.encode())
-        proc.stdin.close()
 
-        capturing = False
         out_parts: list[str] = []
-        exit_code = 0
 
         assert proc.stdout is not None
         while raw_line := proc.stdout.readline():
-            line = raw_line.decode("utf-8", errors="replace")
-            clean = _ANSI_RE.sub("", line).replace("\r", "").strip()
-
-            if not capturing:
-                if _START in clean and f"echo {_START}" not in clean:
-                    capturing = True
-                continue
-
-            if _END in clean and f"echo {_END}" not in clean:
-                code_str = clean.split(_END, 1)[1].rstrip("_")
-                try:
-                    exit_code = int(code_str)
-                except ValueError:
-                    pass
-                break
-
-            clean_line = line.replace("\r\n", "\n")
-            out_parts.append(clean_line)
+            line = raw_line.decode("utf-8", errors="replace").replace("\r\n", "\n")
+            out_parts.append(line)
             if line_callback:
-                line_callback(clean_line)
+                line_callback(line)
             elif stream:
-                sys.stdout.write(clean_line)
+                sys.stdout.write(line)
                 sys.stdout.flush()
 
-        proc.wait()
+        exit_code = proc.wait()
         return exit_code, "".join(out_parts), ""
 
     def exec_pipe(

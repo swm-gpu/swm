@@ -4,7 +4,42 @@ A CLI tool for managing cloud GPU instances, storage, and AI workloads (ComfyUI,
 
 **Version**: 0.1.0
 
-## Quick Start
+## Everyday Commands
+
+```bash
+# Check GPU availability & pricing across all providers
+swm pod gpus
+
+# List your running instances
+swm pod list
+
+# Create a pod — bootstraps storage and workspace automatically
+swm pod create -p runpod -g h200 -n my-session
+swm pod create -p vastai -g h200 -n train --gpu-count 4 --volume 500
+
+# Install & manage frameworks
+swm setup list                                    # see available frameworks
+swm setup install comfyui runpod:<id>             # install a framework
+swm setup start comfyui runpod:<id>               # start it
+swm setup stop comfyui runpod:<id>                # stop it
+
+# Workspace sync
+swm sync pull runpod:<id>                         # pull workspace from storage
+swm sync push runpod:<id>                         # push workspace to storage
+
+# Transfer files
+swm upload runpod:<id> ./model.safetensors models/
+swm download runpod:<id> ComfyUI/output/video.mp4 -d ~/Downloads
+
+# Remote access
+swm ssh runpod:<id>                               # interactive SSH
+swm run runpod:<id> 'nvidia-smi'                  # run a command
+
+# Shut down — pushes workspace to storage, then terminates
+swm pod down runpod:<id>
+```
+
+## First-Time Setup
 
 ```bash
 # Install
@@ -20,19 +55,6 @@ swm config set b2.key_id <key-id>
 swm config set b2.app_key <app-key>
 swm config set b2.bucket <bucket-name>
 swm config set storage.default b2:<bucket-name>
-
-# Create a pod — bootstraps storage and workspace automatically
-swm pod create -p runpod -g h200 -n my-session
-
-# Transfer files
-swm upload runpod:<id> ./model.safetensors models/
-swm download runpod:<id> ComfyUI/output/video.mp4 -d ~/Downloads
-
-# Install frameworks
-swm setup comfyui runpod:<id>
-
-# Shut down — pushes workspace to storage, then terminates
-swm pod down runpod:<id>
 ```
 
 ---
@@ -270,9 +292,11 @@ src/swm/
 
 | Command | Description |
 |---------|-------------|
+| `swm setup list` | List available frameworks |
+| `swm setup install <framework> <id>` | Install a framework (comfyui, swarmui, axolotl, llm-studio) |
+| `swm setup start <framework> <id>` | Start a framework in the background |
+| `swm setup stop <framework> <id>` | Stop a running framework |
 | `swm setup storage <id>` | Install s5cmd + verify S3 connection |
-| `swm setup comfyui <id>` | Install ComfyUI + Manager |
-| `swm setup swarmui <id>` | Install SwarmUI + .NET SDK |
 
 ### `swm storage`
 
