@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
@@ -30,7 +31,7 @@ class GpuInfo:
     type_id: str
     display_name: str
     vram_gb: int
-    min_gpu_count: int = 1
+    gpu_count: int = 1
     on_demand_price: float | None = None
     spot_price: float | None = None
     stock_level: str = ""
@@ -103,6 +104,54 @@ class CreateConfig:
     env: dict[str, str] = field(default_factory=dict)
 
 
+def _normalize(s: str) -> str:
+    """Lowercase, strip non-alphanumeric (except dots), collapse spaces."""
+    return re.sub(r"[^a-z0-9.]+", " ", s.lower()).strip()
+
+
+def resolve_gpu_type(needle: str, candidates: list[str]) -> str:
+    """Fuzzy-match a user-supplied GPU name against a list of real type IDs.
+
+    Matching strategy (first wins):
+      1. Exact match (case-insensitive)
+      2. Candidate contains the full needle as a substring
+      3. All tokens in the needle appear somewhere in the candidate
+
+    Among substring/token matches, prefers the shortest candidate
+    (most specific).  Raises RuntimeError with suggestions on failure.
+    """
+    if not candidates:
+        raise RuntimeError("No GPU types available from this provider.")
+
+    norm_needle = _normalize(needle)
+    tokens = norm_needle.split()
+
+    # Pass 1: exact match (case-insensitive)
+    for c in candidates:
+        if _normalize(c) == norm_needle:
+            return c
+
+    # Pass 2: substring containment
+    substr_hits = [c for c in candidates if norm_needle in _normalize(c)]
+    if substr_hits:
+        return min(substr_hits, key=len)
+
+    # Pass 3: all tokens present
+    token_hits = [
+        c for c in candidates
+        if all(t in _normalize(c) for t in tokens)
+    ]
+    if token_hits:
+        return min(token_hits, key=len)
+
+    # No match — suggest closest options
+    suggestions = ", ".join(sorted(candidates)[:15])
+    raise RuntimeError(
+        f"No GPU matching '{needle}' found on this provider.\n"
+        f"  Available: {suggestions}"
+    )
+
+
 class CloudProvider(ABC):
     """Interface that every cloud GPU provider must implement."""
 
@@ -133,4 +182,4 @@ class CloudProvider(ABC):
     def terminate_instance(self, instance_id: str) -> bool: ...
 
     @abstractmethod
-    def list_gpus(self) -> list[GpuInfo]: ...
+    def list_gpus(self, gpu_count: int | None = None) -> list[GpuInfo]: ...

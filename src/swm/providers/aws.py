@@ -129,7 +129,7 @@ class AWSProvider(CloudProvider):
         self._ec2().terminate_instances(InstanceIds=[instance_id])
         return True
 
-    def list_gpus(self) -> list[GpuInfo]:
+    def list_gpus(self, gpu_count: int | None = None) -> list[GpuInfo]:
         from swm.pricing.providers import OFFERINGS
 
         return [
@@ -138,14 +138,15 @@ class AWSProvider(CloudProvider):
                 type_id=GPU_INSTANCE_MAP.get(o.gpu, {}).get("type", o.gpu),
                 display_name=f"{o.gpu.upper()} ({GPU_INSTANCE_MAP.get(o.gpu, {}).get('type', '?')})",
                 vram_gb=GPU_INSTANCE_MAP.get(o.gpu, {}).get("vram", 0),
-                min_gpu_count=o.min_gpus,
+                gpu_count=o.min_gpus,
                 on_demand_price=o.on_demand,
                 spot_price=o.spot,
-                stock_level="Available",
+                stock_level="",
                 secure_cloud=True,
             )
             for o in OFFERINGS
             if o.provider == "AWS"
+            and (gpu_count is None or o.min_gpus == gpu_count)
         ]
 
     def _to_instance(self, inst: dict) -> Instance:

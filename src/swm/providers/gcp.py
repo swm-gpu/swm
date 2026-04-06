@@ -116,7 +116,7 @@ class GCPProvider(CloudProvider):
             data = data.get("items", [])
         return [self._to_instance(i) for i in data if isinstance(i, dict)]
 
-    def list_gpus(self) -> list[GpuInfo]:
+    def list_gpus(self, gpu_count: int | None = None) -> list[GpuInfo]:
         from swm.pricing.providers import OFFERINGS
 
         static = [
@@ -125,14 +125,15 @@ class GCPProvider(CloudProvider):
                 type_id=GPU_MACHINE_MAP.get(o.gpu, {}).get("machine", o.gpu),
                 display_name=f"{o.gpu.upper()} ({GPU_MACHINE_MAP.get(o.gpu, {}).get('machine', '?')})",
                 vram_gb=GPU_MACHINE_MAP.get(o.gpu, {}).get("vram", 0),
-                min_gpu_count=o.min_gpus,
+                gpu_count=o.min_gpus,
                 on_demand_price=o.on_demand,
                 spot_price=o.spot,
-                stock_level="Available",
+                stock_level="",
                 secure_cloud=True,
             )
             for o in OFFERINGS
             if o.provider == "GCP"
+            and (gpu_count is None or o.min_gpus == gpu_count)
         ]
 
         try:
@@ -149,14 +150,14 @@ class GCPProvider(CloudProvider):
                         aname in g.type_id or desc in g.display_name
                         for g in static
                     )
-                    if not already and ("h200" in aname.lower() or "b200" in aname.lower()):
+                    if not already:
                         static.append(
                             GpuInfo(
                                 provider=self.slug,
                                 type_id=aname,
                                 display_name=f"{desc} ({zone})",
                                 vram_gb=0,
-                                stock_level="Available",
+                                stock_level="",
                                 secure_cloud=True,
                             )
                         )

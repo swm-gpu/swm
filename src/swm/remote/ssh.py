@@ -163,6 +163,37 @@ class RemoteSession:
         proc.wait()
         return proc.returncode
 
+    def exec_background(
+        self, command: str, logfile: str = "/dev/null", workdir: str | None = None,
+    ) -> None:
+        """Launch *command* in background on the remote host and return immediately.
+
+        Uses ``setsid`` + ``nohup`` with full FD detachment so SSH exits
+        without waiting for the child process.
+        """
+        cd = f"cd {workdir} && " if workdir else ""
+        wrapped = (
+            f"setsid bash -c '{cd}nohup {command} > {logfile} 2>&1 < /dev/null &'"
+        )
+        cmd = ["ssh", *_SSH_OPTS]
+        if self.key_path:
+            cmd.extend(["-i", self.key_path])
+        if self.port != 22:
+            cmd.extend(["-p", str(self.port)])
+        cmd.append(f"{self.user}@{self.host}")
+        cmd.append(wrapped)
+
+        try:
+            subprocess.run(
+                cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=15,
+            )
+        except subprocess.TimeoutExpired:
+            pass
+
     def _scp_base(self) -> list[str]:
         cmd = ["scp", *_SSH_OPTS]
         if self.key_path:
@@ -187,6 +218,11 @@ class RemoteSession:
         if proc.returncode != 0:
             raise RuntimeError(f"scp upload failed (exit {proc.returncode})")
 
+    def is_directory(self, remote_path: str) -> bool:
+        """Return True if *remote_path* is a directory on the remote host."""
+        _, out, _ = self.exec(f"test -d '{remote_path}' && echo yes || echo no", stream=False)
+        return out.strip() == "yes"
+
     def download(
         self,
         remote_path: str,
@@ -194,14 +230,82 @@ class RemoteSession:
         *,
         recursive: bool = False,
     ) -> None:
-        """Download a file or directory from the remote via scp."""
-        cmd = self._scp_base()
-        if recursive:
-            cmd.append("-r")
+        """Download a file from the remote via scp with compression."""
+        cmd = self._scp_base() + ["-C"]
         cmd.extend([f"{self.user}@{self.host}:{remote_path}", local_path])
         proc = subprocess.run(cmd)
         if proc.returncode != 0:
             raise RuntimeError(f"scp download failed (exit {proc.returncode})")
+
+    def file_count(self, remote_path: str) -> int:
+        """Return the number of regular files under *remote_path*."""
+        _, out, _ = self.exec(
+            f"find '{remote_path}' -type f | wc -l", stream=False
+        )
+        try:
+            return int(out.strip())
+        except ValueError:
+            return 0
+
+    def download_dir(
+        self,
+        remote_path: str,
+        local_dir: str,
+        progress_callback: "Callable[[str], None] | None" = None,
+    ) -> None:
+        """Stream a remote directory to *local_dir* via tar-over-SSH.
+
+        Significantly faster than ``scp -r`` because it transfers a single
+        compressed stream instead of one negotiated sub-channel per file.
+        The tar archive is never written to disk on either side.
+
+        *progress_callback* is called with each member name as it is extracted.
+        """
+        import os
+        import tarfile
+
+        os.makedirs(local_dir, exist_ok=True)
+
+        # Build the non-interactive SSH command that streams tar to stdout.
+        ssh_cmd = ["ssh", *_SSH_OPTS]
+        if self.key_path:
+            ssh_cmd.extend(["-i", self.key_path])
+        if self.port != 22:
+            ssh_cmd.extend(["-p", str(self.port)])
+        ssh_cmd.append(f"{self.user}@{self.host}")
+        # cd to parent so the archive contains only the leaf name, not the
+        # full absolute path — this makes extraction predictable.
+        parent = remote_path.rstrip("/").rsplit("/", 1)[0] or "/"
+        name = remote_path.rstrip("/").rsplit("/", 1)[-1]
+        ssh_cmd.append(f"tar czf - -C '{parent}' '{name}'")
+
+        with subprocess.Popen(
+            ssh_cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        ) as proc:
+            assert proc.stdout is not None
+            try:
+                with tarfile.open(fileobj=proc.stdout, mode="r|gz") as tf:
+                    for member in tf:
+                        tf.extract(member, local_dir)
+                        if progress_callback:
+                            progress_callback(member.name)
+            except Exception as exc:
+                proc.kill()
+                stderr = proc.stderr.read().decode("utf-8", errors="replace") if proc.stderr else ""
+                raise RuntimeError(
+                    f"tar stream failed: {exc}"
+                    + (f"\nSSH stderr: {stderr}" if stderr.strip() else "")
+                ) from exc
+
+            proc.wait()
+            if proc.returncode not in (0, None):
+                stderr = proc.stderr.read().decode("utf-8", errors="replace") if proc.stderr else ""
+                raise RuntimeError(
+                    f"SSH tar exited {proc.returncode}"
+                    + (f": {stderr.strip()}" if stderr.strip() else "")
+                )
 
     def close(self) -> None:
         pass

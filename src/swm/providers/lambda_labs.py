@@ -11,20 +11,10 @@ from swm.providers.base import (
     GpuInfo,
     Instance,
     InstanceStatus,
+    resolve_gpu_type,
 )
 
 API_BASE = "https://cloud.lambdalabs.com/api/v1"
-
-GPU_TYPE_MAP = {
-    "h200": "h200_sxm_141gb",
-    "h100_sxm": "h100_sxm_80gb",
-    "h100_pcie": "h100_pcie_80gb",
-    "a100_80": "a100_80gb_sxm4",
-    "a100_40": "a100_pcie_40gb",
-    "a10": "a10_24gb",
-    "l40s": "l40s",
-    "rtx_4090": "rtx_4090",
-}
 
 _VRAM_RE = re.compile(r"(\d+)\s*gb", re.IGNORECASE)
 
@@ -93,7 +83,7 @@ class LambdaLabsProvider(CloudProvider):
         data = self._get(f"instances/{instance_id}")
         return self._to_instance(data.get("data", {}))
 
-    def list_gpus(self) -> list[GpuInfo]:
+    def list_gpus(self, gpu_count: int | None = None) -> list[GpuInfo]:
         data = self._get("instance-types")
         results: list[GpuInfo] = []
 
@@ -102,17 +92,19 @@ class LambdaLabsProvider(CloudProvider):
             desc = spec.get("description", type_name)
             price_cents = spec.get("price_cents_per_hour")
             regions = info.get("regions_with_capacity_available", [])
-            gpu_spec = spec.get("specs", {})
 
-            gpu_count_match = re.match(r"gpu_(\d+)x_", type_name)
-            gpu_count = int(gpu_count_match.group(1)) if gpu_count_match else 1
+            count_match = re.match(r"gpu_(\d+)x_", type_name)
+            n = int(count_match.group(1)) if count_match else 1
+
+            if gpu_count is not None and n != gpu_count:
+                continue
 
             results.append(GpuInfo(
                 provider=self.slug,
                 type_id=type_name,
                 display_name=desc,
                 vram_gb=_parse_vram(desc) or _parse_vram(type_name),
-                min_gpu_count=gpu_count,
+                gpu_count=n,
                 on_demand_price=price_cents / 100 if price_cents else None,
                 stock_level="available" if regions else "unavailable",
             ))
@@ -122,16 +114,19 @@ class LambdaLabsProvider(CloudProvider):
     # ── mutations ───────────────────────────────────────────────────
 
     def create_instance(self, config: CreateConfig) -> Instance:
-        gpu_suffix = GPU_TYPE_MAP.get(config.gpu_type, config.gpu_type)
-        type_name = f"gpu_{config.gpu_count}x_{gpu_suffix}"
-
         avail = self._get("instance-types")
-        type_info = avail.get("data", {}).get(type_name)
+        all_types = list(avail.get("data", {}).keys())
+
+        # Filter candidates to matching gpu_count (e.g. gpu_4x_*)
+        count_prefix = f"gpu_{config.gpu_count}x_"
+        count_filtered = [t for t in all_types if t.startswith(count_prefix)]
+        candidates = count_filtered or all_types
+
+        type_name = resolve_gpu_type(config.gpu_type, candidates)
+
+        type_info = avail["data"].get(type_name)
         if not type_info:
-            available = ", ".join(avail.get("data", {}).keys())
-            raise RuntimeError(
-                f"Instance type '{type_name}' not found. Available: {available}"
-            )
+            raise RuntimeError(f"Instance type '{type_name}' not found.")
 
         regions = type_info.get("regions_with_capacity_available", [])
         if not regions:

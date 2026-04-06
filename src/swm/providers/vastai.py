@@ -11,22 +11,10 @@ from swm.providers.base import (
     GpuInfo,
     Instance,
     InstanceStatus,
+    resolve_gpu_type,
 )
 
 API_BASE = "https://console.vast.ai/api/v0"
-
-GPU_TYPE_MAP = {
-    "h200": "H200",
-    "h100": "H100",
-    "h100_sxm": "H100 SXM",
-    "h100_pcie": "H100 PCIe",
-    "a100_80": "A100 80GB",
-    "a100_40": "A100 40GB",
-    "a6000": "RTX A6000",
-    "l40s": "L40S",
-    "rtx_4090": "RTX 4090",
-    "rtx_3090": "RTX 3090",
-}
 
 DEFAULT_IMAGE = "vastai/pytorch"
 
@@ -109,40 +97,53 @@ class VastAIProvider(CloudProvider):
         data = self._get("instances/")
         return [self._to_instance(i) for i in data.get("instances", [])]
 
-    def list_gpus(self) -> list[GpuInfo]:
+    def list_gpus(self, gpu_count: int | None = None) -> list[GpuInfo]:
+        num_filter: dict = {"eq": gpu_count} if gpu_count else {"gte": 1}
         data = self._post("bundles/", {
-            "num_gpus": {"gte": 1},
+            "num_gpus": num_filter,
             "rentable": {"eq": True},
             "order": [["dph_total", "asc"]],
             "limit": 500,
         })
-        seen: dict[str, GpuInfo] = {}
+        seen: dict[tuple[str, int], GpuInfo] = {}
         for offer in data.get("offers", []):
             gpu_name = offer.get("gpu_name", "unknown")
-            if gpu_name in seen:
-                existing = seen[gpu_name]
-                price = offer.get("dph_total")
+            n = offer.get("num_gpus", 1)
+            key = (gpu_name, n)
+            price = offer.get("dph_total")
+            if key in seen:
+                existing = seen[key]
                 if price and (
                     existing.on_demand_price is None
                     or price < existing.on_demand_price
                 ):
                     existing.on_demand_price = price
                 continue
-            seen[gpu_name] = GpuInfo(
+            seen[key] = GpuInfo(
                 provider=self.slug,
                 type_id=gpu_name,
                 display_name=gpu_name,
                 vram_gb=int(offer.get("gpu_ram", 0) / 1024),
-                on_demand_price=offer.get("dph_total"),
+                gpu_count=n,
+                on_demand_price=price,
                 stock_level="available",
                 secure_cloud=offer.get("verification", "") == "verified",
             )
-        return sorted(seen.values(), key=lambda g: g.vram_gb, reverse=True)
+        return sorted(seen.values(), key=lambda g: (-g.vram_gb, g.gpu_count))
 
     # ── mutations ───────────────────────────────────────────────────
 
+    def _gpu_names(self) -> list[str]:
+        """Fetch the set of distinct GPU names currently on the marketplace."""
+        data = self._post("bundles/", {
+            "rentable": {"eq": True},
+            "order": [["dph_total", "asc"]],
+            "limit": 500,
+        })
+        return list({o.get("gpu_name", "") for o in data.get("offers", []) if o.get("gpu_name")})
+
     def create_instance(self, config: CreateConfig) -> Instance:
-        gpu_name = GPU_TYPE_MAP.get(config.gpu_type, config.gpu_type)
+        gpu_name = resolve_gpu_type(config.gpu_type, self._gpu_names())
         image = config.image or DEFAULT_IMAGE
 
         search_body: dict = {

@@ -19,7 +19,7 @@ from swm.providers import (
 )
 from swm.providers.base import InstanceStatus
 
-console = Console()
+console = Console(log_path=False)
 
 
 def _preflight_pull(
@@ -88,10 +88,224 @@ def _preflight_pull(
     return extra, check.workspace_bytes, 0
 
 
-@click.group()
+_WORKFLOW_EPILOG = """\b
+Workflow:
+  gpus              Search live GPU availability and pricing
+  pod create        Provision a new GPU instance
+  ssh <id>          SSH into a running instance
+  setup install     Install frameworks (ComfyUI, SwarmUI, ...)
+  setup start/stop  Start or stop installed frameworks
+  sync pull/push    Sync workspace with cloud storage
+  costs live        Show running cost of active pods
+  costs summary     Spending breakdown by provider/GPU
+  pod down          Push workspace and terminate
+"""
+
+
+@click.group(epilog=_WORKFLOW_EPILOG)
 @click.version_option(__version__, prog_name="swm")
 def main():
     """swm — Cloud GPU workflow manager for ComfyUI / SwarmUI."""
+
+
+# ── GPU search ──────────────────────────────────────────────────────
+
+_SLUG_TO_NAME = {cls().slug: cls().name for cls in ALL_PROVIDERS}
+
+
+def _provider_display(slug_or_name: str) -> str:
+    """Map a provider slug to its human-readable name, or pass through."""
+    return _SLUG_TO_NAME.get(slug_or_name, slug_or_name)
+
+
+@main.command()
+@click.option("--gpu", "-g", default=None, help="Filter by GPU name (free text, e.g. h200, a100, rtx4090)")
+@click.option("--count", "-c", "gpu_count", default=None, type=int, help="GPU count (e.g. 4 for 4×GPU configs)")
+@click.option("--max-price", default=None, type=float, help="Max on-demand $/hr per GPU")
+@click.option("--provider", "-p", default=None, help="Filter to one provider")
+@click.option("--secure", is_flag=True, help="Only show secure-cloud providers")
+@click.option(
+    "--sort", "sort_by", default="price",
+    type=click.Choice(["price", "vram", "provider"], case_sensitive=False),
+    help="Sort order (default: price)",
+)
+@click.option("--limit", "-n", default=20, type=int, help="Max rows to show (default: 20)")
+@click.option("--all", "show_all", is_flag=True, help="Show all results (no pagination)")
+def gpus(gpu: str | None, gpu_count: int | None, max_price: float | None,
+         provider: str | None, secure: bool, sort_by: str,
+         limit: int, show_all: bool):
+    """Search live GPU availability and pricing across all providers.
+
+    \b
+    Queries configured providers in real-time and supplements with
+    static reference pricing for providers you haven't configured yet.
+
+    \b
+    Examples:
+      swm gpus                        # everything
+      swm gpus -g h200                # H200s across all providers
+      swm gpus -g h200 -c 4           # 4×H200 configs only
+      swm gpus -g h200 --secure       # secure cloud only
+      swm gpus --max-price 4          # under $4/hr
+      swm gpus -p vastai              # one provider
+    """
+    from swm.providers.base import GpuInfo
+
+    # --- collect from CloudProvider implementations ---
+    if provider:
+        try:
+            sources = [get_provider(provider)]
+        except ValueError:
+            sources = []
+    else:
+        configured = get_configured_providers()
+        unconfigured_slugs = (
+            {cls().slug for cls in ALL_PROVIDERS} - {p.slug for p in configured}
+        )
+        sources = list(configured)
+        for slug in unconfigured_slugs:
+            sources.append(get_provider(slug))
+
+    all_gpus: list[GpuInfo] = []
+    with console.status("Searching GPUs…", spinner="dots") as spin:
+        for p in sources:
+            label = _provider_display(p.slug) if hasattr(p, "slug") else p.name
+            is_configured = p.is_configured()
+            tag = "" if is_configured else " [dim](static)[/dim]"
+            spin.update(f"Querying {label}…")
+            try:
+                results = p.list_gpus(gpu_count=gpu_count)
+                all_gpus.extend(results)
+                console.log(f"[green]✓[/green] {label}{tag} — {len(results)} GPUs")
+            except Exception as exc:
+                console.log(f"[red]✗[/red] {label} — {exc}")
+
+        # --- add static rows from OFFERINGS for providers without CloudProvider ---
+        impl_names = {cls().name for cls in ALL_PROVIDERS}
+        provider_needle = provider.lower() if provider else None
+
+        static_count = 0
+        for o in OFFERINGS:
+            if o.provider in impl_names:
+                continue
+            if provider_needle and provider_needle not in o.provider.lower():
+                continue
+            if gpu_count is not None and o.min_gpus != gpu_count:
+                continue
+            vram = GPU_SPECS.get(o.gpu)
+            all_gpus.append(GpuInfo(
+                provider=o.provider,
+                type_id=o.instance_type or o.gpu,
+                display_name=o.gpu.upper(),
+                vram_gb=vram.vram_gb if vram else 0,
+                gpu_count=o.min_gpus,
+                on_demand_price=o.on_demand,
+                spot_price=o.spot,
+                stock_level="",
+                secure_cloud=bool(o.security),
+            ))
+            static_count += 1
+
+        if static_count:
+            console.log(f"[dim]+ {static_count} static reference offerings[/dim]")
+
+    # --- apply filters ---
+    if gpu:
+        needle = gpu.lower()
+        all_gpus = [
+            g for g in all_gpus
+            if needle in g.display_name.lower() or needle in g.type_id.lower()
+        ]
+
+    if max_price is not None:
+        all_gpus = [
+            g for g in all_gpus
+            if g.on_demand_price is not None and g.on_demand_price <= max_price
+        ]
+
+    if secure:
+        all_gpus = [g for g in all_gpus if g.secure_cloud]
+
+    if not all_gpus:
+        console.print("[yellow]No GPUs found matching filters.[/yellow]")
+        return
+
+    # --- sort ---
+    if sort_by == "vram":
+        all_gpus.sort(key=lambda g: (-g.vram_gb, g.on_demand_price or 999))
+    elif sort_by == "provider":
+        all_gpus.sort(key=lambda g: (_provider_display(g.provider), g.on_demand_price or 999))
+    else:
+        all_gpus.sort(key=lambda g: (g.on_demand_price or 999, g.gpu_count))
+
+    # --- paginate ---
+    total = len(all_gpus)
+    truncated = False
+    if not show_all and total > limit:
+        all_gpus = all_gpus[:limit]
+        truncated = True
+
+    # --- render ---
+    title = "GPU Availability & Pricing"
+    if truncated:
+        title += f"  (top {limit} of {total})"
+
+    table = Table(title=title, title_style="bold", show_lines=True)
+    table.add_column("Provider", style="bold", min_width=10)
+    table.add_column("GPU")
+    table.add_column("-g", style="dim cyan", no_wrap=True)
+    table.add_column("VRAM", justify="right")
+    table.add_column("×", justify="center")
+    table.add_column("$/hr", justify="right")
+    table.add_column("Spot", justify="right")
+    table.add_column("Stock")
+    table.add_column("Secure", justify="center")
+
+    stock_styles = {
+        "High": "green", "Medium": "yellow", "Low": "red",
+        "None": "red bold", "available": "green", "unavailable": "red",
+    }
+
+    for g in all_gpus:
+        ss = stock_styles.get(g.stock_level, "dim")
+        g_flag = f'"{g.type_id}"' if " " in g.type_id else g.type_id
+        table.add_row(
+            _provider_display(g.provider),
+            g.display_name,
+            g_flag,
+            f"{g.vram_gb} GB" if g.vram_gb else "—",
+            str(g.gpu_count),
+            f"${g.on_demand_price:.2f}" if g.on_demand_price else "—",
+            f"${g.spot_price:.2f}" if g.spot_price else "—",
+            f"[{ss}]{g.stock_level or '—'}[/{ss}]",
+            "[green]✓[/green]" if g.secure_cloud else "[dim]—[/dim]",
+        )
+
+    console.print()
+    console.print(table)
+    console.print()
+
+    if truncated:
+        console.print(
+            f"[dim]Showing {limit} of {total} results. "
+            f"Use --all to see everything or -n {total} for a specific count.[/dim]"
+        )
+        console.print()
+
+    console.print(
+        "[dim]Copy the [bold]-g[/bold] value into [bold]swm pod create -g <value>[/bold][/dim]"
+    )
+    console.print()
+
+    gpu_hint = gpu.lower() if gpu else "<gpu>"
+    count_hint = f" --gpu-count {gpu_count}" if gpu_count and gpu_count > 1 else ""
+    console.print(
+        f"[bold]Next →[/bold]  swm pod create -p <provider> -g {gpu_hint} "
+        f"-n <name>{count_hint}"
+    )
+    console.print(
+        "[bold]Then →[/bold]  swm setup install <framework> <provider>:<id>"
+    )
 
 
 # ── config ──────────────────────────────────────────────────────────
@@ -347,11 +561,15 @@ def pod_list(provider: str | None):
         return
 
     all_instances = []
-    for p in providers:
-        try:
-            all_instances.extend(p.list_instances())
-        except Exception as e:
-            console.print(f"[red]✗[/red] {p.name}: {e}")
+    with console.status("Fetching instances…", spinner="dots") as spin:
+        for p in providers:
+            spin.update(f"Querying {p.name}…")
+            try:
+                insts = p.list_instances()
+                all_instances.extend(insts)
+                console.log(f"[green]✓[/green] {p.name} — {len(insts)} instances")
+            except Exception as e:
+                console.log(f"[red]✗[/red] {p.name}: {e}")
 
     if not all_instances:
         console.print("[dim]No active instances found.[/dim]")
@@ -385,6 +603,8 @@ def pod_list(provider: str | None):
 
     console.print()
     console.print(table)
+    console.print()
+    console.print("[dim]Connect:  swm ssh <id>    Run:  swm run <id> <command>[/dim]")
 
 
 @pod.command()
@@ -494,7 +714,10 @@ def create(
         return
 
     try:
-        inst = p.create_instance(config)
+        with console.status(
+            f"Creating {p.name} instance…", spinner="dots"
+        ):
+            inst = p.create_instance(config)
     except Exception as e:
         raise click.ClickException(str(e))
 
@@ -503,10 +726,23 @@ def create(
     if inst.cost_per_hr:
         console.print(f"  Cost: ${inst.cost_per_hr:.2f}/hr")
 
-    console.print(f"\n[bold]Waiting for SSH...[/bold]")
+    # ── cost tracking (best-effort, record immediately) ──
+    try:
+        from swm.costs.tracker import record_start
+        from swm.costs.budget import check_budget
+
+        record_start(inst, workspace=ws_name)
+        warning = check_budget(provider, inst.cost_per_hr)
+        if warning:
+            for line in warning.splitlines():
+                console.print(f"  [yellow]⚠ {line}[/yellow]")
+    except Exception:
+        pass
+
     from swm.bootstrap import wait_for_ssh
     try:
-        inst = wait_for_ssh(p, inst.id)
+        with console.status("Waiting for SSH…", spinner="dots"):
+            inst = wait_for_ssh(p, inst.id)
     except TimeoutError as e:
         console.print(f"[yellow]⚠ {e}[/yellow]")
 
@@ -514,13 +750,15 @@ def create(
     cfg.set_value(f"pods.{inst.id}.name", name)
 
     if ws_name and storage_prov and bucket_name:
-        console.print(f"\n[bold]Bootstrapping storage over SSH...[/bold]")
+        console.print(f"\n[bold]Bootstrapping storage over SSH…[/bold]")
         from swm.remote.ssh import session_from_instance
         from swm.bootstrap import configure_storage, workspace_pull
 
         try:
             with session_from_instance(inst) as sess:
-                configure_storage(sess, storage_prov.slug, bucket=bucket_name)
+                with console.status("Installing s5cmd & configuring storage…", spinner="dots"):
+                    configure_storage(sess, storage_prov.slug, bucket=bucket_name)
+                console.print("[green]✓[/green] Storage configured")
                 workspace_pull(sess, storage_prov.slug, bucket_name, ws_name)
 
             cfg.set_value(f"pods.{inst.id}.workspace", ws_name)
@@ -550,8 +788,9 @@ def create(
 def start(instance_id: str):
     """Start a stopped instance.  Accepts 'provider:id' or bare id."""
     try:
-        provider, raw_id = resolve_instance(instance_id)
-        inst = provider.start_instance(raw_id)
+        with console.status("Starting instance…", spinner="dots"):
+            provider, raw_id = resolve_instance(instance_id)
+            inst = provider.start_instance(raw_id)
     except Exception as e:
         raise click.ClickException(str(e))
 
@@ -559,18 +798,37 @@ def start(instance_id: str):
     if inst.ssh_command:
         console.print(f"  SSH: {inst.ssh_command}")
 
+    try:
+        from swm.costs.tracker import record_start
+        from swm.costs.budget import check_budget
+
+        record_start(inst)
+        warning = check_budget(provider.slug, inst.cost_per_hr)
+        if warning:
+            for line in warning.splitlines():
+                console.print(f"  [yellow]⚠ {line}[/yellow]")
+    except Exception:
+        pass
+
 
 @pod.command()
 @click.argument("instance_id")
 def stop(instance_id: str):
     """Stop a running instance (preserves volume)."""
     try:
-        provider, raw_id = resolve_instance(instance_id)
-        inst = provider.stop_instance(raw_id)
+        with console.status("Stopping instance…", spinner="dots"):
+            provider, raw_id = resolve_instance(instance_id)
+            inst = provider.stop_instance(raw_id)
     except Exception as e:
         raise click.ClickException(str(e))
 
     console.print(f"[green]✓[/green] {provider.name} instance {raw_id}: {inst.status_rich}")
+
+    try:
+        from swm.costs.tracker import record_stop
+        record_stop(raw_id, provider.slug)
+    except Exception:
+        pass
 
 
 @pod.command()
@@ -593,11 +851,18 @@ def terminate(instance_id: str, yes: bool):
             return
 
     try:
-        provider.terminate_instance(raw_id)
+        with console.status("Terminating instance…", spinner="dots"):
+            provider.terminate_instance(raw_id)
     except Exception as e:
         raise click.ClickException(str(e))
 
     console.print(f"[green]✓[/green] {provider.name} instance {raw_id} terminated.")
+
+    try:
+        from swm.costs.tracker import record_stop
+        record_stop(raw_id, provider.slug)
+    except Exception:
+        pass
 
 
 @pod.command()
@@ -605,8 +870,9 @@ def terminate(instance_id: str, yes: bool):
 def status(instance_id: str):
     """Show detailed status of one instance."""
     try:
-        provider, raw_id = resolve_instance(instance_id)
-        instances = provider.list_instances()
+        with console.status("Fetching status…", spinner="dots"):
+            provider, raw_id = resolve_instance(instance_id)
+            instances = provider.list_instances()
         inst = next((i for i in instances if i.id == raw_id), None)
     except Exception as e:
         raise click.ClickException(str(e))
@@ -671,7 +937,8 @@ def pod_down(instance_id: str, yes: bool, no_sync: bool):
 
     if not no_sync and has_workspace:
         try:
-            instances = provider.list_instances()
+            with console.status("Checking instance…", spinner="dots"):
+                instances = provider.list_instances()
             inst = next((i for i in instances if i.id == raw_id), None)
         except Exception:
             inst = None
@@ -697,9 +964,16 @@ def pod_down(instance_id: str, yes: bool, no_sync: bool):
             console.print("[yellow]⚠ Instance not running — skipping sync[/yellow]")
 
     try:
-        provider.terminate_instance(raw_id)
+        with console.status("Terminating instance…", spinner="dots"):
+            provider.terminate_instance(raw_id)
     except Exception as e:
         raise click.ClickException(str(e))
+
+    try:
+        from swm.costs.tracker import record_stop
+        record_stop(raw_id, provider.slug)
+    except Exception:
+        pass
 
     cfg.delete(f"pods.{raw_id}")
 
@@ -715,86 +989,14 @@ def pod_down(instance_id: str, yes: bool, no_sync: bool):
         )
 
 
-@pod.command()
+@pod.command(name="gpus", hidden=True, deprecated=True)
 @click.option("--provider", "-p", default=None, help="Filter to one provider")
-@click.option("--gpu", type=click.Choice(["h200", "b200"], case_sensitive=False), help="Filter by GPU type")
-def gpus(provider: str | None, gpu: str | None):
-    """Show available GPUs across providers (live where possible)."""
-    if provider:
-        sources = [get_provider(provider)]
-    else:
-        configured = get_configured_providers()
-        unconfigured_slugs = {
-            p().slug for p in ALL_PROVIDERS
-        } - {p.slug for p in configured}
-
-        sources = list(configured)
-        for slug in unconfigured_slugs:
-            sources.append(get_provider(slug))
-
-    all_gpus = []
-    live_providers: set[str] = set()
-    for p in sources:
-        try:
-            gpus_list = p.list_gpus()
-            all_gpus.extend(gpus_list)
-            if p.is_configured():
-                live_providers.add(p.slug)
-        except Exception:
-            pass
-
-    if gpu:
-        needle = gpu.lower()
-        all_gpus = [
-            g for g in all_gpus if needle in g.display_name.lower() or needle in g.type_id.lower()
-        ]
-
-    if not all_gpus:
-        console.print("[yellow]No GPUs found matching filters.[/yellow]")
-        return
-
-    table = Table(
-        title="Available GPUs Across Providers",
-        title_style="bold",
-        show_lines=True,
-    )
-    table.add_column("Provider", style="bold")
-    table.add_column("GPU")
-    table.add_column("VRAM", justify="right")
-    table.add_column("On-Demand", justify="right")
-    table.add_column("Spot", justify="right")
-    table.add_column("Min GPUs", justify="center")
-    table.add_column("Stock")
-    table.add_column("Secure", justify="center")
-    table.add_column("Source", style="dim")
-
-    for g in sorted(all_gpus, key=lambda x: (x.on_demand_price or 999)):
-        stock_style = {
-            "High": "green",
-            "Medium": "yellow",
-            "Low": "red",
-            "None": "red bold",
-        }.get(g.stock_level, "dim")
-
-        table.add_row(
-            g.provider,
-            g.display_name,
-            f"{g.vram_gb} GB",
-            f"${g.on_demand_price:.2f}" if g.on_demand_price else "—",
-            f"${g.spot_price:.2f}" if g.spot_price else "—",
-            str(g.min_gpu_count),
-            f"[{stock_style}]{g.stock_level or '—'}[/{stock_style}]",
-            "[green]✓[/green]" if g.secure_cloud else "[dim]✗[/dim]",
-            "live" if g.provider in live_providers else "static",
-        )
-
-    console.print()
-    console.print(table)
-    console.print()
-    console.print(
-        "[dim]'live' = real-time data from provider API. "
-        "'static' = pricing database (configure API key for live data).[/dim]"
-    )
+@click.option("--gpu", "-g", default=None, help="Filter by GPU type")
+@click.pass_context
+def pod_gpus_alias(ctx: click.Context, provider: str | None, gpu: str | None):
+    """Alias for 'swm gpus'. Use 'swm gpus' instead."""
+    console.print("[dim]Hint: use 'swm gpus' directly for more filters.[/dim]\n")
+    ctx.invoke(gpus, gpu=gpu, provider=provider)
 
 
 # ── remote / ssh ────────────────────────────────────────────────────
@@ -802,12 +1004,49 @@ def gpus(provider: str | None, gpu: str | None):
 
 def _instance_for(instance_id: str):
     """Resolve an ID and fetch the full Instance object."""
-    provider, raw_id = resolve_instance(instance_id)
-    instances = provider.list_instances()
+    with console.status("Resolving instance…", spinner="dots"):
+        provider, raw_id = resolve_instance(instance_id)
+        instances = provider.list_instances()
     inst = next((i for i in instances if i.id == raw_id), None)
     if inst is None:
         raise click.ClickException(f"Instance {raw_id} not found on {provider.name}")
     return inst
+
+
+def _framework_url(inst, port: int) -> str | None:
+    """Build the public URL for a framework running on *inst*."""
+    from swm.providers.base import Instance
+
+    provider = (inst.provider or "").lower()
+    if provider == "runpod":
+        return f"https://{inst.id}-{port}.proxy.runpod.net"
+    if provider == "vastai":
+        if inst.ip_address:
+            mapped = (inst.ports or {}).get(port)
+            if mapped:
+                return f"http://{inst.ip_address}:{mapped}"
+    if inst.ip_address:
+        return f"http://{inst.ip_address}:{port}"
+    return None
+
+
+def _probe_url(url: str, timeout: int = 60) -> bool:
+    """Try reaching *url* with retries over *timeout* seconds. Returns True if reachable."""
+    import httpx
+    import time
+
+    deadline = time.monotonic() + timeout
+    interval = 3
+    while time.monotonic() < deadline:
+        try:
+            r = httpx.get(url, timeout=5, follow_redirects=True)
+            if r.status_code < 500:
+                return True
+        except (httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError, OSError):
+            pass
+        remaining = deadline - time.monotonic()
+        time.sleep(min(interval, max(remaining, 0)))
+    return False
 
 
 @main.command(name="ssh")
@@ -822,7 +1061,7 @@ def ssh_connect(instance_id: str):
     inst = _instance_for(instance_id)
     console.print(
         f"[bold]Connecting to {inst.name or inst.id}[/bold] "
-        f"({inst.provider}) via SSH..."
+        f"({inst.provider}) via SSH…"
     )
     try:
         code = interactive_ssh(inst)
@@ -903,7 +1142,8 @@ def upload(instance_id: str, local_path: str, remote_path: str, recursive: bool)
     )
 
     try:
-        with session_from_instance(inst) as sess:
+        with session_from_instance(inst) as sess, \
+             console.status("Uploading…", spinner="dots"):
             sess.upload(local_path, remote_path, recursive=recursive)
     except Exception as e:
         raise click.ClickException(str(e))
@@ -915,19 +1155,19 @@ def upload(instance_id: str, local_path: str, remote_path: str, recursive: bool)
 @click.argument("instance_id")
 @click.argument("remote_path")
 @click.option("-d", "--dir", "local_dir", default=".", type=click.Path(), help="Local directory to save into (default: current dir)")
-@click.option("-r", "--recursive", is_flag=True, help="Download a directory recursively")
-def download(instance_id: str, remote_path: str, local_dir: str, recursive: bool):
+def download(instance_id: str, remote_path: str, local_dir: str):
     """Download a file or directory from a running instance.
 
     \b
-    If remote_path doesn't start with /, it is treated as relative to
-    /workspace/. Downloaded files land in the directory given by --dir.
+    Directories are transferred via tar-over-SSH (compressed stream) which
+    is significantly faster than scp -r for multi-file directories.
+    If remote_path doesn't start with /, it is treated as relative to /workspace/.
 
     \b
     Examples:
       swm download runpod:abc123 output.mp4
       swm download runpod:abc123 output.mp4 -d ~/Downloads
-      swm download runpod:abc123 ComfyUI/output/ -r -d ./results
+      swm download runpod:abc123 ComfyUI/output/ -d ./results
     """
     from pathlib import Path
     from swm.remote.ssh import session_from_instance
@@ -937,18 +1177,86 @@ def download(instance_id: str, remote_path: str, local_dir: str, recursive: bool
     if not remote_path.startswith("/"):
         remote_path = f"/workspace/{remote_path}"
 
-    dest = local_dir
-    if os.path.isdir(dest):
-        dest = str(Path(dest) / Path(remote_path).name)
-
-    console.print(
-        f"[bold]Downloading[/bold] {inst.provider}:{inst.id}:{remote_path} → "
-        f"{dest}"
-    )
+    remote_path = remote_path.rstrip("/")
 
     try:
         with session_from_instance(inst) as sess:
-            sess.download(remote_path, dest, recursive=recursive)
+            with console.status("Checking remote path…", spinner="dots"):
+                is_dir = sess.is_directory(remote_path)
+
+            local_dir = str(Path(local_dir).expanduser())
+
+            if is_dir:
+                import tempfile
+                base_name = Path(remote_path).name
+                final_dest = Path(local_dir) / base_name
+                if final_dest.exists():
+                    n = 1
+                    while (Path(local_dir) / f"{base_name}_{n}").exists():
+                        n += 1
+                    final_dest = Path(local_dir) / f"{base_name}_{n}"
+                    console.print(
+                        f"  [yellow]⚠ Destination already exists — saving to "
+                        f"[bold]{final_dest.name}[/bold] instead[/yellow]"
+                    )
+
+                console.print(
+                    f"[bold]Downloading directory[/bold] "
+                    f"{inst.provider}:{inst.id}:{remote_path} → {final_dest}"
+                )
+                console.print("  [dim]Using tar stream (compressed)[/dim]")
+
+                with console.status("Counting files…", spinner="dots"):
+                    total = sess.file_count(remote_path)
+
+                from rich.progress import (
+                    Progress, SpinnerColumn, BarColumn,
+                    TaskProgressColumn, TimeRemainingColumn, TextColumn,
+                )
+
+                # Ensure local_dir exists before creating a temp dir inside it.
+                Path(local_dir).mkdir(parents=True, exist_ok=True)
+
+                # Extract into a sibling temp dir, then rename atomically so
+                # the original directory is never modified on collision.
+                # Use manual cleanup (not context manager) so a rename failure
+                # doesn't delete the temp dir and lose the downloaded data.
+                tmpdir_obj = tempfile.TemporaryDirectory(dir=local_dir)
+                tmpdir = tmpdir_obj.name
+                try:
+                    with Progress(
+                        SpinnerColumn(),
+                        TextColumn("[bold]{task.description}"),
+                        BarColumn(),
+                        TaskProgressColumn(),
+                        TextColumn("[dim]{task.completed}/{task.total} files"),
+                        TimeRemainingColumn(),
+                        console=console,
+                        transient=True,
+                    ) as progress:
+                        task = progress.add_task("Streaming…", total=total or None)
+
+                        def _on_member(name: str) -> None:
+                            if not name.endswith("/"):  # skip directory entries
+                                progress.advance(task)
+                                progress.update(task, description=Path(name).name[:40])
+
+                        sess.download_dir(remote_path, tmpdir, progress_callback=_on_member)
+
+                    extracted = Path(tmpdir) / base_name
+                    extracted.rename(final_dest)
+                finally:
+                    tmpdir_obj.cleanup()
+            else:
+                Path(local_dir).mkdir(parents=True, exist_ok=True)
+                dest = str(Path(local_dir) / Path(remote_path).name)
+                console.print(
+                    f"[bold]Downloading[/bold] "
+                    f"{inst.provider}:{inst.id}:{remote_path} → {dest}"
+                )
+                with console.status("Downloading…", spinner="dots"):
+                    sess.download(remote_path, dest)
+
     except Exception as e:
         raise click.ClickException(str(e))
 
@@ -1037,14 +1345,16 @@ def setup_storage(instance_id: str, provider: str):
         raise click.ClickException(f"Cannot connect to instance: {e}")
 
     configured = []
-    with sess_ctx as sess:
+    with sess_ctx as sess, console.status("Configuring storage…", spinner="dots") as spin:
         for slug in slugs_to_configure:
+            spin.update(f"Configuring {slug}…")
             configure_storage(sess, slug)
             bucket_key = {"b2": "b2.bucket", "gcs": "gcp.bucket", "s3": "s3.bucket"}[slug]
             bucket = _cfg.get(bucket_key)
             configured.append(
                 f"{slug} → bucket [cyan]{bucket or '(set with swm config set ' + bucket_key + ' <name>)'}[/cyan]"
             )
+            console.log(f"[green]✓[/green] {slug} configured")
 
     console.print("\n[green]✓ Storage configured on pod[/green]")
     for c in configured:
@@ -1082,7 +1392,7 @@ def setup_install(framework_name: str, instance_id: str):
     )
 
     with session_from_instance(inst) as sess:
-        install_framework(sess, framework_name)
+        install_framework(sess, framework_name, console=console)
 
     console.print(f"\n[green]✓ {fw.label} installed[/green]")
     if fw.ports:
@@ -1113,11 +1423,20 @@ def setup_start(framework_name: str, instance_id: str, port: int | None):
     inst = _instance_for(instance_id)
 
     with session_from_instance(inst) as sess:
-        start_framework(sess, framework_name, port=port)
+        start_framework(sess, framework_name, port=port, console=console)
 
     listen_port = port or (next(iter(fw.ports)) if fw.ports else None)
     if listen_port:
-        console.print(f"  URL: https://{inst.id}-{listen_port}.proxy.runpod.net")
+        url = _framework_url(inst, listen_port)
+        if url:
+            with console.status("Waiting for HTTP to become reachable…", spinner="dots"):
+                reachable = _probe_url(url, timeout=60)
+            if reachable:
+                console.print(f"  [green]✓[/green] URL: {url}")
+            else:
+                console.print(f"  [yellow]⚠ URL not yet reachable after 60 s — framework may still be loading[/yellow]")
+                console.print(f"  URL: {url}")
+                console.print(f"  Logs: swm run {instance_id} 'tail -f /tmp/{framework_name}.log'")
 
 
 @setup.command(name="stop")
@@ -1136,7 +1455,7 @@ def setup_stop(framework_name: str, instance_id: str):
     inst = _instance_for(instance_id)
 
     with session_from_instance(inst) as sess:
-        stop_framework(sess, framework_name)
+        stop_framework(sess, framework_name, console=console)
 
 
 @setup.command(name="list")
@@ -1248,9 +1567,10 @@ def pull(instance_id: str, path: str, bucket: str | None, dest: str, force: bool
         f"{inst.name or inst.id}:{dest}"
     )
 
-    extra_excludes, total_bytes, total_files = _preflight_pull(
-        remote, bucket_name, ws, volume_gb=inst.volume_gb or 100,
-    )
+    with console.status("Running preflight checks…", spinner="dots"):
+        extra_excludes, total_bytes, total_files = _preflight_pull(
+            remote, bucket_name, ws, volume_gb=inst.volume_gb or 100,
+        )
 
     with session_from_instance(inst) as sess:
         workspace_pull(
@@ -1330,13 +1650,16 @@ def sync_status(instance_id: str):
 
     console.print(f"\n[bold]Storage status for {inst.name or inst.id}[/bold]")
 
-    with session_from_instance(inst) as sess:
+    with session_from_instance(inst) as sess, \
+         console.status("Checking storage tools…", spinner="dots"):
         code, stdout, _ = sess.exec(
             "command -v s5cmd >/dev/null 2>&1 "
             "&& echo 's5cmd:' && s5cmd version "
             "|| echo '(s5cmd not installed)'",
-            stream=True,
+            stream=False,
         )
+    if stdout.strip():
+        console.print(f"  {stdout.strip()}")
 
     if meta and meta.get("workspace") and meta.get("storage"):
         console.print(f"  Workspace: [cyan]{meta['workspace']}[/cyan]")
@@ -1372,7 +1695,19 @@ def models_list():
     console.print("[dim]Coming soon — Phase 6[/dim]")
 
 
-# ── costs (stub) ───────────────────────────────────────────────────
+def _session_cost(row, now) -> float | None:
+    """Compute cost for a session row (closed or running)."""
+    from datetime import datetime
+    if row["stopped_at"] and row["estimated_cost"] is not None:
+        return row["estimated_cost"]
+    if row["cost_per_hr"] is not None:
+        started = datetime.fromisoformat(row["started_at"])
+        end = datetime.fromisoformat(row["stopped_at"]) if row["stopped_at"] else now
+        return round(row["cost_per_hr"] * (end - started).total_seconds() / 3600, 4)
+    return None
+
+
+# ── costs ──────────────────────────────────────────────────────────
 
 
 @main.group()
@@ -1381,15 +1716,334 @@ def costs():
 
 
 @costs.command()
-def summary():
-    """Show spending summary for the current billing period."""
-    console.print("[dim]Coming soon — Phase 7[/dim]")
+@click.option(
+    "--period", "-t",
+    type=click.Choice(["today", "week", "month", "all"], case_sensitive=False),
+    default="month",
+    help="Time window (default: month)",
+)
+@click.option("--provider", "-p", default=None, help="Filter to one provider")
+def summary(period: str, provider: str | None):
+    """Show spending summary grouped by provider and GPU type."""
+    from datetime import datetime, timedelta, timezone
+    from rich.table import Table
+
+    from swm.costs.db import query_sessions
+
+    now = datetime.now(timezone.utc)
+    since: str | None = None
+    label = period
+    if period == "today":
+        since = (now - timedelta(days=1)).isoformat()
+    elif period == "week":
+        since = (now - timedelta(weeks=1)).isoformat()
+    elif period == "month":
+        since = (now - timedelta(days=30)).isoformat()
+    else:
+        label = "all time"
+
+    rows = query_sessions(provider=provider, since=since)
+
+    if not rows:
+        console.print(f"[dim]No sessions recorded for {label}.[/dim]")
+        return
+
+    # Aggregate by provider, then by gpu_type.
+    from collections import defaultdict
+
+    by_provider: dict[str, float] = defaultdict(float)
+    by_gpu: dict[str, float] = defaultdict(float)
+    total_hrs = 0.0
+    total_cost = 0.0
+    unpriced = 0
+
+    for r in rows:
+        cost = _session_cost(r, now)
+        started = datetime.fromisoformat(r["started_at"])
+        end = datetime.fromisoformat(r["stopped_at"]) if r["stopped_at"] else now
+        hrs = (end - started).total_seconds() / 3600
+
+        if cost is not None:
+            by_provider[r["provider"]] += cost
+            by_gpu[r["gpu_type"] or "unknown"] += cost
+            total_cost += cost
+        else:
+            unpriced += 1
+        total_hrs += hrs
+
+    table = Table(title=f"Spending summary ({label})", show_footer=True)
+    table.add_column("Provider", footer="TOTAL")
+    table.add_column("GPU Hours", justify="right", footer=f"{total_hrs:.1f}")
+    table.add_column("Cost", justify="right", footer=f"${total_cost:.2f}")
+
+    for prov, cost in sorted(by_provider.items()):
+        prov_hrs = sum(
+            (datetime.fromisoformat(r["stopped_at"] or now.isoformat())
+             - datetime.fromisoformat(r["started_at"])).total_seconds() / 3600
+            for r in rows if r["provider"] == prov
+        )
+        table.add_row(prov, f"{prov_hrs:.1f}", f"${cost:.2f}")
+
+    console.print()
+    console.print(table)
+
+    if by_gpu:
+        gpu_table = Table(title="By GPU type")
+        gpu_table.add_column("GPU")
+        gpu_table.add_column("Cost", justify="right")
+        for gpu, cost in sorted(by_gpu.items(), key=lambda x: -x[1]):
+            gpu_table.add_row(gpu, f"${cost:.2f}")
+        console.print()
+        console.print(gpu_table)
+
+    if unpriced:
+        console.print(f"\n  [dim]{unpriced} session(s) with unknown rate — not included in cost totals[/dim]")
 
 
 @costs.command()
-def log():
+@click.option("--limit", "-n", default=20, type=int, help="Number of sessions to show")
+@click.option("--provider", "-p", default=None, help="Filter to one provider")
+def log(limit: int, provider: str | None):
     """Show detailed session log."""
-    console.print("[dim]Coming soon — Phase 7[/dim]")
+    from datetime import datetime, timezone
+    from rich.table import Table
+
+    from swm.costs.db import query_sessions
+
+    rows = query_sessions(provider=provider, limit=limit)
+
+    if not rows:
+        console.print("[dim]No sessions recorded.[/dim]")
+        return
+
+    now = datetime.now(timezone.utc)
+    table = Table(title=f"Session log (last {limit})")
+    table.add_column("Pod")
+    table.add_column("Provider")
+    table.add_column("GPU")
+    table.add_column("Started", no_wrap=True)
+    table.add_column("Duration", justify="right")
+    table.add_column("$/hr", justify="right")
+    table.add_column("Cost", justify="right")
+    table.add_column("Status")
+
+    for r in rows:
+        started = datetime.fromisoformat(r["started_at"])
+        end = datetime.fromisoformat(r["stopped_at"]) if r["stopped_at"] else now
+        dur = end - started
+        hours = dur.total_seconds() / 3600
+        dur_str = f"{int(hours)}h {int(dur.total_seconds() % 3600 / 60)}m"
+        cost = _session_cost(r, now)
+        cost_str = f"${cost:.2f}" if cost is not None else "—"
+        rate_str = f"${r['cost_per_hr']:.2f}" if r["cost_per_hr"] else "—"
+        gpu_str = f"{r['gpu_type'] or '?'} ×{r['gpu_count']}"
+        status = "[green]●[/green] running" if not r["stopped_at"] else "[dim]stopped[/dim]"
+
+        table.add_row(
+            r["name"] or r["pod_id"][:12],
+            r["provider"],
+            gpu_str,
+            started.strftime("%Y-%m-%d %H:%M"),
+            dur_str,
+            rate_str,
+            cost_str,
+            status,
+        )
+
+    console.print()
+    console.print(table)
+
+
+@costs.command()
+def live():
+    """Show running cost of active pods."""
+    from rich.table import Table
+
+    from swm.costs.tracker import live_cost
+
+    sessions = live_cost()
+    if not sessions:
+        console.print("[dim]No active billing sessions.[/dim]")
+        return
+
+    table = Table(title="Active sessions — live cost")
+    table.add_column("Pod")
+    table.add_column("Provider")
+    table.add_column("GPU")
+    table.add_column("Elapsed", justify="right")
+    table.add_column("$/hr", justify="right")
+    table.add_column("Running cost", justify="right")
+
+    for s in sessions:
+        hrs = s["elapsed_hrs"]
+        elapsed_str = f"{int(hrs)}h {int((hrs % 1) * 60)}m"
+        rate_str = f"${s['cost_per_hr']:.2f}" if s["cost_per_hr"] else "—"
+        cost_str = f"${s['running_cost']:.2f}" if s["running_cost"] is not None else "—"
+        gpu_str = f"{s['gpu_type'] or '?'} ×{s['gpu_count']}"
+
+        table.add_row(
+            s["name"] or s["pod_id"][:12],
+            s["provider"],
+            gpu_str,
+            elapsed_str,
+            rate_str,
+            cost_str,
+        )
+
+    console.print()
+    console.print(table)
+
+
+@costs.group()
+def budget():
+    """Manage spending budgets."""
+
+
+@budget.command(name="set")
+@click.argument("amount", type=float)
+@click.option(
+    "--scope", "-s", default="global",
+    help="Budget scope: global, provider:<slug>, or pod:<id>",
+)
+@click.option(
+    "--period", "-t",
+    type=click.Choice(["daily", "weekly", "monthly", "total"], case_sensitive=False),
+    default="monthly",
+    help="Budget period (default: monthly)",
+)
+def budget_set(amount: float, scope: str, period: str):
+    """Set a spending budget.
+
+    \b
+    Examples:
+      swm costs budget set 50                        # $50/month global
+      swm costs budget set 100 --scope provider:runpod
+      swm costs budget set 10 --period daily
+    """
+    from swm.costs.budget import set_budget
+
+    set_budget(scope, amount, period)
+    console.print(
+        f"[green]✓[/green] Budget set: ${amount:.2f}/{period} "
+        f"(scope: {scope})"
+    )
+
+
+@budget.command(name="show")
+def budget_show():
+    """Show active budgets with current spend."""
+    from rich.table import Table
+    from rich.progress_bar import ProgressBar
+
+    from swm.costs.budget import budget_status
+
+    budgets = budget_status()
+    if not budgets:
+        console.print("[dim]No budgets configured. Set one: swm costs budget set <amount>[/dim]")
+        return
+
+    table = Table(title="Budgets")
+    table.add_column("Scope")
+    table.add_column("Period")
+    table.add_column("Limit", justify="right")
+    table.add_column("Spent", justify="right")
+    table.add_column("Used")
+
+    for b in budgets:
+        pct = b["pct"]
+        if pct >= 100:
+            color = "red"
+        elif pct >= 80:
+            color = "yellow"
+        else:
+            color = "green"
+        bar = f"[{color}]{'█' * int(pct / 5)}{'░' * (20 - int(pct / 5))}[/{color}] {pct:.0f}%"
+
+        table.add_row(
+            b["scope"],
+            b["period"],
+            f"${b['limit_usd']:.2f}",
+            f"${b['spent']:.2f}",
+            bar,
+        )
+
+    console.print()
+    console.print(table)
+
+
+@budget.command(name="remove")
+@click.argument("scope")
+@click.option(
+    "--period", "-t",
+    type=click.Choice(["daily", "weekly", "monthly", "total"], case_sensitive=False),
+    default="monthly",
+)
+def budget_remove(scope: str, period: str):
+    """Remove a budget. Example: swm costs budget remove global"""
+    from swm.costs.db import delete_budget
+
+    if delete_budget(scope, period):
+        console.print(f"[green]✓[/green] Budget removed: {scope}/{period}")
+    else:
+        console.print(f"[yellow]No budget found for {scope}/{period}[/yellow]")
+
+
+@costs.command()
+@click.option("--provider", "-p", default=None,
+              type=click.Choice(["runpod", "vastai"], case_sensitive=False),
+              help="Reconcile one provider only")
+def reconcile(provider: str | None):
+    """Compare local cost records with provider billing APIs.
+
+    Queries RunPod dailyCharges and/or Vast.ai invoices and reports
+    any discrepancy with locally tracked spend.
+    """
+    from rich.table import Table
+
+    from swm.costs.reconcile import reconcile_runpod, reconcile_vastai
+
+    results: list[dict] = []
+    targets = []
+    if provider is None or provider == "runpod":
+        targets.append(("RunPod", reconcile_runpod))
+    if provider is None or provider == "vastai":
+        targets.append(("Vast.ai", reconcile_vastai))
+
+    for name, fn in targets:
+        with console.status(f"Querying {name} billing API…", spinner="dots"):
+            try:
+                results.append(fn())
+            except Exception as e:
+                results.append({"provider": name.lower(), "error": str(e)})
+
+    for r in results:
+        if "error" in r:
+            console.print(f"\n  [yellow]⚠ {r.get('provider', '?')}: {r['error']}[/yellow]")
+            continue
+
+        console.print(f"\n[bold]{r['provider']}[/bold] — {r['period']}")
+        if r.get("balance") is not None:
+            console.print(f"  Account balance: ${r['balance']:.2f}")
+        if r.get("current_rate") is not None:
+            console.print(f"  Current rate:    ${r['current_rate']:.4f}/hr")
+
+        table = Table()
+        table.add_column("Source", min_width=12)
+        table.add_column("Total", justify="right")
+        table.add_row("Provider API", f"${r['provider_total']:.2f}")
+        table.add_row("Local (swm)", f"${r['local_total']:.2f}")
+
+        diff = r["difference"]
+        diff_color = "green" if abs(diff) < 1 else "yellow"
+        table.add_row(
+            "Difference",
+            f"[{diff_color}]${diff:+.2f}[/{diff_color}]",
+        )
+
+        console.print(table)
+
+        if r.get("details"):
+            console.print(f"  [dim]{len(r['details'])} charge records from provider[/dim]")
 
 
 # ── storage ─────────────────────────────────────────────────────────
@@ -1417,11 +2071,15 @@ def storage_list(provider: str | None):
         return
 
     all_buckets = []
-    for s in sources:
-        try:
-            all_buckets.extend(s.list_buckets())
-        except Exception as e:
-            console.print(f"[red]✗[/red] {s.name}: {e}")
+    with console.status("Fetching buckets…", spinner="dots") as spin:
+        for s in sources:
+            spin.update(f"Querying {s.name}…")
+            try:
+                buckets = s.list_buckets()
+                all_buckets.extend(buckets)
+                console.log(f"[green]✓[/green] {s.name} — {len(buckets)} buckets")
+            except Exception as e:
+                console.log(f"[red]✗[/red] {s.name}: {e}")
 
     if not all_buckets:
         console.print("[dim]No buckets found. Create one with: swm storage create <name> -p <provider>[/dim]")
@@ -1472,7 +2130,8 @@ def create(name: str, provider: str, location: str, storage_class: str):
 
     s = get_storage(provider)
     try:
-        bucket = s.create_bucket(name, location=location, storage_class=storage_class)
+        with console.status(f"Creating bucket on {s.name}…", spinner="dots"):
+            bucket = s.create_bucket(name, location=location, storage_class=storage_class)
     except Exception as e:
         raise click.ClickException(str(e))
 
@@ -1505,7 +2164,8 @@ def storage_ls(path: str, bucket: str | None):
         raise click.ClickException(str(e))
 
     try:
-        objects = provider.ls(bucket_name, prefix=path)
+        with console.status("Listing objects…", spinner="dots"):
+            objects = provider.ls(bucket_name, prefix=path)
     except Exception as e:
         raise click.ClickException(str(e))
 
@@ -1545,7 +2205,8 @@ def upload(local_path: str, remote_path: str, bucket: str | None):
 
     try:
         provider, bucket_name = resolve_bucket(bucket)
-        provider.upload(local_path, bucket_name, remote_path)
+        with console.status("Uploading…", spinner="dots"):
+            provider.upload(local_path, bucket_name, remote_path)
     except Exception as e:
         raise click.ClickException(str(e))
 
@@ -1565,7 +2226,8 @@ def download(remote_path: str, local_path: str, bucket: str | None):
 
     try:
         provider, bucket_name = resolve_bucket(bucket)
-        provider.download(bucket_name, remote_path, local_path)
+        with console.status("Downloading…", spinner="dots"):
+            provider.download(bucket_name, remote_path, local_path)
     except Exception as e:
         raise click.ClickException(str(e))
 

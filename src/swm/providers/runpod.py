@@ -9,21 +9,10 @@ from swm.providers.base import (
     GpuInfo,
     Instance,
     InstanceStatus,
+    resolve_gpu_type,
 )
 
 API_URL = "https://api.runpod.io/graphql"
-
-GPU_TYPE_MAP = {
-    "h200": "NVIDIA H200",
-    "h200_nvl": "NVIDIA H200 NVL",
-    "h100_sxm": "NVIDIA H100 80GB HBM3",
-    "h100_nvl": "NVIDIA H100 NVL",
-    "h100_pcie": "NVIDIA H100 PCIe",
-    "a100_80": "NVIDIA A100 80GB PCIe",
-    "a100_sxm": "NVIDIA A100-SXM4-80GB",
-    "l40s": "NVIDIA L40S",
-    "rtx_4090": "NVIDIA GeForce RTX 4090",
-}
 
 DEFAULT_IMAGE = "runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04"
 
@@ -94,16 +83,17 @@ class RunPodProvider(CloudProvider):
         )
         return self._to_instance(data["pod"])
 
-    def list_gpus(self) -> list[GpuInfo]:
-        data = self._gql("""
-            query {
-                gpuTypes {
+    def list_gpus(self, gpu_count: int | None = None) -> list[GpuInfo]:
+        n = gpu_count or 1
+        data = self._gql(f"""
+            query {{
+                gpuTypes {{
                     id displayName memoryInGb secureCloud communityCloud
-                    lowestPrice(input: { gpuCount: 1 }) {
+                    lowestPrice(input: {{ gpuCount: {n} }}) {{
                         minimumBidPrice uninterruptablePrice stockStatus
-                    }
-                }
-            }
+                    }}
+                }}
+            }}
         """)
         results = []
         for g in data["gpuTypes"]:
@@ -114,6 +104,7 @@ class RunPodProvider(CloudProvider):
                     type_id=g["id"],
                     display_name=g["displayName"],
                     vram_gb=g.get("memoryInGb", 0),
+                    gpu_count=n,
                     on_demand_price=lp.get("uninterruptablePrice"),
                     spot_price=lp.get("minimumBidPrice"),
                     stock_level=lp.get("stockStatus", ""),
@@ -125,7 +116,10 @@ class RunPodProvider(CloudProvider):
     # ── mutations ───────────────────────────────────────────────────
 
     def create_instance(self, config: CreateConfig) -> Instance:
-        gpu_id = GPU_TYPE_MAP.get(config.gpu_type, config.gpu_type)
+        all_ids = [g["id"] for g in self._gql(
+            "query { gpuTypes { id } }"
+        )["gpuTypes"]]
+        gpu_id = resolve_gpu_type(config.gpu_type, all_ids)
         image = config.image or DEFAULT_IMAGE
         env_entries = ", ".join(
             f'{{ key: "{k}", value: "{v}" }}' for k, v in config.env.items()

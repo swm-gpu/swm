@@ -261,76 +261,126 @@ def preflight_check(
 # ── framework installer ─────────────────────────────────────────────
 
 
-def install_framework(session: RemoteSession, name: str) -> None:
+def install_framework(
+    session: RemoteSession,
+    name: str,
+    console: Console | None = None,
+) -> None:
     """Install a framework by name using its declarative step list."""
     from swm.frameworks import Framework, get_framework
 
+    _con = console or globals()["console"]
+
     fw: Framework = get_framework(name)
-    console.print(f"\n[bold]Installing {fw.label}[/bold]")
+    _con.print(f"\n[bold]Installing {fw.label}[/bold]")
 
-    for step in fw.steps:
+    total = len(fw.steps) + len(fw.post_install)
+    for idx, step in enumerate(fw.steps, 1):
         workdir = step.workdir or fw.install_dir
         if step.check:
             cmd = f"{step.check} && echo '{step.label}: already done' || (cd {workdir} && {step.command})"
         else:
             cmd = f"cd {workdir} && {step.command}"
-        _step(session, step.label, cmd)
+        _step(session, f"[{idx}/{total}] {step.label}", cmd)
 
-    for step in fw.post_install:
+    for idx, step in enumerate(fw.post_install, len(fw.steps) + 1):
         workdir = step.workdir or fw.install_dir
         if step.check:
             cmd = f"{step.check} && echo '{step.label}: already done' || (cd {workdir} && {step.command})"
         else:
             cmd = f"cd {workdir} && {step.command}"
-        _step(session, step.label, cmd)
+        _step(session, f"[{idx}/{total}] {step.label}", cmd)
 
 
-def start_framework(session: RemoteSession, name: str, port: int | None = None) -> str | None:
+def start_framework(
+    session: RemoteSession,
+    name: str,
+    port: int | None = None,
+    console: Console | None = None,
+) -> str | None:
     """Launch a framework in the background. Returns proxy URL if applicable."""
     from swm.frameworks import get_framework
 
+    _con = console or globals()["console"]
     fw = get_framework(name)
 
     if fw.process_pattern:
-        _, out, _ = session.exec(
-            f"pgrep -fa '{fw.process_pattern}' | grep -v grep || true",
-            stream=False,
-        )
+        with _con.status(f"Checking if {fw.label} is running…", spinner="dots"):
+            _, out, _ = session.exec(
+                f"pgrep -fa '{fw.process_pattern}' | grep -v grep || true",
+                stream=False,
+            )
         if out.strip():
             pid = out.strip().split("\n")[0].split()[0]
-            console.print(
+            _con.print(
                 f"  [yellow]{fw.label} is already running (PID {pid})[/yellow]"
             )
             return None
 
-    console.print(f"\n[bold cyan]▸ Starting {fw.label}[/bold cyan]")
+    _con.print(f"\n[bold cyan]▸ Starting {fw.label}[/bold cyan]")
     launch = fw.launch_cmd
     if port and fw.ports:
         default_port = str(next(iter(fw.ports)))
         launch = launch.replace(default_port, str(port))
 
-    session.exec(
-        f"cd {fw.launch_workdir} && "
-        f"nohup {launch} > /tmp/{fw.name}.log 2>&1 &",
-        stream=False,
-    )
-    console.print(f"  [green]✓ {fw.label} started[/green]")
-    console.print(f"  Logs: swm run <pod> 'tail -f /tmp/{fw.name}.log'")
+    logfile = f"/tmp/{fw.name}.log"
+
+    with _con.status(f"Launching {fw.label}…", spinner="dots"):
+        session.exec_background(
+            launch,
+            logfile=logfile,
+            workdir=fw.launch_workdir,
+        )
+
+    # Verify the process actually stayed alive.
+    max_checks = 5
+    alive = False
+    for i in range(max_checks):
+        time.sleep(3 if i == 0 else 2)
+        if not fw.process_pattern:
+            alive = True
+            break
+        _, out, _ = session.exec(
+            f"pgrep -fa '{fw.process_pattern}' | grep -v grep || true",
+            stream=False,
+        )
+        if out.strip():
+            alive = True
+            break
+
+    if alive:
+        _con.print(f"  [green]✓ {fw.label} started[/green]")
+        _con.print(f"  Logs: swm run <pod> 'tail -f {logfile}'")
+    else:
+        _con.print(f"  [red]✗ {fw.label} failed to start[/red]")
+        _con.print(f"  Last lines from {logfile}:")
+        _, tail, _ = session.exec(f"tail -15 {logfile} 2>/dev/null", stream=False)
+        if tail.strip():
+            for line in tail.strip().splitlines():
+                _con.print(f"    [dim]{line}[/dim]")
+        raise RuntimeError(f"{fw.label} exited immediately — check logs above")
+
     return None
 
 
-def stop_framework(session: RemoteSession, name: str) -> None:
+def stop_framework(
+    session: RemoteSession,
+    name: str,
+    console: Console | None = None,
+) -> None:
     """Stop a running framework."""
     from swm.frameworks import get_framework
 
+    _con = console or globals()["console"]
     fw = get_framework(name)
     if not fw.stop_cmd:
-        console.print(f"  [yellow]{fw.label} has no stop command defined[/yellow]")
+        _con.print(f"  [yellow]{fw.label} has no stop command defined[/yellow]")
         return
 
-    console.print(f"\n[bold cyan]▸ Stopping {fw.label}[/bold cyan]")
-    session.exec(fw.stop_cmd, stream=False)
-    console.print(f"  [green]✓ {fw.label} stopped[/green]")
+    _con.print(f"\n[bold cyan]▸ Stopping {fw.label}[/bold cyan]")
+    with _con.status(f"Stopping {fw.label}…", spinner="dots"):
+        session.exec(fw.stop_cmd, stream=False)
+    _con.print(f"  [green]✓ {fw.label} stopped[/green]")
 
 
 def install_comfyui(session: RemoteSession) -> None:
@@ -362,19 +412,44 @@ def link_models_to_comfyui(session: RemoteSession) -> None:
 # ── workspace lifecycle ─────────────────────────────────────────────
 
 
+def _has_direct_ssh(inst: Instance) -> bool:
+    """True when the instance exposes a public IP with a mapped SSH port."""
+    return bool(inst.ip_address and inst.ports.get(22))
+
+
+def _has_relay_ssh(inst: Instance) -> bool:
+    return bool(inst.ssh_host and inst.ssh_port)
+
+
+def _is_relay_host(inst: Instance) -> bool:
+    """True when ssh_host is a relay proxy, not the instance's own IP."""
+    if not inst.ssh_host:
+        return False
+    return inst.ssh_host != inst.ip_address
+
+
 def wait_for_ssh(
     provider,
     instance_id: str,
     timeout: int = 300,
     poll_interval: int = 10,
+    direct_grace: int = 30,
 ) -> Instance:
-    """Poll until the instance is running and direct SSH is reachable."""
+    """Poll until the instance is running and SSH is reachable.
+
+    Prefers a direct IP+port connection over the provider relay.  When
+    only a relay endpoint is found, keeps polling up to *direct_grace*
+    extra seconds for a direct endpoint before falling back.  Providers
+    that expose SSH directly (Lambda, GCP, AWS) skip the grace window.
+    """
     from swm import config as _cfg
 
     start = time.time()
     last_status = ""
     inst = None
+    relay_seen_at: float | None = None
 
+    # Phase 1: wait for the instance to be RUNNING with an SSH endpoint.
     while time.time() - start < timeout:
         try:
             if hasattr(provider, "get_instance"):
@@ -390,10 +465,17 @@ def wait_for_ssh(
                     last_status = status
 
                 if inst.status == InstanceStatus.RUNNING:
-                    if inst.ip_address and inst.ports.get(22):
+                    if _has_direct_ssh(inst):
                         break
-                    if inst.ssh_host and inst.ssh_port:
-                        break
+                    if _has_relay_ssh(inst):
+                        if not _is_relay_host(inst):
+                            # ssh_host is the instance's own IP (Lambda,
+                            # GCP, AWS) — no relay/direct split, proceed.
+                            break
+                        if relay_seen_at is None:
+                            relay_seen_at = time.time()
+                        elif time.time() - relay_seen_at >= direct_grace:
+                            break
         except Exception:
             pass
 
@@ -401,18 +483,25 @@ def wait_for_ssh(
     else:
         raise TimeoutError(f"Pod not running after {timeout}s for instance {instance_id}")
 
-    if inst.ports.get(22):
+    # Phase 2: pick the best SSH path — direct mapped port always wins.
+    if _has_direct_ssh(inst):
         ssh_target = inst.ip_address
         port = inst.ports[22]
-    elif inst.ssh_host and inst.ssh_port:
+        ssh_user = "root"
+        console.print(f"  Direct SSH: {ssh_target}:{port}")
+    elif _has_relay_ssh(inst):
         ssh_target = inst.ssh_host
         port = inst.ssh_port
+        ssh_user = inst.ssh_user or "root"
+        if _is_relay_host(inst):
+            console.print(f"  Relay SSH: {ssh_user}@{ssh_target}:{port}")
+        else:
+            console.print(f"  SSH: {ssh_user}@{ssh_target}:{port}")
     else:
         console.print("  [yellow]No SSH endpoint found — returning anyway[/yellow]")
         return inst
 
-    console.print(f"  Probing SSH on {ssh_target}:{port}...")
-
+    # Phase 3: probe until SSH actually responds.
     probe = [
         "ssh",
         "-o", "StrictHostKeyChecking=no",
@@ -424,7 +513,6 @@ def wait_for_ssh(
     key = _cfg.get(f"{provider.slug}.ssh_key") or _cfg.get("ssh.key_path")
     if key:
         probe.extend(["-i", str(key)])
-    ssh_user = str(_cfg.get(f"{provider.slug}.ssh_user", "root"))
     probe.extend([f"{ssh_user}@{ssh_target}", "echo __SWM_OK__"])
 
     while time.time() - start < timeout:

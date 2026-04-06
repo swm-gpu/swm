@@ -121,7 +121,7 @@ class CoreWeaveProvider(CloudProvider):
         )
         return True
 
-    def list_gpus(self) -> list[GpuInfo]:
+    def list_gpus(self, gpu_count: int | None = None) -> list[GpuInfo]:
         from swm.pricing.providers import OFFERINGS
 
         return [
@@ -130,13 +130,14 @@ class CoreWeaveProvider(CloudProvider):
                 type_id=GPU_RESOURCE_MAP.get(o.gpu, {}).get("resource", o.gpu),
                 display_name=o.gpu.upper(),
                 vram_gb=GPU_RESOURCE_MAP.get(o.gpu, {}).get("vram", 0),
-                min_gpu_count=o.min_gpus,
+                gpu_count=o.min_gpus,
                 on_demand_price=o.on_demand,
-                stock_level="Available",
+                stock_level="",
                 secure_cloud=True,
             )
             for o in OFFERINGS
             if o.provider == "CoreWeave"
+            and (gpu_count is None or o.min_gpus == gpu_count)
         ]
 
     def _to_instance(self, pod) -> Instance:
