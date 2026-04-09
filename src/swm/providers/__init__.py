@@ -13,6 +13,10 @@ from swm.providers.gcp import GCPProvider
 from swm.providers.coreweave import CoreWeaveProvider
 from swm.providers.vastai import VastAIProvider
 from swm.providers.lambda_labs import LambdaLabsProvider
+from swm.providers.vultr import VultrProvider
+from swm.providers.tensordock import TensorDockProvider
+from swm.providers.fluidstack import FluidStackProvider
+from swm.providers.azure import AzureProvider
 
 ALL_PROVIDERS: list[type[CloudProvider]] = [
     RunPodProvider,
@@ -21,6 +25,10 @@ ALL_PROVIDERS: list[type[CloudProvider]] = [
     CoreWeaveProvider,
     VastAIProvider,
     LambdaLabsProvider,
+    VultrProvider,
+    TensorDockProvider,
+    FluidStackProvider,
+    AzureProvider,
 ]
 
 PROVIDER_SLUGS = {cls().slug: cls for cls in ALL_PROVIDERS}
@@ -86,6 +94,10 @@ __all__ = [
     "CoreWeaveProvider",
     "VastAIProvider",
     "LambdaLabsProvider",
+    "VultrProvider",
+    "TensorDockProvider",
+    "FluidStackProvider",
+    "AzureProvider",
     "ALL_PROVIDERS",
     "PROVIDER_SLUGS",
     "get_provider",

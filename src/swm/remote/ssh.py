@@ -164,16 +164,23 @@ class RemoteSession:
         return proc.returncode
 
     def exec_background(
-        self, command: str, logfile: str = "/dev/null", workdir: str | None = None,
+        self,
+        command: str,
+        logfile: str = "/dev/null",
+        workdir: str | None = None,
+        env_setup: str = "",
     ) -> None:
         """Launch *command* in background on the remote host and return immediately.
 
         Uses ``setsid`` + ``nohup`` with full FD detachment so SSH exits
-        without waiting for the child process.
+        without waiting for the child process.  *env_setup* (e.g.
+        ``export PATH=...``) runs before ``nohup`` so environment is
+        available to the launched process.
         """
+        env = f"{env_setup} && " if env_setup else ""
         cd = f"cd {workdir} && " if workdir else ""
         wrapped = (
-            f"setsid bash -c '{cd}nohup {command} > {logfile} 2>&1 < /dev/null &'"
+            f"setsid bash -c '{env}{cd}nohup {command} > {logfile} 2>&1 < /dev/null &'"
         )
         cmd = ["ssh", *_SSH_OPTS]
         if self.key_path:

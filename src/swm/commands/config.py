@@ -1,0 +1,77 @@
+"""swm config — manage configuration (API keys, defaults, preferences)."""
+from __future__ import annotations
+
+import click
+
+from swm import config as cfg
+from swm.commands._helpers import console
+
+
+@click.group(name="config")
+def config_group():
+    """Manage configuration (API keys, defaults, preferences)."""
+
+
+@config_group.command(name="set")
+@click.argument("key")
+@click.argument("value")
+def config_set(key: str, value: str):
+    """Set a config value.  Example: swm config set runpod.api_key sk-xxx"""
+    cfg.set_value(key, value)
+    display = value if "key" not in key.lower() else value[:4] + "****"
+    console.print(f"[green]✓[/green] {key} = {display}")
+
+
+@config_group.command(name="get")
+@click.argument("key")
+def config_get(key: str):
+    """Get a config value."""
+    val = cfg.get(key)
+    if val is None:
+        console.print(f"[yellow]⚠[/yellow]  {key} is not set")
+    else:
+        display = str(val)
+        if "key" in key.lower() or "secret" in key.lower():
+            display = display[:4] + "****" if len(display) > 4 else "****"
+        console.print(f"{key} = {display}")
+
+
+@config_group.command(name="list")
+def config_list():
+    """Show all configuration values."""
+    data = cfg.load()
+    if not data:
+        console.print(
+            "[dim]No configuration set yet. "
+            "Run [bold]swm config set <key> <value>[/bold] to get started.[/dim]"
+        )
+        return
+    _print_nested(data)
+
+
+@config_group.command(name="path")
+def config_path():
+    """Show the config file location."""
+    console.print(str(cfg.CONFIG_FILE))
+
+
+@config_group.command(name="delete")
+@click.argument("key")
+def config_delete(key: str):
+    """Remove a config key."""
+    if cfg.delete(key):
+        console.print(f"[green]✓[/green] Deleted {key}")
+    else:
+        console.print(f"[yellow]⚠[/yellow]  {key} not found")
+
+
+def _print_nested(d: dict, prefix: str = "") -> None:
+    for k, v in d.items():
+        full = f"{prefix}{k}"
+        if isinstance(v, dict):
+            _print_nested(v, f"{full}.")
+        else:
+            display = str(v)
+            if "key" in full.lower() or "secret" in full.lower():
+                display = display[:4] + "****" if len(display) > 4 else "****"
+            console.print(f"  {full} = {display}")

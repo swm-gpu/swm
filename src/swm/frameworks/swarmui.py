@@ -2,26 +2,36 @@
 
 from swm.frameworks import Framework, Step
 
+_DOTNET_DIR = "/workspace/.dotnet"
+_NUGET_DIR = "/workspace/.nuget"
+_PIP_CACHE = "/workspace/.cache/pip"
+_ENV = (
+    f"export PATH={_DOTNET_DIR}:$PATH "
+    f"DOTNET_ROOT={_DOTNET_DIR} "
+    f"NUGET_PACKAGES={_NUGET_DIR} "
+    f"PIP_CACHE_DIR={_PIP_CACHE}"
+)
+
 FRAMEWORK = Framework(
     name="swarmui",
     label="SwarmUI",
     repo="https://github.com/mcmonkeyprojects/SwarmUI.git",
     install_dir="/workspace/SwarmUI",
-    launch_cmd="bash launch-linux.sh --launch --port 7801",
+    launch_cmd="bash launch-linux.sh --launch_mode none --port 7801 --host 0.0.0.0",
     ports={7801: "http"},
     category="inference",
     stop_cmd="pkill -f 'SwarmUI.*--port'",
     process_pattern="SwarmUI.*--port",
+    env_setup=_ENV,
     steps=[
         Step(
             label="Installing .NET SDK",
             command=(
                 "wget -q https://dot.net/v1/dotnet-install.sh -O /tmp/dotnet-install.sh "
                 "&& chmod +x /tmp/dotnet-install.sh "
-                "&& /tmp/dotnet-install.sh --channel 8.0 --install-dir /usr/share/dotnet "
-                "&& ln -sf /usr/share/dotnet/dotnet /usr/bin/dotnet"
+                f"&& /tmp/dotnet-install.sh --channel 8.0 --install-dir {_DOTNET_DIR}"
             ),
-            check="command -v dotnet >/dev/null 2>&1",
+            check=f"[ -x {_DOTNET_DIR}/dotnet ]",
             workdir="/workspace",
         ),
         Step(
@@ -32,14 +42,17 @@ FRAMEWORK = Framework(
         ),
         Step(
             label="Building SwarmUI",
-            command="dotnet build src/SwarmUI.csproj --configuration Release",
+            command=f"{_ENV} && dotnet build src/SwarmUI.csproj --configuration Release",
         ),
     ],
     post_install=[
         Step(
             label="Installing ComfyUI backend",
-            command="mkdir -p /workspace/SwarmUI/dlbackend && git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git",
-            check="[ -d /workspace/SwarmUI/dlbackend/ComfyUI ]",
+            command=(
+                "mkdir -p /workspace/SwarmUI/dlbackend "
+                "&& git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git"
+            ),
+            check="[ -d /workspace/SwarmUI/dlbackend/ComfyUI ] || [ -L /workspace/SwarmUI/dlbackend/comfyui ]",
             workdir="/workspace/SwarmUI/dlbackend",
         ),
         Step(
@@ -62,6 +75,48 @@ FRAMEWORK = Framework(
             label="Updating ComfyUI Manager to latest",
             command="git fetch origin main && git reset --hard origin/main",
             workdir="/workspace/SwarmUI/dlbackend/ComfyUI/custom_nodes/ComfyUI-Manager",
+        ),
+    ],
+    pre_start=[
+        Step(
+            label="Fixing execute permissions",
+            command=(
+                "find /workspace/SwarmUI -maxdepth 2 -name '*.sh' -exec chmod +x {} + "
+                "&& chmod -R +x /workspace/SwarmUI/launchtools/ "
+                "&& chmod +x /workspace/SwarmUI/src/bin/live_release/SwarmUI 2>/dev/null || true"
+            ),
+        ),
+        Step(
+            label="Migrating caches to /workspace",
+            command=(
+                f"mkdir -p {_NUGET_DIR} {_PIP_CACHE} /root/.nuget /root/.cache "
+                "&& if [ -d /root/.nuget/packages ] && [ ! -L /root/.nuget/packages ]; then "
+                f"cp -rn /root/.nuget/packages/* {_NUGET_DIR}/ 2>/dev/null; "
+                "rm -rf /root/.nuget/packages; fi "
+                f"&& ln -sfn {_NUGET_DIR} /root/.nuget/packages "
+                "&& if [ -d /root/.cache/pip ] && [ ! -L /root/.cache/pip ]; then "
+                "rm -rf /root/.cache/pip; fi "
+                f"&& ln -sfn {_PIP_CACHE} /root/.cache/pip"
+            ),
+            check=f"[ -L /root/.nuget/packages ] && [ -L /root/.cache/pip ]",
+        ),
+        Step(
+            label="Ensuring .NET SDK is available",
+            command=(
+                "wget -q https://dot.net/v1/dotnet-install.sh -O /tmp/dotnet-install.sh "
+                "&& chmod +x /tmp/dotnet-install.sh "
+                f"&& /tmp/dotnet-install.sh --channel 8.0 --install-dir {_DOTNET_DIR}"
+            ),
+            check=f"[ -x {_DOTNET_DIR}/dotnet ]",
+            workdir="/workspace",
+        ),
+        Step(
+            label="Linking ComfyUI backend",
+            command=(
+                "mkdir -p /workspace/SwarmUI/dlbackend "
+                "&& ln -sfn /workspace/ComfyUI /workspace/SwarmUI/dlbackend/comfyui"
+            ),
+            check="[ -d /workspace/SwarmUI/dlbackend/ComfyUI ] || [ -L /workspace/SwarmUI/dlbackend/comfyui ]",
         ),
     ],
 )

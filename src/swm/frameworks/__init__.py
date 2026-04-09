@@ -28,6 +28,8 @@ class Framework:
     ports: dict[int, str] = field(default_factory=dict)
     steps: list[Step] = field(default_factory=list)
     post_install: list[Step] = field(default_factory=list)
+    pre_start: list[Step] = field(default_factory=list)
+    env_setup: str = ""
     stop_cmd: str = ""
     process_pattern: str = ""
     category: str = "inference"

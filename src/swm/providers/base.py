@@ -59,6 +59,7 @@ class Instance:
     image: str | None = None
     volume_gb: int | None = None
     container_disk_gb: int | None = None
+    status_detail: str | None = None
 
     @property
     def qualified_id(self) -> str:

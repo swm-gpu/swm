@@ -2,15 +2,21 @@
 
 from swm.frameworks import Framework, Step
 
+_VENV = "/workspace/axolotl/venv"
+_PIP = f"{_VENV}/bin/pip"
+_PYTHON = f"{_VENV}/bin/python"
+_PIP_CACHE = "/workspace/.cache/pip"
+
 FRAMEWORK = Framework(
     name="axolotl",
     label="Axolotl",
     repo="https://github.com/axolotl-ai-cloud/axolotl.git",
     install_dir="/workspace/axolotl",
-    launch_cmd="python -m axolotl.cli.train",
+    launch_cmd=f"{_PYTHON} -m axolotl.cli.train",
     ports={},
     process_pattern="axolotl\\.cli\\.train",
     category="training",
+    env_setup=f"export PIP_CACHE_DIR={_PIP_CACHE} && source {_VENV}/bin/activate",
     steps=[
         Step(
             label="Cloning Axolotl",
@@ -19,14 +25,26 @@ FRAMEWORK = Framework(
             workdir="/workspace",
         ),
         Step(
+            label="Creating virtual environment",
+            command=f"python -m venv {_VENV}",
+            check=f"[ -x {_PYTHON} ]",
+        ),
+        Step(
             label="Installing Axolotl",
-            command="pip install -e '.[flash-attn,deepspeed]'",
+            command=f"{_PIP} install -e '.[flash-attn,deepspeed]'",
         ),
     ],
     post_install=[
         Step(
             label="Verifying installation",
-            command="python -c 'import axolotl; print(f\"axolotl {axolotl.__version__}\")'",
+            command=f"{_PYTHON} -c 'import axolotl; print(f\"axolotl {{axolotl.__version__}}\")'",
+        ),
+    ],
+    pre_start=[
+        Step(
+            label="Ensuring Python venv exists",
+            command=f"python -m venv {_VENV} && {_PIP} install -e '.[flash-attn,deepspeed]'",
+            check=f"[ -x {_PYTHON} ] && {_PYTHON} -c 'import axolotl' 2>/dev/null",
         ),
     ],
 )

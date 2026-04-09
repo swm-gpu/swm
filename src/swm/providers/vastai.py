@@ -231,6 +231,10 @@ class VastAIProvider(CloudProvider):
                 if public:
                     ports[private] = public
 
+        status_msg = raw.get("status_msg") or None
+        if status_msg:
+            status_msg = status_msg.strip().split("\n")[-1].strip()
+
         return Instance(
             provider=self.slug,
             id=str(raw["id"]),
@@ -247,4 +251,5 @@ class VastAIProvider(CloudProvider):
             ports=ports,
             image=raw.get("image_uuid"),
             volume_gb=int(raw["disk_space"]) if raw.get("disk_space") else None,
+            status_detail=status_msg,
         )
