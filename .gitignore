@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# swm local config & data
+costs.db
+
+# Build artifacts
+*.spec
+
+# Internal dev docs (not shipped)
+CLAUDE.md
+AGENTS.md
+SKILLS.md

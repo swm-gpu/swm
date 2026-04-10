@@ -1,105 +1,242 @@
-# swm — Cloud GPU Workflow Manager
+# swm
 
-A CLI tool for managing cloud GPU instances, storage, and AI workloads (ComfyUI, SwarmUI, video generation) across multiple providers. `swm` treats remote GPU pods as disposable compute — your workspace lives in cloud storage, and `swm` orchestrates everything over standard SSH.
+**One CLI to rule all GPU clouds.**
 
-## Workflow
+Search pricing across 10 providers, spin up a GPU in seconds, sync your workspace automatically, and track every dollar — without locking into any single cloud.
 
 ```
-  swm gpus           →  Search live availability & pricing
-  swm pod create     →  Provision a GPU instance
-  swm setup install  →  Install frameworks (ComfyUI, SwarmUI, ...)
-  swm sync pull/push →  Sync workspace with cloud storage
-  swm costs live     →  Show running cost of active pods
-  swm costs summary  →  Spending breakdown by provider/GPU
-  swm pod down       →  Push workspace and terminate
+$ swm gpus -g h200 --max-price 4
+
+  Live GPU Availability
+┏━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━┳━━━━━━━━━┓
+┃ Provider ┃ GPU              ┃ VRAM   ┃ $/hr     ┃ Stock   ┃
+┡━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━╇━━━━━━━━━┩
+│ vastai   │ NVIDIA H200      │ 141 GB │ $2.89/hr │ 12 avl  │
+│ runpod   │ NVIDIA H200      │ 141 GB │ $3.49/hr │ High    │
+│ lambda   │ NVIDIA H200      │ 141 GB │ $3.99/hr │ 4 avl   │
+│ vultr    │ NVIDIA H200      │ 141 GB │ $3.88/hr │ 8 avl   │
+└──────────┴──────────────────┴────────┴──────────┴─────────┘
+```
+
+## Why swm?
+
+**You shouldn't need 10 browser tabs to find a GPU.** Cloud GPU pricing changes by the hour. Availability disappears in minutes. And every provider has a different dashboard, API, and workflow.
+
+swm gives you:
+
+- **One search** across RunPod, Vast.ai, Lambda Labs, Vultr, TensorDock, FluidStack, AWS, GCP, Azure, and CoreWeave
+- **One command** to provision, bootstrap, and connect via SSH
+- **One workspace** that follows you across providers — stored in Backblaze B2, S3, or GCS, pulled on create, pushed on shutdown
+- **One bill view** showing card charges, GPU usage, and cost tracking across every provider
+
+## Supported Providers
+
+| Provider | GPU Search | Provision | Stop/Resume | Billing |
+|----------|-----------|-----------|-------------|---------|
+| RunPod | Live | Yes | Yes | Full (card + usage) |
+| Vast.ai | Live | Yes | Yes | Full (card + usage) |
+| Lambda Labs | Live | Yes | — | — |
+| Vultr | Live | Yes | Yes | — |
+| TensorDock | Live | Yes | Yes | — |
+| FluidStack | Live | Yes | Yes | — |
+| AWS (EC2) | Live | Yes | Yes | — |
+| GCP (Compute) | Live | Yes | Yes | — |
+| Azure | Live | Yes | Yes | — |
+| CoreWeave | Live | Yes | Yes | — |
+
+## Install
+
+```bash
+# macOS (Homebrew)
+brew tap swm-dev/swm && brew install swm
+
+# Python (3.11+)
+pipx install swm
+
+# From source
+pip install .
 ```
 
 ## Quick Start
 
 ```bash
-pip install -e "."
-
-# Enable tab completion (bash)
-echo 'eval "$(_SWM_COMPLETE=bash_source swm)"' >> ~/.bash_profile
-source ~/.bash_profile
-
-# For zsh (common on macOS):
-# echo 'eval "$(_SWM_COMPLETE=zsh_source swm)"' >> ~/.zshrc && source ~/.zshrc
-
-# Configure a GPU provider
+# 1. Add your API key (takes 30 seconds)
 swm config set runpod.api_key <your-key>
 
-# Configure storage
+# 2. Set up workspace storage (Backblaze B2, S3, or GCS)
 swm config set b2.key_id <key-id>
 swm config set b2.app_key <app-key>
-swm config set b2.bucket <bucket-name>
-swm config set storage.default b2:<bucket-name>
-```
+swm config set b2.bucket my-workspace
+swm config set storage.default b2:my-workspace
 
-## Everyday Commands
+# 3. Find a GPU
+swm gpus -g h200
 
-```bash
-# 1. Search — find the best GPU deal right now
-swm gpus                                          # all GPUs, all providers
-swm gpus -g h200                                  # filter to H200s
-swm gpus -g h200 -c 4 --secure                   # 4×H200, secure cloud only
-swm gpus --max-price 4                            # under $4/hr
-
-# 2. Create — provision a pod
+# 4. Create a pod (provisions, injects SSH key, pulls your workspace)
 swm pod create -p runpod -g h200 -n my-session
-swm pod create -p vastai -g h200 -n train --gpu-count 4 --volume 500
 
-# 3. Install & manage frameworks
+# 5. Install a framework
 swm setup install comfyui runpod:<id>
-swm setup start comfyui runpod:<id>
 
-# 4. Workspace sync
-swm sync pull runpod:<id>
-swm sync push runpod:<id>
-
-# 5. Remote access
+# 6. Work — SSH in, run jobs, generate images
 swm ssh runpod:<id>
-swm run runpod:<id> 'nvidia-smi'
 
-# 6. Cost tracking
-swm costs live                                    # running cost of active pods
-swm costs summary                                 # spending breakdown (last 30 days)
-swm costs budget set 50                           # $50/month global budget
-swm costs reconcile                               # compare with provider billing
-
-# 7. Shut down
+# 7. Done — pushes workspace to storage, terminates the pod
 swm pod down runpod:<id>
 ```
 
-## Project Structure
+Your workspace (models, outputs, configs) persists in cloud storage. Next time you spin up a pod — on any provider — it's all there.
+
+## Core Commands
+
+### Search GPUs
+
+```bash
+swm gpus                            # all GPUs, all providers
+swm gpus -g h200                    # filter by GPU name
+swm gpus -g h200 -c 4              # 4-GPU configs only
+swm gpus --max-price 4             # under $4/hr
+swm gpus --secure                  # secure/certified clouds only
+```
+
+### Manage Pods
+
+```bash
+swm pod create -p runpod -g h200 -n train-run   # provision
+swm pod list                                      # list all instances
+swm pod stop runpod:<id>                          # pause billing
+swm pod start runpod:<id>                         # resume
+swm pod down runpod:<id>                          # sync + terminate
+```
+
+### Sync Workspace
+
+```bash
+swm sync pull runpod:<id>           # storage -> pod
+swm sync push runpod:<id>           # pod -> storage
+swm sync watch runpod:<id>          # auto-push on file changes
+```
+
+### Install Frameworks
+
+```bash
+swm setup list                      # see available frameworks
+swm setup install comfyui runpod:<id>
+swm setup install swarmui runpod:<id>
+swm setup install axolotl runpod:<id>
+swm setup start comfyui runpod:<id>
+```
+
+Supported frameworks: **ComfyUI**, **SwarmUI**, **Axolotl**, **H2O LLM Studio**
+
+### Track Costs
+
+```bash
+swm costs live                      # running cost right now
+swm costs summary                   # spending breakdown (30 days)
+swm costs reconcile                 # card charges + usage from provider APIs
+swm costs budget set 100            # $100/month budget alert
+```
+
+### Remote Access
+
+```bash
+swm ssh runpod:<id>                 # interactive shell
+swm run runpod:<id> 'nvidia-smi'   # run a command
+swm upload runpod:<id> ./model.safetensors
+swm download runpod:<id> output/video.mp4
+```
+
+## How It Works
+
+swm operates entirely over **SSH**. No agents, no custom Docker images, no vendor lock-in.
 
 ```
-src/swm/
-├── cli.py               # Click CLI — all user-facing commands
-├── config.py            # TOML config (~/.config/swm/config.toml)
-├── bootstrap.py         # Remote setup: s5cmd, frameworks, workspace sync
-├── pricing/             # Static GPU specs + cost estimation
-├── costs/              # Cost tracking (SQLite sessions, budgets, provider reconciliation)
-├── providers/           # GPU provider implementations (RunPod, Vast.ai, Lambda, AWS, GCP, CoreWeave)
-├── frameworks/          # Framework registry (ComfyUI, SwarmUI, Axolotl, LLM Studio)
-├── remote/              # SSH session, SCP, key management
-└── storage/             # S3-compatible storage (B2, GCS, S3)
+┌──────────┐       SSH        ┌─────────────┐       S3 API      ┌───────────┐
+│ Your Mac │ ───────────────> │  GPU Pod    │ ────────────────> │ B2 / S3   │
+│   swm    │  exec, scp      │  (any       │  s5cmd sync       │ / GCS     │
+│          │ <─────────────── │   provider) │ <──────────────── │(workspace)│
+└──────────┘                  └─────────────┘                   └───────────┘
 ```
 
-## Docs
+1. **Provision** — swm calls the provider API, injects your SSH public key
+2. **Connect** — Direct SSH to the pod (no relay, no proxy)
+3. **Bootstrap** — Installs s5cmd, pulls your workspace from cloud storage
+4. **Work** — Run frameworks, train models, generate images
+5. **Shutdown** — Pushes workspace back to storage, terminates the pod
 
-| Page | Contents |
-|------|----------|
-| [Architecture](docs/architecture.md) | SSH control plane, provider/storage abstraction, workspace lifecycle, design patterns |
-| [Storage Setup](docs/storage.md) | Backblaze B2, Google Cloud Storage, Amazon S3 credential setup |
-| [CLI Reference](docs/cli-reference.md) | Full command reference for all `swm` commands |
-| [Configuration](docs/configuration.md) | All config keys, dependencies, system tools |
-| [Extending](docs/extending.md) | How to add new GPU providers and storage backends |
+Credentials are never stored on the pod. Storage keys are passed as transient environment variables per command.
+
+## Storage
+
+swm syncs your `/workspace` directory to S3-compatible cloud storage. Supported backends:
+
+| Backend | Setup |
+|---------|-------|
+| **Backblaze B2** | `swm config set b2.key_id` / `b2.app_key` / `b2.bucket` |
+| **Amazon S3** | `swm config set s3.access_key` / `s3.secret_key` / `s3.bucket` |
+| **Google Cloud Storage** | `swm config set gcs.hmac_access` / `gcs.hmac_secret` |
+
+Syncs are **non-destructive** — pull skips existing files, push only uploads new/changed files, nothing is ever deleted.
+
+See [Storage Setup](docs/storage.md) for detailed configuration.
+
+## Cost Tracking
+
+swm tracks every GPU session locally and reconciles against provider billing APIs.
+
+```bash
+$ swm costs reconcile
+
+runpod — last 30 days
+  Balance:        $46.78
+  Spend rate:     $3.24/hr
+
+  Card charges
+  ┏━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┓
+  ┃ Date       ┃ Method ┃ Description       ┃ Amount ┃
+  ┡━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━━━╇━━━━━━━━┩
+  │ 2026-04-09 │ Stripe │ Auto-reload       │ $50.00 │
+  │ 2026-04-07 │ Stripe │ Auto-reload       │ $50.00 │
+  └────────────┴────────┴───────────────────┴────────┘
+
+  Usage by GPU
+  ┏━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━┓
+  ┃ Resource                ┃ Hours ┃   Cost ┃
+  ┡━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━┩
+  │ NVIDIA H200             │ 11.3h │ $41.92 │
+  │ NVIDIA B200             │  9.1h │ $48.98 │
+  └─────────────────────────┴───────┴────────┘
+```
+
+Set budget alerts to get warned before overspending:
+
+```bash
+swm costs budget set 50                         # $50/month global
+swm costs budget set 100 --scope provider:runpod # $100/month for RunPod
+swm costs budget set 10 --period daily           # $10/day
+```
 
 ## Security
 
 - **SSH key authentication only** — no passwords stored anywhere
-- **No credentials on pods** — storage keys are passed over SSH, never in pod env vars
-- **Non-destructive syncs** — `s5cmd cp --no-clobber` (pull) and `s5cmd sync --size-only` (push)
-- **Secure cloud default** — `swm pod create` defaults to `--cloud-type SECURE`
-- **S3 over HTTPS** — all storage API calls use TLS endpoints
+- **No credentials on pods** — storage keys are passed transiently over SSH, never written to disk
+- **Non-destructive syncs** — files are never deleted from your storage bucket
+- **Secure cloud default** — `swm pod create` defaults to SOC 2 / HIPAA certified data centers
+- **S3 over HTTPS** — all storage transfers use TLS
+
+## Documentation
+
+| Page | Description |
+|------|-------------|
+| [CLI Reference](docs/cli-reference.md) | Full command reference with all options |
+| [Configuration](docs/configuration.md) | All config keys for providers and storage |
+| [Storage Setup](docs/storage.md) | Backblaze B2, Amazon S3, Google Cloud Storage setup |
+| [Architecture](docs/architecture.md) | How swm works under the hood |
+
+## Requirements
+
+- macOS or Linux
+- Python 3.11+ (if not using Homebrew binary)
+- SSH client (`ssh`, `scp`)
+- An account with at least one GPU provider
