@@ -28,6 +28,11 @@ costs.db
 
 # Build artifacts
 *.spec
+dist/
+*.build/
+*.onefile-build/
+*.dist/
+swm_main.bin
 
 # Internal dev docs (not shipped)
 CLAUDE.md

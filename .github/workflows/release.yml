@@ -1,0 +1,119 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-14
+            arch: arm64
+            label: darwin-arm64
+          - os: macos-13
+            arch: amd64
+            label: darwin-amd64
+          - os: ubuntu-22.04
+            arch: amd64
+            label: linux-amd64
+
+    runs-on: ${{ matrix.os }}
+    name: Build ${{ matrix.label }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install .
+          pip install nuitka ordered-set zstandard
+
+      - name: Install system deps (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y patchelf ccache
+
+      - name: Extract version
+        id: version
+        run: |
+          VERSION=$(python -c "from swm import __version__; print(__version__)")
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Build with Nuitka
+        run: |
+          python -m nuitka \
+            --standalone \
+            --onefile \
+            --deployment \
+            --output-filename=swm \
+            --output-dir=dist \
+            --include-package=swm \
+            --include-package=click \
+            --include-package=rich \
+            --include-package=tomli_w \
+            --include-package=httpx \
+            --include-package=boto3 \
+            --include-package=botocore \
+            --include-package=certifi \
+            --include-package=httpcore \
+            --include-package=idna \
+            --include-package=anyio \
+            --include-package=sniffio \
+            --include-package=h11 \
+            --include-package=urllib3 \
+            --include-package=jmespath \
+            --include-package=dateutil \
+            --include-package=s3transfer \
+            --follow-imports \
+            --assume-yes-for-downloads \
+            --remove-output \
+            swm_main.py
+
+      - name: Package binary
+        run: |
+          ARTIFACT="swm-${{ steps.version.outputs.version }}-${{ matrix.label }}"
+          mv dist/swm "dist/${ARTIFACT}"
+          cd dist
+          shasum -a 256 "${ARTIFACT}" > "${ARTIFACT}.sha256"
+          echo "ARTIFACT=${ARTIFACT}" >> "$GITHUB_ENV"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT }}
+          path: |
+            dist/${{ env.ARTIFACT }}
+            dist/${{ env.ARTIFACT }}.sha256
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    name: Create Release
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -lhR artifacts/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/swm-*
