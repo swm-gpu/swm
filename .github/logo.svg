@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 120">
+  <rect width="400" height="120" rx="12" fill="#0a0a0a"/>
+  <text x="200" y="72" text-anchor="middle" font-family="ui-monospace, 'Cascadia Code', 'Fira Code', Menlo, Monaco, Consolas, monospace" font-weight="700" font-size="64" fill="#00ff88">swm</text>
+  <text x="200" y="102" text-anchor="middle" font-family="ui-monospace, 'Cascadia Code', 'Fira Code', Menlo, Monaco, Consolas, monospace" font-weight="400" font-size="14" fill="#666666">your gpu stack, your terminal, any cloud</text>
+</svg>

@@ -1,10 +1,19 @@
-# swm
+<p align="center">
+  <img src=".github/logo.svg" alt="swm" width="400" />
+</p>
 
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+<p align="center">
+  <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License" /></a>
+  <a href="https://pypi.org/project/swm/"><img src="https://img.shields.io/pypi/v/swm.svg" alt="PyPI" /></a>
+  <a href="https://pypi.org/project/swm/"><img src="https://img.shields.io/pypi/pyversions/swm.svg" alt="Python" /></a>
+</p>
 
-**One CLI to rule all GPU clouds.**
+<p align="center">
+  <b>One CLI to rule all GPU clouds.</b><br/>
+  Search pricing across 10 providers, spin up a GPU in seconds, sync your workspace, and track every dollar.
+</p>
 
-Search pricing across 10 providers, spin up a GPU in seconds, sync your workspace automatically, and track every dollar — without locking into any single cloud.
+---
 
 ```
 $ swm gpus -g h200 --max-price 4
@@ -20,23 +29,50 @@ $ swm gpus -g h200 --max-price 4
 └──────────┴──────────────────┴────────┴──────────┴─────────┘
 ```
 
-## Why swm?
+## Install
 
-**You shouldn't need 10 browser tabs to find a GPU.** Cloud GPU pricing changes by the hour. Availability disappears in minutes. And every provider has a different dashboard, API, and workflow.
+```bash
+# macOS (Homebrew)
+brew tap swm-gpu/swm && brew install swm
 
-swm gives you:
+# Python (3.11+)
+pipx install swm
 
-- **One search** across RunPod, Vast.ai, Lambda Labs, Vultr, TensorDock, FluidStack, AWS, GCP, Azure, and CoreWeave
-- **One command** to provision, bootstrap, and connect via SSH
-- **One workspace** that follows you across providers — stored in Backblaze B2, S3, or GCS, pulled on create, pushed on shutdown
-- **One bill view** showing card charges, GPU usage, and cost tracking across every provider
+# From source
+git clone https://github.com/swm-gpu/swm.git && cd swm && pip install -e .
+```
+
+## Quick Start
+
+```bash
+# 1. Add your API key
+swm config set runpod.api_key <your-key>
+
+# 2. Find a GPU
+swm gpus -g h200
+
+# 3. Create a pod
+swm pod create -p runpod -g h200 -n my-session
+
+# 4. Install a framework
+swm setup install vllm runpod:<id>
+
+# 5. Done — saves workspace and terminates
+swm pod down runpod:<id>
+```
+
+## Or just ask your agent
+
+Don't want to learn the CLI? Drop the [SKILL.md](SKILLS.md) into your project and your AI agent manages GPUs for you.
+
+Works with **Cursor**, **Codex**, **Claude Code**, **Windsurf**, and any agent that can run shell commands.
 
 ## Supported Providers
 
-| Provider | GPU Search | Provision | Stop/Resume | Billing |
-|----------|-----------|-----------|-------------|---------|
-| RunPod | Live | Yes | Yes | Full (card + usage) |
-| Vast.ai | Live | Yes | Yes | Full (card + usage) |
+| Provider | GPU Search | Provision | Stop/Resume | Billing API |
+|----------|-----------|-----------|-------------|-------------|
+| RunPod | Live | Yes | Yes | Full |
+| Vast.ai | Live | Yes | Yes | Full |
 | Lambda Labs | Live | Yes | — | — |
 | Vultr | Live | Yes | Yes | — |
 | TensorDock | Live | Yes | Yes | — |
@@ -46,112 +82,75 @@ swm gives you:
 | Azure | Live | Yes | Yes | — |
 | CoreWeave | Live | Yes | Yes | — |
 
-## Install
+## Key Features
 
-```bash
-# macOS (Homebrew)
-brew tap swm-dev/swm && brew install swm
-
-# Python (3.11+)
-pipx install swm
-
-# From source
-pip install .
-```
-
-## Quick Start
-
-```bash
-# 1. Add your API key (takes 30 seconds)
-swm config set runpod.api_key <your-key>
-
-# 2. Set up workspace storage (Backblaze B2, S3, or GCS)
-swm config set b2.key_id <key-id>
-swm config set b2.app_key <app-key>
-swm config set b2.bucket my-workspace
-swm config set storage.default b2:my-workspace
-
-# 3. Find a GPU
-swm gpus -g h200
-
-# 4. Create a pod (provisions, injects SSH key, pulls your workspace)
-swm pod create -p runpod -g h200 -n my-session
-
-# 5. Install a framework
-swm setup install comfyui runpod:<id>
-
-# 6. Work — SSH in, run jobs, generate images
-swm ssh runpod:<id>
-
-# 7. Done — pushes workspace to storage, terminates the pod
-swm pod down runpod:<id>
-```
-
-Your workspace (models, outputs, configs) persists in cloud storage. Next time you spin up a pod — on any provider — it's all there.
-
-## Core Commands
-
-### Search GPUs
+### GPU Search & Provisioning
 
 ```bash
 swm gpus                            # all GPUs, all providers
-swm gpus -g h200                    # filter by GPU name
-swm gpus -g h200 -c 4              # 4-GPU configs only
-swm gpus --max-price 4             # under $4/hr
-swm gpus --secure                  # secure/certified clouds only
+swm gpus -g h200 -c 4              # 4×H200 configs
+swm gpus --max-price 4 --secure    # under $4/hr, certified clouds
+swm pod create -p runpod -g h200 -n train
+swm pod down runpod:<id>            # sync + terminate
 ```
 
-### Manage Pods
+### Workspace Sync
+
+Your `/workspace` directory follows you across clouds via S3-compatible storage (Backblaze B2, Amazon S3, Google GCS).
 
 ```bash
-swm pod create -p runpod -g h200 -n train-run   # provision
-swm pod list                                      # list all instances
-swm pod stop runpod:<id>                          # pause billing
-swm pod start runpod:<id>                         # resume
-swm pod down runpod:<id>                          # sync + terminate
-```
-
-### Sync Workspace
-
-```bash
-swm sync pull runpod:<id>           # storage -> pod
-swm sync push runpod:<id>           # pod -> storage
+swm sync push runpod:<id>           # pod → storage
+swm sync pull runpod:<id>           # storage → pod
 swm sync watch runpod:<id>          # auto-push on file changes
 ```
 
-### Install Frameworks
+Three-tier smart sync: inotify watcher tracks changes, incremental push uploads only what changed, tar mode packs 600k small files into one S3 object.
+
+### Frameworks
 
 ```bash
-swm setup list                      # see available frameworks
-swm setup install comfyui runpod:<id>
-swm setup install swarmui runpod:<id>
-swm setup install axolotl runpod:<id>
-swm setup start comfyui runpod:<id>
+swm setup install vllm runpod:<id>       # vLLM inference server
+swm setup install open-webui runpod:<id> # Open WebUI chat interface
+swm setup install comfyui runpod:<id>    # ComfyUI image generation
+swm setup install axolotl runpod:<id>    # Axolotl fine-tuning
+swm setup install ollama runpod:<id>     # Ollama model runner
+swm setup install swarmui runpod:<id>    # SwarmUI
+swm setup install llm-studio runpod:<id> # H2O LLM Studio
 ```
 
-Supported frameworks: **ComfyUI**, **SwarmUI**, **Axolotl**, **H2O LLM Studio**
+Auto-detects GPU count for tensor parallelism, opens SSH tunnels for unexposed ports, probes health endpoints.
 
-### Track Costs
+### Lifecycle Guard
+
+Monitors SSH sessions, GPU utilization, filesystem writes, and active processes. If nothing's happening, it saves your workspace and terminates the pod.
+
+```bash
+swm guard enable runpod:<id> --policy auto-down --idle 30m
+swm guard list
+```
+
+No more $96 overnight H100 bills.
+
+### Cost Tracking
 
 ```bash
 swm costs live                      # running cost right now
-swm costs summary                   # spending breakdown (30 days)
-swm costs reconcile                 # card charges + usage from provider APIs
-swm costs budget set 100            # $100/month budget alert
+swm costs summary                   # spending breakdown
+swm costs reconcile                 # verify against provider billing APIs
+swm costs budget set 100            # $100/month alert
 ```
 
-### Remote Access
+### Model Management
 
 ```bash
-swm ssh runpod:<id>                 # interactive shell
-swm run runpod:<id> 'nvidia-smi'   # run a command
-swm upload runpod:<id> ./model.safetensors
-swm download runpod:<id> output/video.mp4
+swm models search qwen3             # search HuggingFace Hub
+swm models pull runpod:<id> Qwen/Qwen3-235B
+swm models set runpod:<id> Qwen/Qwen3-235B  # hot-swap vLLM model
 ```
 
 ## How It Works
 
-swm operates entirely over **SSH**. No agents, no custom Docker images, no vendor lock-in.
+Everything happens over **SSH**. No agents on the pod. No custom images. No webhooks.
 
 ```
 ┌──────────┐       SSH        ┌─────────────┐       S3 API      ┌───────────┐
@@ -161,83 +160,26 @@ swm operates entirely over **SSH**. No agents, no custom Docker images, no vendo
 └──────────┘                  └─────────────┘                   └───────────┘
 ```
 
-1. **Provision** — swm calls the provider API, injects your SSH public key
-2. **Connect** — Direct SSH to the pod (no relay, no proxy)
-3. **Bootstrap** — Installs s5cmd, pulls your workspace from cloud storage
-4. **Work** — Run frameworks, train models, generate images
-5. **Shutdown** — Pushes workspace back to storage, terminates the pod
-
 Credentials are never stored on the pod. Storage keys are passed as transient environment variables per command.
-
-## Storage
-
-swm syncs your `/workspace` directory to S3-compatible cloud storage. Supported backends:
-
-| Backend | Setup |
-|---------|-------|
-| **Backblaze B2** | `swm config set b2.key_id` / `b2.app_key` / `b2.bucket` |
-| **Amazon S3** | `swm config set s3.access_key` / `s3.secret_key` / `s3.bucket` |
-| **Google Cloud Storage** | `swm config set gcs.hmac_access` / `gcs.hmac_secret` |
-
-Syncs are **non-destructive** — pull skips existing files, push only uploads new/changed files, nothing is ever deleted.
-
-See [Storage Setup](docs/storage.md) for detailed configuration.
-
-## Cost Tracking
-
-swm tracks every GPU session locally and reconciles against provider billing APIs.
-
-```bash
-$ swm costs reconcile
-
-runpod — last 30 days
-  Balance:        $46.78
-  Spend rate:     $3.24/hr
-
-  Card charges
-  ┏━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━━━━━━━━━━━━┳━━━━━━━━┓
-  ┃ Date       ┃ Method ┃ Description       ┃ Amount ┃
-  ┡━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━━━━━━━━━━━━╇━━━━━━━━┩
-  │ 2026-04-09 │ Stripe │ Auto-reload       │ $50.00 │
-  │ 2026-04-07 │ Stripe │ Auto-reload       │ $50.00 │
-  └────────────┴────────┴───────────────────┴────────┘
-
-  Usage by GPU
-  ┏━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━┓
-  ┃ Resource                ┃ Hours ┃   Cost ┃
-  ┡━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━┩
-  │ NVIDIA H200             │ 11.3h │ $41.92 │
-  │ NVIDIA B200             │  9.1h │ $48.98 │
-  └─────────────────────────┴───────┴────────┘
-```
-
-Set budget alerts to get warned before overspending:
-
-```bash
-swm costs budget set 50                         # $50/month global
-swm costs budget set 100 --scope provider:runpod # $100/month for RunPod
-swm costs budget set 10 --period daily           # $10/day
-```
 
 ## Security
 
 - **SSH key authentication only** — no passwords stored anywhere
-- **No credentials on pods** — storage keys are passed transiently over SSH, never written to disk
+- **No credentials on pods** — storage keys passed transiently, never written to disk
 - **Non-destructive syncs** — files are never deleted from your storage bucket
 - **Secure cloud default** — `swm pod create` defaults to SOC 2 / HIPAA certified data centers
-- **S3 over HTTPS** — all storage transfers use TLS
 
 ## Documentation
 
-Full docs at [swmgpu.com](https://swmgpu.com/overview/).
+Full docs at **[swmgpu.com](https://swmgpu.com/overview/)**.
 
 | Page | Description |
 |------|-------------|
 | [Getting Started (CLI)](https://swmgpu.com/getting-started/for-cli-users/) | Install and create your first pod in 5 minutes |
 | [Getting Started (Agent)](https://swmgpu.com/getting-started/for-agent-users/) | Let your AI agent manage GPUs for you |
+| [Configuration](https://swmgpu.com/getting-started/configuration/) | All config keys for providers and storage |
 | [Command Reference](https://swmgpu.com/commands/gpus/) | Full reference for every swm command |
 | [Core Concepts](https://swmgpu.com/concepts/providers/) | Providers, workspaces, frameworks, lifecycle guard |
-| [Configuration](https://swmgpu.com/getting-started/configuration/) | All config keys for providers and storage |
 
 ## Requirements
 
@@ -249,7 +191,3 @@ Full docs at [swmgpu.com](https://swmgpu.com/overview/).
 ## License
 
 Licensed under the [Apache License, Version 2.0](LICENSE).
-
-```
-Copyright 2025 swm contributors
-```
