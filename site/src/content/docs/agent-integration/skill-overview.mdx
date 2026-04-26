@@ -1,0 +1,47 @@
+---
+title: Skill Overview
+description: How the swm SKILL.md teaches agents to manage GPU infrastructure.
+---
+
+The swm SKILL.md is a structured document that teaches AI agents how to provision and manage GPU pods end-to-end. When installed in your agent (Cursor, Codex, Claude Code, etc.), it enables natural language GPU management.
+
+## The 6 Phases
+
+The skill guides agents through a repeatable workflow:
+
+| Phase | What happens |
+|-------|-------------|
+| **0. State check** | Check for existing pods with `swm pod list` |
+| **1. Clarify** | Ask user about VRAM needs, provider preference, lifecycle policy |
+| **2. Pick GPU** | Search live pricing with `swm gpus`, select cheapest match |
+| **3. Provision** | Create pod with `swm pod create`, wait for SSH |
+| **4. Install** | Use `swm setup install` for built-in frameworks, or `swm run` for custom tools |
+| **5. Verify** | Health-check HTTP endpoints, validate GPU memory, check disk space |
+| **6. Hand off** | Report URL, lifecycle policy, and debugging commands to user |
+
+## What the agent decides
+
+- GPU class based on VRAM requirements
+- Cheapest in-stock provider
+- Tensor parallelism configuration
+- Whether to use built-in `swm setup` or custom `swm run` chains
+
+## What the agent asks
+
+- VRAM floor needed
+- Provider preference
+- Lifecycle policy (auto-down, auto-stop, remind, manual)
+- Idle timeout duration
+- Whether to persist workspace to S3
+
+## Built-in framework support
+
+The skill covers all 7 built-in frameworks: vLLM, Open WebUI, Ollama, ComfyUI, SwarmUI, Axolotl, and H2O LLM Studio. For unsupported tools, it guides agents through `swm run` command chains.
+
+## Anti-patterns the skill prevents
+
+- Installing to container disk instead of `/workspace` (data loss on stop)
+- Using `pip install -e .` for projects with `[tool.uv.sources]`
+- Forgetting `-y` on `swm pod create` (hangs in agent context)
+- Mixing venvs across frameworks with conflicting torch versions
+- Handing off a pod before all health checks pass

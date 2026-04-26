@@ -1,5 +1,7 @@
 # swm
 
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+
 **One CLI to rule all GPU clouds.**
 
 Search pricing across 10 providers, spin up a GPU in seconds, sync your workspace automatically, and track every dollar — without locking into any single cloud.
@@ -227,12 +229,15 @@ swm costs budget set 10 --period daily           # $10/day
 
 ## Documentation
 
+Full docs at [swmgpu.com](https://swmgpu.com/overview/).
+
 | Page | Description |
 |------|-------------|
-| [CLI Reference](docs/cli-reference.md) | Full command reference with all options |
-| [Configuration](docs/configuration.md) | All config keys for providers and storage |
-| [Storage Setup](docs/storage.md) | Backblaze B2, Amazon S3, Google Cloud Storage setup |
-| [Architecture](docs/architecture.md) | How swm works under the hood |
+| [Getting Started (CLI)](https://swmgpu.com/getting-started/for-cli-users/) | Install and create your first pod in 5 minutes |
+| [Getting Started (Agent)](https://swmgpu.com/getting-started/for-agent-users/) | Let your AI agent manage GPUs for you |
+| [Command Reference](https://swmgpu.com/commands/gpus/) | Full reference for every swm command |
+| [Core Concepts](https://swmgpu.com/concepts/providers/) | Providers, workspaces, frameworks, lifecycle guard |
+| [Configuration](https://swmgpu.com/getting-started/configuration/) | All config keys for providers and storage |
 
 ## Requirements
 
@@ -240,3 +245,11 @@ swm costs budget set 10 --period daily           # $10/day
 - Python 3.11+ (if not using Homebrew binary)
 - SSH client (`ssh`, `scp`)
 - An account with at least one GPU provider
+
+## License
+
+Licensed under the [Apache License, Version 2.0](LICENSE).
+
+```
+Copyright 2025 swm contributors
+```

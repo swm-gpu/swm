@@ -1,0 +1,27 @@
+---
+title: swm costs
+description: Cost tracking, budgets, and billing reconciliation.
+---
+
+## Subcommands
+
+| Command | Description |
+|---------|------------|
+| `costs summary` | Spending breakdown by provider/GPU |
+| `costs log` | Session-by-session cost log |
+| `costs live` | Running cost of active pods |
+| `costs reconcile` | Compare local tracking vs provider charges |
+| `costs budget set` | Set a spending budget |
+| `costs budget show` | Show budgets with progress |
+| `costs budget remove` | Remove a budget |
+
+## Examples
+
+```bash
+swm costs summary --period week
+swm costs log -n 20 -p runpod
+swm costs live
+swm costs reconcile -p runpod
+swm costs budget set 100 --scope global --period monthly
+swm costs budget show
+```

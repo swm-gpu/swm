@@ -110,36 +110,37 @@ def insert_session(
 
 
 def end_session(pod_id: str, provider: str) -> bool:
-    """Close the most recent open session for *pod_id*.
+    """Close **all** open sessions for *pod_id*.
 
-    Computes ``estimated_cost`` from ``cost_per_hr × hours``.
-    Returns True if a session was closed, False if none was open.
+    Computes ``estimated_cost`` from ``cost_per_hr × hours`` for each.
+    Returns True if at least one session was closed, False if none was open.
     """
     db = get_db()
     now = _utcnow()
-    cur = db.execute(
+    rows = db.execute(
         """
         SELECT id, started_at, cost_per_hr FROM sessions
         WHERE pod_id = ? AND provider = ? AND stopped_at IS NULL
-        ORDER BY started_at DESC LIMIT 1
+        ORDER BY started_at DESC
         """,
         (pod_id, provider),
-    )
-    row = cur.fetchone()
-    if not row:
+    ).fetchall()
+    if not rows:
         return False
 
-    cost: float | None = None
-    if row["cost_per_hr"] is not None:
-        started = datetime.fromisoformat(row["started_at"])
-        stopped = datetime.fromisoformat(now)
-        hours = (stopped - started).total_seconds() / 3600
-        cost = round(row["cost_per_hr"] * hours, 4)
+    stopped = datetime.fromisoformat(now)
+    for row in rows:
+        cost: float | None = None
+        if row["cost_per_hr"] is not None:
+            started = datetime.fromisoformat(row["started_at"])
+            hours = (stopped - started).total_seconds() / 3600
+            cost = round(row["cost_per_hr"] * hours, 4)
 
-    db.execute(
-        "UPDATE sessions SET stopped_at = ?, estimated_cost = ? WHERE id = ?",
-        (now, cost, row["id"]),
-    )
+        db.execute(
+            "UPDATE sessions SET stopped_at = ?, estimated_cost = ? WHERE id = ?",
+            (now, cost, row["id"]),
+        )
+
     db.commit()
     return True
 

@@ -1,0 +1,52 @@
+---
+title: Lifecycle Guard
+description: Automated idle detection and cost-saving actions for GPU pods.
+---
+
+The lifecycle guard monitors your pods and takes action when they're idle — preventing overnight bills on forgotten GPUs.
+
+## How it works
+
+A lightweight Python script runs on the pod, monitoring:
+
+- **SSH sessions** — active interactive logins
+- **GPU utilization** — via nvidia-smi
+- **Filesystem writes** — inotify-based change tracking
+- **Transfer locks** — active s5cmd/pip/scp operations
+- **Busy processes** — pip install, model downloads, training runs
+- **Load average** — system load from /proc/loadavg
+
+A local daemon on your machine polls these signals and takes action.
+
+## Modes
+
+| Mode | Action when idle |
+|------|-----------------|
+| `manual` | No automation |
+| `remind` | Print a cost warning (30-min cooldown) |
+| `auto-stop` | Stop the pod (preserves volume, stops billing) |
+| `auto-down` | Push workspace to S3, then terminate |
+
+## Configuration
+
+```bash
+# Per-pod
+swm guard set runpod:abc123 --mode auto-down --idle-timeout 30
+
+# Global defaults
+swm guard defaults --mode auto-down --idle-timeout 60
+
+# Disable for a pod
+swm guard disable runpod:abc123
+```
+
+## Monitoring
+
+```bash
+swm guard list    # show all guarded pods with live status
+swm guard run     # run guard loop manually (--once for single pass)
+```
+
+## Transfer awareness
+
+The guard won't trigger during active transfers. It detects running `s5cmd`, `pip install`, `huggingface-cli download`, `tar`, `scp`, `rsync`, and `uv pip install` processes.

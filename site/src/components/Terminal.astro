@@ -1,0 +1,73 @@
+---
+interface Props {
+	title?: string;
+	dim?: boolean;
+}
+const { title = 'terminal', dim = false } = Astro.props;
+---
+<div class:list={['terminal', { dim }]}>
+	<div class="terminal-header">
+		<span class="dot red"></span>
+		<span class="dot yellow"></span>
+		<span class="dot green"></span>
+		<span class="terminal-title">{title}</span>
+	</div>
+	<div class="terminal-body">
+		<slot />
+	</div>
+</div>
+
+<style>
+	.terminal {
+		background: #0d0d0d;
+		border: 1px solid #222;
+		border-radius: 8px;
+		overflow: hidden;
+		font-family: 'JetBrains Mono', monospace;
+		font-size: 0.85rem;
+		line-height: 1.6;
+	}
+	.terminal.dim {
+		opacity: 0.7;
+	}
+	.terminal-header {
+		background: #1a1a1a;
+		padding: 8px 12px;
+		display: flex;
+		align-items: center;
+		gap: 6px;
+	}
+	.dot {
+		width: 10px;
+		height: 10px;
+		border-radius: 50%;
+	}
+	.dot.red { background: #ff5f57; }
+	.dot.yellow { background: #febc2e; }
+	.dot.green { background: #28c840; }
+	.terminal-title {
+		margin-left: 8px;
+		color: #666;
+		font-size: 0.75rem;
+	}
+	.terminal-body {
+		padding: 16px 20px;
+		color: #e0e0e0;
+		overflow-x: auto;
+	}
+	.terminal-body :global(.prompt) {
+		color: #00ff88;
+	}
+	.terminal-body :global(.comment) {
+		color: #555;
+	}
+	.terminal-body :global(.output) {
+		color: #888;
+	}
+	.terminal-body :global(.success) {
+		color: #00ff88;
+	}
+	.terminal-body :global(.accent) {
+		color: #00ff88;
+	}
+</style>

@@ -36,6 +36,7 @@ class GpuInfo:
     spot_price: float | None = None
     stock_level: str = ""
     secure_cloud: bool = False
+    regions: list[str] = field(default_factory=list)
 
 
 @dataclass

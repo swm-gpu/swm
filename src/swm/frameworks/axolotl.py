@@ -1,6 +1,6 @@
 """Axolotl — LLM fine-tuning framework."""
 
-from swm.frameworks import Framework, Step
+from swm.frameworks import Framework, Step, nvidia_ld_exports
 
 _VENV = "/workspace/axolotl/venv"
 _PIP = f"{_VENV}/bin/pip"
@@ -16,7 +16,11 @@ FRAMEWORK = Framework(
     ports={},
     process_pattern="axolotl\\.cli\\.train",
     category="training",
-    env_setup=f"export PIP_CACHE_DIR={_PIP_CACHE} && source {_VENV}/bin/activate",
+    env_setup=(
+        f"export PIP_CACHE_DIR={_PIP_CACHE} && "
+        f"source {_VENV}/bin/activate && "
+        f"{nvidia_ld_exports(_VENV)}"
+    ),
     steps=[
         Step(
             label="Cloning Axolotl",
@@ -26,7 +30,7 @@ FRAMEWORK = Framework(
         ),
         Step(
             label="Creating virtual environment",
-            command=f"python -m venv {_VENV}",
+            command=f"python3 -m venv {_VENV}",
             check=f"[ -x {_PYTHON} ]",
         ),
         Step(
@@ -43,7 +47,7 @@ FRAMEWORK = Framework(
     pre_start=[
         Step(
             label="Ensuring Python venv exists",
-            command=f"python -m venv {_VENV} && {_PIP} install -e '.[flash-attn,deepspeed]'",
+            command=f"python3 -m venv {_VENV} && {_PIP} install -e '.[flash-attn,deepspeed]'",
             check=f"[ -x {_PYTHON} ] && {_PYTHON} -c 'import axolotl' 2>/dev/null",
         ),
     ],

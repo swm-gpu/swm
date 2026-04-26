@@ -1,0 +1,61 @@
+---
+title: swm Documentation
+description: Your GPU stack, your terminal, any cloud.
+template: splash
+hero:
+  tagline: One CLI. Ten GPU clouds. Search, provision, deploy, sync, and manage — all over SSH.
+  actions:
+    - text: Get Started (CLI)
+      link: /getting-started/for-cli-users/
+      icon: right-arrow
+      variant: primary
+    - text: Get Started (Agent)
+      link: /getting-started/for-agent-users/
+      icon: right-arrow
+      variant: secondary
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<CardGrid>
+  <Card title="GPU Search" icon="magnifier">
+    Find the cheapest GPU across **10 clouds** in one command. Filter by type, VRAM, price, and count.
+
+    [Browse GPUs →](/commands/gpus/)
+  </Card>
+  <Card title="Pod Management" icon="rocket">
+    Create, start, stop, and terminate GPU pods from your terminal. Works across every provider.
+
+    [Pod commands →](/commands/pod/)
+  </Card>
+  <Card title="Workspace Sync" icon="cloud">
+    Push from one cloud, pull to another. Three-tier smart sync with inotify watcher and tar mode.
+
+    [Learn more →](/concepts/workspaces-and-storage/)
+  </Card>
+  <Card title="Agent Integration" icon="puzzle">
+    Drop in a `SKILL.md` and your AI agent manages GPUs for you. Cursor, Codex, Claude Code, Windsurf.
+
+    [Set up agents →](/agent-integration/skill-overview/)
+  </Card>
+  <Card title="Lifecycle Guard" icon="approve-check-circle">
+    Monitors SSH, GPU util, filesystem writes, and processes. Auto-saves and terminates idle pods.
+
+    [Guard docs →](/concepts/lifecycle-guard/)
+  </Card>
+  <Card title="Cost Tracking" icon="list-format">
+    Per-session, per-GPU cost tracking. Reconcile against provider billing APIs. Set budget alerts.
+
+    [Track costs →](/concepts/cost-tracking/)
+  </Card>
+  <Card title="Frameworks" icon="setting">
+    One command to install vLLM, Open WebUI, ComfyUI, SwarmUI, Axolotl, and more. Auto-detects GPU count.
+
+    [See frameworks →](/concepts/frameworks/)
+  </Card>
+  <Card title="CLI Reference" icon="open-book">
+    Full reference for every `swm` command — gpus, pod, setup, sync, costs, guard, models, storage.
+
+    [All commands →](/commands/gpus/)
+  </Card>
+</CardGrid>

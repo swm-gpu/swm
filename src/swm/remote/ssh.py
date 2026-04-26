@@ -15,6 +15,11 @@ _SSH_OPTS = [
     "-o", "LogLevel=ERROR",
 ]
 
+def _sh_quote(s: str) -> str:
+    """Shell-quote a string using $'...' syntax to handle all special chars."""
+    return "'" + s.replace("'", "'\\''") + "'"
+
+
 _ANSI_RE = re.compile(
     r"\x1b\[\??[0-9;]*[a-zA-Z]"
     r"|\x1b\][^\x07]*\x07"
@@ -118,8 +123,36 @@ class RemoteSession:
         out_parts: list[str] = []
 
         assert proc.stdout is not None
-        while raw_line := proc.stdout.readline():
-            line = raw_line.decode("utf-8", errors="replace").replace("\r\n", "\n")
+        buf = b""
+        while True:
+            chunk = proc.stdout.read(1024)
+            if not chunk:
+                break
+            buf += chunk
+            while b"\n" in buf or b"\r" in buf:
+                # Split on whichever delimiter comes first
+                idx_n = buf.find(b"\n")
+                idx_r = buf.find(b"\r")
+                if idx_n == -1:
+                    idx = idx_r
+                elif idx_r == -1:
+                    idx = idx_n
+                else:
+                    idx = min(idx_n, idx_r)
+                raw_line = buf[: idx + 1]
+                buf = buf[idx + 1:]
+                # Skip bare \n after \r\n (already consumed)
+                if raw_line == b"\n" and out_parts and out_parts[-1].endswith("\r\n"):
+                    continue
+                line = raw_line.decode("utf-8", errors="replace")
+                out_parts.append(line)
+                if line_callback:
+                    line_callback(line)
+                elif stream:
+                    sys.stdout.write(line)
+                    sys.stdout.flush()
+        if buf:
+            line = buf.decode("utf-8", errors="replace")
             out_parts.append(line)
             if line_callback:
                 line_callback(line)
@@ -180,7 +213,7 @@ class RemoteSession:
         env = f"{env_setup} && " if env_setup else ""
         cd = f"cd {workdir} && " if workdir else ""
         wrapped = (
-            f"setsid bash -c '{env}{cd}nohup {command} > {logfile} 2>&1 < /dev/null &'"
+            f"{env}{cd}nohup bash -c {_sh_quote(command)} > {logfile} 2>&1 < /dev/null &"
         )
         cmd = ["ssh", *_SSH_OPTS]
         if self.key_path:

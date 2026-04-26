@@ -106,7 +106,7 @@ class TensorDockProvider(CloudProvider):
                     for k, v in gpu_offerings.items()
                 ]
 
-            loc_id = loc.get("id", loc.get("location_id", ""))
+            loc_name = loc.get("location", loc.get("name", loc.get("id", "")))
 
             for gpu in gpu_offerings:
                 type_id = gpu.get("v0Name", gpu.get("name", ""))
@@ -132,6 +132,8 @@ class TensorDockProvider(CloudProvider):
                         on_demand_price=float(price) if price else None,
                         stock_level="available",
                     )
+                if loc_name and loc_name not in seen[key].regions:
+                    seen[key].regions.append(loc_name)
 
         return sorted(seen.values(), key=lambda g: g.vram_gb, reverse=True)
 

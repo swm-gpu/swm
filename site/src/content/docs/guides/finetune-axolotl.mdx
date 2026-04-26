@@ -1,0 +1,48 @@
+---
+title: Fine-tune with Axolotl
+description: Fine-tune an LLM on the cheapest available GPU using Axolotl.
+---
+
+Use swm to find the cheapest GPU, provision a pod, and run a fine-tuning job with Axolotl.
+
+## Steps
+
+### 1. Find the cheapest A100
+
+```bash
+swm gpus -g a100 --sort price
+```
+
+### 2. Create a pod
+
+```bash
+swm pod create -p <cheapest-provider> -g "A100 80GB" -n finetune \
+  --lifecycle auto-down --idle-timeout 60 -y
+```
+
+### 3. Install Axolotl
+
+```bash
+swm setup install axolotl <provider>:<pod-id>
+```
+
+### 4. Upload your config and data
+
+```bash
+swm upload <provider>:<pod-id> ./config.yml /workspace/
+swm upload <provider>:<pod-id> ./dataset/ /workspace/dataset/ -r
+```
+
+### 5. Run training
+
+```bash
+swm run <provider>:<pod-id> "cd /workspace && axolotl train config.yml"
+```
+
+### 6. Save and terminate
+
+```bash
+swm pod down finetune
+```
+
+Your checkpoints are pushed to S3. Resume on a different GPU anytime.

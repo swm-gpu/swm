@@ -64,7 +64,14 @@ class VultrProvider(CloudProvider):
             resp = client.post(
                 f"{API_BASE}/{path}", headers=self._headers(), json=body or {},
             )
-            resp.raise_for_status()
+            if resp.status_code >= 400:
+                try:
+                    detail = resp.json()
+                except Exception:
+                    detail = resp.text
+                raise RuntimeError(
+                    f"Vultr API {resp.status_code} on POST {path}: {detail}"
+                )
             return resp.json()
 
     def _delete(self, path: str) -> None:
@@ -99,7 +106,7 @@ class VultrProvider(CloudProvider):
             if gpu_count is not None and n_gpus != gpu_count:
                 continue
 
-            regions = plan.get("locations", [])
+            plan_regions = plan.get("locations", [])
             results.append(GpuInfo(
                 provider=self.slug,
                 type_id=plan_id,
@@ -107,7 +114,8 @@ class VultrProvider(CloudProvider):
                 vram_gb=int(vram),
                 gpu_count=n_gpus,
                 on_demand_price=price,
-                stock_level="available" if regions else "unavailable",
+                stock_level="available" if plan_regions else "unavailable",
+                regions=plan_regions,
             ))
 
         return sorted(results, key=lambda g: g.vram_gb, reverse=True)

@@ -99,6 +99,10 @@ class LambdaLabsProvider(CloudProvider):
             if gpu_count is not None and n != gpu_count:
                 continue
 
+            region_names = [
+                r.get("name", r.get("description", ""))
+                for r in regions
+            ]
             results.append(GpuInfo(
                 provider=self.slug,
                 type_id=type_name,
@@ -107,6 +111,7 @@ class LambdaLabsProvider(CloudProvider):
                 gpu_count=n,
                 on_demand_price=price_cents / 100 if price_cents else None,
                 stock_level="available" if regions else "unavailable",
+                regions=region_names,
             ))
 
         return sorted(results, key=lambda g: g.vram_gb, reverse=True)

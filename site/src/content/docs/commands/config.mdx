@@ -1,0 +1,28 @@
+---
+title: swm config
+description: Configuration management.
+---
+
+## Subcommands
+
+| Command | Description |
+|---------|------------|
+| `config set <key> <value>` | Set a config value |
+| `config get <key>` | Get a config value |
+| `config list` | Show all configuration |
+| `config delete <key>` | Remove a config key |
+| `config path` | Show config file location |
+
+## Examples
+
+```bash
+swm config set runpod.api_key sk-xxxxxxxxxxxx
+swm config get runpod.api_key
+swm config list
+swm config delete vastai.api_key
+swm config path
+```
+
+Config file: `~/.config/swm/config.toml`
+
+Values containing "key" or "secret" are automatically masked in output.

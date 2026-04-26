@@ -13,6 +13,106 @@ from swm.providers import resolve_instance
 console = Console(log_path=False)
 
 
+_ACTIVE_POD_KEY = "active_pod"
+_ACTIVE_POD_ENV = "SWM_POD"
+
+
+def get_active_pod() -> str | None:
+    """Return the active pod id from ``$SWM_POD`` or the config file."""
+    env = os.environ.get(_ACTIVE_POD_ENV)
+    if env:
+        return env.strip()
+    val = cfg.get(_ACTIVE_POD_KEY)
+    return str(val).strip() if val else None
+
+
+def set_active_pod(instance_id: str) -> None:
+    """Persist *instance_id* as the active pod in the config file."""
+    cfg.set_value(_ACTIVE_POD_KEY, instance_id)
+
+
+def clear_active_pod(if_matches: str | None = None) -> None:
+    """Remove the active pod from config, optionally only if it matches."""
+    current = cfg.get(_ACTIVE_POD_KEY)
+    if current is None:
+        return
+    if if_matches is not None and current != if_matches:
+        return
+    cfg.delete(_ACTIVE_POD_KEY)
+
+
+def resolve_active_pod(instance_id: str | None) -> str:
+    """Resolve an instance id, falling back to env/config defaults.
+
+    Resolution order:
+      1. Explicit CLI argument
+      2. ``$SWM_POD`` environment variable
+      3. ``active_pod`` key in the config file
+
+    Raises ``click.UsageError`` with a helpful message if none are set.
+    """
+    if instance_id:
+        return instance_id
+    active = get_active_pod()
+    if active:
+        return active
+    raise click.UsageError(
+        "No pod specified and no active pod is set. "
+        "Pass the pod id explicitly, set $SWM_POD, or run `swm use <pod_id>`."
+    )
+
+
+def _iter_configured_pod_ids() -> list[str]:
+    """Return pod ids known to swm's config (`pods.<provider:id>`)."""
+    pods = cfg.get("pods") or {}
+    if not isinstance(pods, dict):
+        return []
+    return sorted(pods.keys())
+
+
+def complete_pod_id(ctx, param, incomplete: str):
+    """Click shell completion callback for pod id arguments."""
+    return [pid for pid in _iter_configured_pod_ids() if pid.startswith(incomplete)]
+
+
+def pod_arg_callback(ctx, param, value):
+    """Click callback that fills in the active pod when *value* is missing."""
+    if ctx.resilient_parsing:
+        return value
+    return resolve_active_pod(value)
+
+
+_PROVIDER_PREFIXES = (
+    "runpod:", "vastai:", "lambda:", "aws:", "gcp:", "coreweave:", "vultr:",
+)
+
+
+def looks_like_pod_id(value: str) -> bool:
+    """Heuristic: does *value* look like a pod id (vs. a command token)?"""
+    if not value:
+        return False
+    if any(value.startswith(p) for p in _PROVIDER_PREFIXES):
+        return True
+    return value in _iter_configured_pod_ids()
+
+
+def split_pod_and_command(
+    instance_id: str | None,
+    command: tuple[str, ...],
+) -> tuple[str, tuple[str, ...]]:
+    """Disambiguate a positional arg that may be a pod id or the first command word.
+
+    Used by commands where ``instance_id`` and a trailing ``COMMAND...`` share
+    the positional space. If *instance_id* doesn't look like a pod id and an
+    active pod is configured, treat it as the start of the command and fall
+    back to the active pod.
+    """
+    if instance_id and not looks_like_pod_id(instance_id) and get_active_pod():
+        command = (instance_id, *command)
+        instance_id = None
+    return resolve_active_pod(instance_id), command
+
+
 def _instance_for(instance_id: str):
     """Resolve an ID and fetch the full Instance object."""
     with console.status("Resolving instance…", spinner="dots"):
@@ -25,18 +125,59 @@ def _instance_for(instance_id: str):
 
 
 def _framework_url(inst, port: int) -> str | None:
-    """Build the public URL for a framework running on *inst*."""
+    """Build the public URL for a framework running on *inst*.
+
+    Returns None when the port is not externally reachable (e.g. not
+    mapped on Vast.ai).
+    """
     provider = (inst.provider or "").lower()
     if provider == "runpod":
         return f"https://{inst.id}-{port}.proxy.runpod.net"
-    if provider == "vastai":
-        if inst.ip_address:
-            mapped = (inst.ports or {}).get(port)
-            if mapped:
-                return f"http://{inst.ip_address}:{mapped}"
-    if inst.ip_address:
-        return f"http://{inst.ip_address}:{port}"
+    mapped = (inst.ports or {}).get(port)
+    if mapped and inst.ip_address:
+        return f"http://{inst.ip_address}:{mapped}"
     return None
+
+
+def _open_tunnel(inst, ports: dict[int, str]) -> list[int] | None:
+    """Open a background SSH tunnel for ports not externally mapped.
+
+    Returns the list of tunnelled ports, or None if no tunnel was needed.
+    """
+    import subprocess
+
+    if not inst.ssh_host:
+        return None
+    unmapped = [p for p in ports if p not in (inst.ports or {})]
+    if not unmapped:
+        return None
+
+    ssh_port = inst.ssh_port or 22
+    user = inst.ssh_user or "root"
+
+    cmd = [
+        "ssh", "-N",
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "LogLevel=ERROR",
+        "-o", "ExitOnForwardFailure=yes",
+        "-o", "ServerAliveInterval=30",
+        "-o", "ServerAliveCountMax=3",
+    ]
+    for p in unmapped:
+        cmd.extend(["-L", f"{p}:localhost:{p}"])
+    if ssh_port != 22:
+        cmd.extend(["-p", str(ssh_port)])
+    cmd.append(f"{user}@{inst.ssh_host}")
+
+    subprocess.Popen(
+        cmd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    return unmapped
 
 
 def _probe_url(url: str, timeout: int = 60) -> bool:

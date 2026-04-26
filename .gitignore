@@ -23,6 +23,10 @@ env/
 .DS_Store
 Thumbs.db
 
+# Secrets & env
+.env
+.env.*
+
 # swm local config & data
 costs.db
 

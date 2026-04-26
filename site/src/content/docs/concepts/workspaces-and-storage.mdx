@@ -1,0 +1,50 @@
+---
+title: Workspaces & Storage
+description: How swm syncs workspaces across clouds via S3-compatible storage.
+---
+
+## The workspace model
+
+Every swm pod has a `/workspace` directory — the persistent volume. This is where your code, models, checkpoints, and venvs live. Container disk (outside `/workspace`) is ephemeral and wiped on stop.
+
+## Storage backends
+
+swm supports three S3-compatible storage providers:
+
+| Backend | Slug | Endpoint |
+|---------|------|----------|
+| Backblaze B2 | `b2` | Auto-detected |
+| AWS S3 | `s3` | Native |
+| Google GCS | `gcs` | `storage.googleapis.com` |
+
+Credentials are never written to pods — they're injected as transient environment variables per command.
+
+## Three-tier sync
+
+`swm sync push` uses a tiered strategy for optimal performance:
+
+1. **Tier 1 (instant)**: inotify watcher tracks changed files. Push uploads only what changed.
+2. **Tier 2 (seconds)**: If watcher isn't running, `find -newer` scans for modifications since last push.
+3. **Tier 3 (full)**: First push — parallel upload with s5cmd (512 workers).
+
+## Tar mode
+
+For workspaces with 100k+ small files:
+
+```bash
+swm sync push runpod:abc123 --tar
+swm sync pull lambda:def456 --tar
+```
+
+Packs everything into a single compressed tarball with `pigz` (parallel gzip). One S3 object instead of hundreds of thousands of API calls.
+
+## pod down and resume
+
+```bash
+swm pod down my-project        # push + terminate
+swm pod create -w my-project   # pull workspace on new pod
+```
+
+## Preflight checks
+
+Before pulling, swm queries the bucket to estimate total size, compares against pod disk capacity, and offers interactive directory exclusion if the workspace won't fit.

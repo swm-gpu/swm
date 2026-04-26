@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import cached_property
 
@@ -153,3 +154,59 @@ class S3CompatProvider(StorageProvider):
 
     def download(self, bucket: str, remote_path: str, local_path: str) -> None:
         self.s3.download_file(bucket, remote_path, local_path)
+
+    def delete_prefix(
+        self,
+        bucket: str,
+        prefix: str,
+        *,
+        dry_run: bool = False,
+        progress_cb: Callable[[int, int], None] | None = None,
+    ) -> int:
+        """Delete all objects under *prefix* using batch delete_objects.
+
+        Deletes up to 1000 keys per API call.  Returns the total number
+        of objects deleted.  When *dry_run* is True, counts objects
+        without deleting.  *progress_cb(deleted_so_far, total)* is
+        called after each batch.
+        """
+        paginator = self.s3.get_paginator("list_objects_v2")
+
+        keys: list[str] = []
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                keys.append(obj["Key"])
+
+        total = len(keys)
+        if dry_run or total == 0:
+            return total
+
+        deleted = 0
+        for i in range(0, total, 1000):
+            batch = keys[i : i + 1000]
+            self.s3.delete_objects(
+                Bucket=bucket,
+                Delete={"Objects": [{"Key": k} for k in batch], "Quiet": True},
+            )
+            deleted += len(batch)
+            if progress_cb:
+                progress_cb(deleted, total)
+
+        return deleted
+
+    def delete_keys(self, bucket: str, keys: list[str]) -> int:
+        """Delete an explicit list of S3 keys using batch delete_objects.
+
+        Returns the number of keys deleted.
+        """
+        if not keys:
+            return 0
+        deleted = 0
+        for i in range(0, len(keys), 1000):
+            batch = keys[i : i + 1000]
+            self.s3.delete_objects(
+                Bucket=bucket,
+                Delete={"Objects": [{"Key": k} for k in batch], "Quiet": True},
+            )
+            deleted += len(batch)
+        return deleted

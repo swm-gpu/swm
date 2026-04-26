@@ -1,0 +1,46 @@
+---
+title: Custom Skills
+description: Write your own agent workflows on top of swm.
+---
+
+The built-in SKILL.md covers general GPU provisioning. You can create custom skills for specific workflows.
+
+## Example: Auto-deploy fine-tuned model
+
+A custom skill that takes a HuggingFace model path and deploys it to vLLM:
+
+```markdown
+# deploy-model
+
+1. Search for GPU with enough VRAM: `swm gpus -g <class> --sort price`
+2. Create pod: `swm pod create -p <provider> -g <gpu> -n <model-name> -y`
+3. Pull model: `swm models pull <pod> <model-path>`
+4. Set as active: `swm models set <pod> <model-path> --restart`
+5. Verify: `swm run <pod> "curl localhost:8000/v1/models"`
+6. Report URL to user
+```
+
+## Example: Batch training pipeline
+
+A skill that provisions, trains, pushes checkpoints, and terminates:
+
+```markdown
+# batch-train
+
+1. Create pod with auto-down: `swm pod create ... --lifecycle auto-down`
+2. Pull workspace: `swm sync pull <pod>`
+3. Install Axolotl: `swm setup install axolotl <pod>`
+4. Start training: `swm run <pod> "cd /workspace && axolotl train config.yml"`
+5. Push checkpoints: `swm sync push <pod>`
+6. Pod auto-terminates when training completes (GPU drops to 0%)
+```
+
+## Skill structure
+
+Follow the same phase structure as the built-in skill:
+
+1. **State check** — Look for existing resources
+2. **Clarify** — Ask user for requirements
+3. **Execute** — Run swm commands
+4. **Verify** — Check that everything works
+5. **Hand off** — Report results and next steps

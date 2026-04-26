@@ -1,0 +1,38 @@
+---
+title: swm gpus
+description: Search live GPU availability and pricing across all providers.
+---
+
+Search live GPU availability and pricing across all configured providers.
+
+## Usage
+
+```bash
+swm gpus [OPTIONS]
+```
+
+## Options
+
+| Option | Description |
+|--------|------------|
+| `-g`, `--gpu` | GPU name filter (fuzzy match) |
+| `-c`, `--count` | Minimum GPU count |
+| `--max-price` | Maximum price per hour |
+| `-p`, `--provider` | Filter to specific provider |
+| `--secure` | Only show secure cloud offers |
+| `--sort` | Sort by: `price` (default), `vram`, `provider` |
+| `-n`, `--limit` | Max results to show |
+| `--all` | Show all results (no limit) |
+
+## Examples
+
+```bash
+swm gpus -g h100 --max-price 3.00 --sort price
+swm gpus -g a100 -p runpod --secure
+swm gpus -g "rtx 4090" -c 4
+swm gpus --all --sort vram
+```
+
+## Fuzzy matching
+
+GPU names are matched with a 3-pass strategy: exact match, substring match, then token-based match. If no match is found, swm suggests similar names.

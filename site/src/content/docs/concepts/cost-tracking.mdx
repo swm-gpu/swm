@@ -1,0 +1,42 @@
+---
+title: Cost Tracking
+description: Local cost tracking, budgets, and provider billing reconciliation.
+---
+
+swm tracks GPU spending locally in a SQLite database, with per-session granularity and provider billing reconciliation.
+
+## How it works
+
+Every `pod create`, `pod start`, `pod stop`, and `pod terminate` automatically records a billing session with the GPU's hourly rate and timestamps.
+
+## Commands
+
+```bash
+swm costs live                        # running cost of active pods
+swm costs summary --period week       # spending breakdown
+swm costs log -n 20                   # session-by-session log
+swm costs reconcile -p runpod         # compare against provider charges
+```
+
+## Budgets
+
+Set spending limits with alerts:
+
+```bash
+swm costs budget set 100 --scope global --period monthly
+swm costs budget set 50 --scope provider:runpod --period weekly
+swm costs budget show
+```
+
+Budgets are advisory — they warn at 80% and 100% thresholds but don't block operations.
+
+## Reconciliation
+
+`swm costs reconcile` queries actual provider billing APIs and compares against local estimates:
+
+- **RunPod**: Account balance, lifetime spend, per-GPU-type usage
+- **Vast.ai**: Invoice history with service filters
+
+## Data location
+
+Cost data is stored at `~/.config/swm/costs.db` (SQLite with WAL mode).

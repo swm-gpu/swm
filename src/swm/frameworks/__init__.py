@@ -33,10 +33,34 @@ class Framework:
     stop_cmd: str = ""
     process_pattern: str = ""
     category: str = "inference"
+    description: str = ""
 
     @property
     def launch_workdir(self) -> str:
         return self.install_dir
+
+
+def nvidia_ld_exports(venv: str) -> str:
+    """Return a bash snippet that prepends a venv's bundled NVIDIA libs to LD_LIBRARY_PATH.
+
+    Recent torch wheels pip-install companion packages (``nvidia-cuda-cupti-cu12``,
+    ``nvidia-cudnn-cu12``, ``nvidia-cublas-cu12``, …) under
+    ``<venv>/lib/python*/site-packages/nvidia/*/lib/`` and expect the dynamic
+    linker to pick them up. On many pod images an older system libcupti /
+    libcudnn ships in ``/usr/local/cuda/lib64``, gets resolved first, and
+    crashes torch with errors like::
+
+        ImportError: ... undefined symbol: cuptiActivityEnableDriverApi,
+        version libcupti.so.12
+
+    Prepending the venv-local NVIDIA lib dirs fixes that without touching the
+    image. No-op when the venv has no bundled libs.
+    """
+    return (
+        f'NVLIBS=$(ls -d {venv}/lib/python*/site-packages/nvidia/*/lib 2>/dev/null '
+        f'| tr "\\n" ":" | sed "s/:$//"); '
+        f'if [ -n "$NVLIBS" ]; then export LD_LIBRARY_PATH="$NVLIBS:${{LD_LIBRARY_PATH:-}}"; fi'
+    )
 
 
 _FRAMEWORK_MODULES = [
@@ -44,6 +68,9 @@ _FRAMEWORK_MODULES = [
     "swarmui",
     "axolotl",
     "llm_studio",
+    "ollama",
+    "open_webui",
+    "vllm_server",
 ]
 
 _registry: dict[str, Framework] | None = None

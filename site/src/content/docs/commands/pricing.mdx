@@ -1,0 +1,20 @@
+---
+title: swm pricing
+description: Static pricing comparison and cost estimation.
+---
+
+## Subcommands
+
+| Command | Description |
+|---------|------------|
+| `pricing compare` | Per-GPU/hr pricing across providers |
+| `pricing estimate` | Estimate monthly cost for a workload |
+| `pricing specs` | GPU hardware specs side-by-side |
+
+## Examples
+
+```bash
+swm pricing compare --gpu h100
+swm pricing estimate --gpu h100 --hours 40 --storage 500 --provider runpod
+swm pricing specs --gpu h200
+```

@@ -49,6 +49,7 @@ def start_framework(
     name: str,
     port: int | None = None,
     console: Console | None = None,
+    qualified_id: str | None = None,
 ) -> str | None:
     """Launch a framework in the background. Returns proxy URL if applicable."""
     from swm.frameworks import get_framework
@@ -116,7 +117,8 @@ def start_framework(
 
     if alive:
         _con.print(f"  [green]✓ {fw.label} started[/green]")
-        _con.print(f"  Logs: swm run <pod> 'tail -f {logfile}'")
+        _pod_ref = qualified_id or "<pod>"
+        _con.print(f"  Logs: swm run {_pod_ref} 'tail -f {logfile}'")
     else:
         _con.print(f"  [red]✗ {fw.label} failed to start[/red]")
         _con.print(f"  Last lines from {logfile}:")

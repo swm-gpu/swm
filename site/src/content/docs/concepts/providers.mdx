@@ -1,0 +1,43 @@
+---
+title: Providers
+description: The 10 GPU cloud providers swm supports.
+---
+
+swm integrates with 10 GPU cloud providers through a unified interface. Every provider implements the same operations: search GPUs, create/start/stop/terminate instances.
+
+## Supported providers
+
+| Provider | Slug | API | GPU tiers |
+|----------|------|-----|-----------|
+| RunPod | `runpod` | GraphQL | RTX 4090 → H200 |
+| Vast.ai | `vastai` | REST | RTX 3090 → H100 |
+| Lambda Labs | `lambda` | REST | A100 → H100 |
+| AWS (EC2) | `aws` | boto3 | T4 → p5 (H100) |
+| GCP (Compute) | `gcp` | gcloud CLI | T4 → A100 |
+| Azure | `azure` | REST | T4 → A100 |
+| CoreWeave | `coreweave` | Kubernetes | A100 → H100 |
+| Vultr | `vultr` | REST | A100 |
+| TensorDock | `tensordock` | REST | RTX 4090 → H100 |
+| FluidStack | `fluidstack` | REST | RTX 4090 → H100 |
+
+## Instance addressing
+
+All commands use `provider:id` format:
+
+```bash
+swm run runpod:abc123 nvidia-smi
+swm setup install vllm vastai:456789
+```
+
+Bare IDs (without provider prefix) trigger auto-discovery across all configured providers.
+
+## Searching across providers
+
+```bash
+swm gpus -g h100 --max-price 3.00 --sort price
+swm gpus -g a100 -p runpod --secure
+```
+
+## Secure cloud
+
+The `--secure` flag and `--cloud-type` option filter for SOC 2 / HIPAA certified infrastructure (supported by RunPod and Vast.ai).

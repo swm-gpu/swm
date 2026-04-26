@@ -1,0 +1,43 @@
+---
+title: Migrate a Workspace Between Providers
+description: Move your workspace from one GPU cloud to another.
+---
+
+swm makes it trivial to move workspaces between clouds. Your data lives in S3-compatible storage, not on any provider.
+
+## Steps
+
+### 1. Push from the current pod
+
+```bash
+swm sync push runpod:abc123
+```
+
+Or use `pod down` to push and terminate:
+
+```bash
+swm pod down my-project
+```
+
+### 2. Create a new pod on a different provider
+
+```bash
+swm pod create -p lambda -g "A100 80GB" -n my-project \
+  -w my-project -y
+```
+
+The `-w my-project` flag tells swm to pull the workspace after provisioning.
+
+### 3. Verify
+
+```bash
+swm run lambda:def456 "ls /workspace"
+```
+
+Your files, models, venvs, and checkpoints are all restored.
+
+## Why this works
+
+- Workspace data lives in your S3-compatible bucket (B2, S3, or GCS)
+- swm never stores data on provider-specific infrastructure
+- The `-w` flag on `pod create` triggers an automatic `sync pull`

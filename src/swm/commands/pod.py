@@ -12,7 +12,15 @@ from swm.providers import (
     PROVIDER_SLUGS,
 )
 from swm.providers.base import InstanceStatus
-from swm.commands._helpers import console, _instance_for, _preflight_pull
+from swm.commands._helpers import (
+    console,
+    _instance_for,
+    _preflight_pull,
+    complete_pod_id,
+    pod_arg_callback,
+    clear_active_pod,
+    set_active_pod,
+)
 
 
 @click.group()
@@ -81,6 +89,54 @@ def pod_list(provider: str | None):
     console.print()
     console.print("[dim]Connect:  swm ssh <id>    Run:  swm run <id> <command>[/dim]")
 
+    _prune_stale_pods(live_ids={i.id for i in all_instances})
+
+
+def _prune_stale_pods(live_ids: set[str] | None = None) -> int:
+    """Remove config entries for pods that no longer exist on any provider.
+
+    If *live_ids* is given, skip the API call and use these as the set of
+    known-live instance IDs.  Returns the number of entries removed.
+    """
+    pods = cfg.get("pods", {}) or {}
+    if not pods:
+        return 0
+
+    if live_ids is None:
+        live_ids = set()
+        for p in get_configured_providers():
+            try:
+                for inst in p.list_instances():
+                    live_ids.add(inst.id)
+            except Exception:
+                return 0
+
+    removed = 0
+    for pod_id in list(pods):
+        if pod_id not in live_ids:
+            try:
+                from swm.costs.tracker import record_stop
+
+                provider_slug = (pods[pod_id] or {}).get("provider", "")
+                if provider_slug:
+                    record_stop(pod_id, provider_slug)
+            except Exception:
+                pass
+            cfg.delete(f"pods.{pod_id}")
+            removed += 1
+    return removed
+
+
+@pod.command(name="prune")
+def pod_prune():
+    """Remove config entries for pods that no longer exist."""
+    with console.status("Checking providers…", spinner="dots"):
+        removed = _prune_stale_pods()
+    if removed:
+        console.print(f"[green]✓[/green] Removed {removed} stale pod(s) from config.")
+    else:
+        console.print("[dim]No stale pods found.[/dim]")
+
 
 @pod.command()
 @click.option("--provider", "-p", required=True, type=click.Choice(list(PROVIDER_SLUGS), case_sensitive=False), help="Cloud provider")
@@ -96,6 +152,13 @@ def pod_list(provider: str | None):
 @click.option("--ports", default="22/tcp,8888/http,8188/http", help="Ports to expose")
 @click.option("--gpu-count", default=1, type=int, help="Number of GPUs")
 @click.option("--region", default=None, help="Datacenter/region ID (e.g. US-CA-2)")
+@click.option(
+    "--lifecycle",
+    default=None,
+    type=click.Choice(["manual", "remind", "auto-stop", "auto-down"], case_sensitive=False),
+    help="Idle lifecycle policy for this pod.",
+)
+@click.option("--idle-timeout", default=None, type=int, help="Idle timeout in minutes for lifecycle guard")
 @click.option("--exclude", "-x", multiple=True, help="Glob pattern to exclude from pull (repeatable)")
 @click.option("-y", "--yes", is_flag=True, help="Skip confirmation")
 def create(
@@ -112,6 +175,8 @@ def create(
     ports: str,
     gpu_count: int,
     region: str | None,
+    lifecycle: str | None,
+    idle_timeout: int | None,
     exclude: tuple[str, ...],
     yes: bool,
 ):
@@ -143,21 +208,34 @@ def create(
     storage_prov = None
     bucket_name = None
     ws_action = ""
+    ws_is_new = False
+    guard_defaults = cfg.get("guard.defaults", {}) or {}
+    lifecycle_mode = lifecycle or guard_defaults.get("mode")
+    lifecycle_idle = idle_timeout or guard_defaults.get("idle_timeout_minutes") or 60
 
     if not no_storage:
         try:
             from swm.storage import resolve_bucket
-            from swm.bootstrap import next_workspace_name
 
             storage_prov, bucket_name = resolve_bucket(bucket)
             if workspace:
                 ws_name = workspace
                 ws_action = f"restore [cyan]{workspace}[/cyan]"
             else:
-                ws_name = next_workspace_name(storage_prov, bucket_name)
+                ws_name = name
                 ws_action = f"new [cyan]{ws_name}[/cyan]"
-        except Exception:
-            pass
+                ws_is_new = True
+        except Exception as exc:
+            console.print(
+                f"[yellow]⚠ Workspace disabled — could not resolve storage "
+                f"bucket: {exc}[/yellow]"
+            )
+            console.print(
+                "  [dim]Configure storage, then bootstrap later with "
+                "[bold]swm setup storage <pod>[/bold] and "
+                "[bold]swm sync pull <pod>[/bold]. "
+                "Pass --no-storage to silence this warning.[/dim]"
+            )
 
     config = CreateConfig(
         name=name,
@@ -184,6 +262,8 @@ def create(
         console.print(f"  Ports:      {ports}")
     if ws_name:
         console.print(f"  Workspace:  {ws_action} on {storage_prov.slug}:{bucket_name}")
+    if lifecycle_mode and lifecycle_mode != "manual":
+        console.print(f"  Lifecycle:  {lifecycle_mode} after {lifecycle_idle}m idle")
     console.print()
 
     if not yes and not click.confirm("Proceed?"):
@@ -226,30 +306,87 @@ def create(
 
     cfg.set_value(f"pods.{inst.id}.provider", provider)
     cfg.set_value(f"pods.{inst.id}.name", name)
+    set_active_pod(inst.id)
+    policy = None
+    if lifecycle_mode:
+        from swm.guard import set_policy
+
+        policy = set_policy(
+            inst.id,
+            mode=lifecycle_mode,
+            idle_timeout_minutes=int(lifecycle_idle),
+        )
+
+    failed_steps: list[tuple[str, str]] = []
+    qid = inst.qualified_id
+
+    if ws_name and storage_prov and bucket_name:
+        cfg.set_value(f"pods.{inst.id}.workspace", ws_name)
+        cfg.set_value(
+            f"pods.{inst.id}.storage", f"{storage_prov.slug}:{bucket_name}"
+        )
+
+    if ws_name and storage_prov and bucket_name and not ssh_ok:
+        failed_steps = [
+            ("Storage configuration", f"swm setup storage {qid}"),
+            ("Workspace pull", f"swm sync pull {qid}"),
+            ("Auto-sync start", f"swm sync auto {qid}"),
+        ]
 
     if ssh_ok and ws_name and storage_prov and bucket_name:
         console.print(f"\n[bold]Bootstrapping storage over SSH…[/bold]")
         from swm.remote.ssh import session_from_instance
-        from swm.bootstrap import configure_storage, workspace_pull
+        from swm.bootstrap import bootstrap_workspace_on_pod
 
         try:
             with session_from_instance(inst) as sess:
-                with console.status("Installing s5cmd & configuring storage…", spinner="dots"):
-                    configure_storage(sess, storage_prov.slug, bucket=bucket_name)
-                console.print("[green]✓[/green] Storage configured")
-                workspace_pull(
-                    sess, storage_prov.slug, bucket_name, ws_name,
+                failed_steps = bootstrap_workspace_on_pod(
+                    sess,
+                    storage_prov.slug,
+                    bucket_name,
+                    ws_name,
+                    qualified_id=qid,
+                    is_new=ws_is_new,
                     extra_excludes=list(exclude) or None,
+                    console_obj=console,
                 )
-
-            cfg.set_value(f"pods.{inst.id}.workspace", ws_name)
-            cfg.set_value(f"pods.{inst.id}.storage", f"{storage_prov.slug}:{bucket_name}")
-        except Exception as e:
-            console.print(f"[yellow]⚠ Bootstrap failed: {e}[/yellow]")
+        except Exception as exc:
             console.print(
-                "  Retry with: [bold]swm setup storage[/bold] "
-                f"{inst.qualified_id} && [bold]swm sync pull[/bold] {inst.qualified_id}"
+                f"[yellow]⚠ Bootstrap session failed: {exc}[/yellow]"
             )
+            if not failed_steps:
+                failed_steps = [
+                    ("Storage configuration", f"swm setup storage {qid}"),
+                    ("Workspace pull", f"swm sync pull {qid}"),
+                    ("Auto-sync start", f"swm sync auto {qid}"),
+                ]
+
+    if failed_steps:
+        console.print(
+            "\n[yellow]⚠ Bootstrap incomplete. Re-run the remaining "
+            "steps when ready:[/yellow]"
+        )
+        for label, cmd in failed_steps:
+            console.print(f"  [dim]{label}:[/dim]  [bold]{cmd}[/bold]")
+
+    if ssh_ok and policy and policy.enabled:
+        from swm.guard import ensure_remote_guard
+
+        try:
+            with console.status("Starting lifecycle guard…", spinner="dots"):
+                ensure_remote_guard(inst, policy)
+            console.print(
+                f"  [dim]Lifecycle guard running: {policy.mode} after "
+                f"{policy.idle_timeout_minutes}m idle[/dim]"
+            )
+        except Exception as e:
+            console.print(f"[yellow]⚠ Failed to start lifecycle guard: {e}[/yellow]")
+
+    if policy and policy.enabled:
+        from swm.guard import ensure_local_daemon
+
+        if ensure_local_daemon():
+            console.print("  [dim]Local guard daemon running[/dim]")
 
     if ssh_ok:
         console.print(f"\n[bold green]✓ Pod ready![/bold green]")
@@ -264,27 +401,69 @@ def create(
         console.print(f"  Cost:      ${inst.cost_per_hr:.2f}/hr")
     if ssh_ok and inst.ssh_command:
         console.print(f"  SSH:       {inst.ssh_command}")
+    if policy and policy.enabled:
+        console.print(f"  Lifecycle: {policy.mode} after {policy.idle_timeout_minutes}m idle")
     if ws_name and storage_prov:
         console.print(f"  Workspace: {ws_name} on {storage_prov.slug}:{bucket_name}")
+        autosync_pending = any(label == "Auto-sync start" for label, _ in failed_steps)
+        if autosync_pending:
+            console.print(f"  Auto-sync: [yellow]pending — see steps above[/yellow]")
+        else:
+            console.print(f"  Auto-sync: every 60s")
+    elif no_storage:
+        console.print(f"  Workspace: [dim]disabled (--no-storage)[/dim]")
+        console.print(f"  Auto-sync: [dim]not available without storage[/dim]")
+    else:
+        console.print(f"  Workspace: [dim]not configured[/dim]")
+        console.print(f"  Auto-sync: [dim]not available without workspace[/dim]")
     console.print(
         f"\n  Shut down:  [bold]swm pod down {inst.qualified_id}[/bold]"
     )
 
 
 @pod.command()
-@click.argument("instance_id")
+@click.argument("instance_id", required=False, shell_complete=complete_pod_id, callback=pod_arg_callback)
 def start(instance_id: str):
-    """Start a stopped instance.  Accepts 'provider:id' or bare id."""
+    """Start a stopped instance and wait until SSH is ready.
+
+    \b
+    Polls the provider until the instance is running, then probes SSH
+    connectivity — same readiness checks as 'swm pod create'.
+    """
     try:
-        with console.status("Starting instance…", spinner="dots"):
+        with console.status("Sending start request…", spinner="dots"):
             provider, raw_id = resolve_instance(instance_id)
-            inst = provider.start_instance(raw_id)
+            provider.start_instance(raw_id)
     except Exception as e:
         raise click.ClickException(str(e))
 
-    console.print(f"[green]✓[/green] {provider.name} instance {raw_id}: {inst.status_rich}")
+    console.print(f"[bold]Starting {provider.name} instance {raw_id}…[/bold]")
+
+    from swm.bootstrap import wait_for_ssh
+
+    try:
+        inst = wait_for_ssh(provider, raw_id)
+    except TimeoutError as e:
+        raise click.ClickException(str(e))
+
+    console.print(f"\n[bold green]✓ Pod ready![/bold green]")
+    console.print(f"  ID:   {inst.qualified_id}")
+    if inst.cost_per_hr:
+        console.print(f"  Cost: ${inst.cost_per_hr:.2f}/hr")
     if inst.ssh_command:
-        console.print(f"  SSH: {inst.ssh_command}")
+        console.print(f"  SSH:  {inst.ssh_command}")
+
+    try:
+        from swm.guard import ensure_remote_guard, get_policy, ensure_local_daemon
+
+        policy = get_policy(raw_id)
+        if policy.enabled:
+            with console.status("Starting lifecycle guard…", spinner="dots"):
+                ensure_remote_guard(inst, policy)
+            console.print(f"  Lifecycle: {policy.mode} after {policy.idle_timeout_minutes}m idle")
+            ensure_local_daemon()
+    except Exception as e:
+        console.print(f"  [yellow]⚠ Lifecycle guard not started: {e}[/yellow]")
 
     try:
         from swm.costs.tracker import record_start
@@ -300,7 +479,7 @@ def start(instance_id: str):
 
 
 @pod.command()
-@click.argument("instance_id")
+@click.argument("instance_id", required=False, shell_complete=complete_pod_id, callback=pod_arg_callback)
 def stop(instance_id: str):
     """Stop a running instance (preserves volume)."""
     try:
@@ -320,7 +499,7 @@ def stop(instance_id: str):
 
 
 @pod.command()
-@click.argument("instance_id")
+@click.argument("instance_id", required=False, shell_complete=complete_pod_id, callback=pod_arg_callback)
 @click.option("-y", "--yes", is_flag=True, help="Skip confirmation")
 def terminate(instance_id: str, yes: bool):
     """Terminate an instance and delete its volume. This is irreversible."""
@@ -352,9 +531,12 @@ def terminate(instance_id: str, yes: bool):
     except Exception:
         pass
 
+    cfg.delete(f"pods.{raw_id}")
+    clear_active_pod(if_matches=raw_id)
+
 
 @pod.command()
-@click.argument("instance_id")
+@click.argument("instance_id", required=False, shell_complete=complete_pod_id, callback=pod_arg_callback)
 def status(instance_id: str):
     """Show detailed status of one instance."""
     try:
@@ -387,10 +569,18 @@ def status(instance_id: str):
     if inst.ports:
         port_str = ", ".join(f"{k}→{v}" for k, v in inst.ports.items())
         console.print(f"  Ports:      {port_str}")
+    try:
+        from swm.guard import get_policy
+
+        policy = get_policy(raw_id)
+        if policy.enabled:
+            console.print(f"  Lifecycle:  {policy.mode} after {policy.idle_timeout_minutes}m idle")
+    except Exception:
+        pass
 
 
 @pod.command(name="down")
-@click.argument("instance_id")
+@click.argument("instance_id", required=False, shell_complete=complete_pod_id, callback=pod_arg_callback)
 @click.option("-y", "--yes", is_flag=True, help="Skip confirmation")
 @click.option("--no-sync", is_flag=True, help="Skip workspace push before termination")
 @click.option("--exclude", "-x", multiple=True, help="Glob pattern to exclude from push (repeatable)")
@@ -435,6 +625,7 @@ def pod_down(instance_id: str, yes: bool, no_sync: bool, exclude: tuple[str, ...
         if inst and inst.ssh_host and inst.status == InstanceStatus.RUNNING:
             from swm.bootstrap import workspace_push
             from swm.remote.ssh import session_from_instance
+            from swm.sync import stop_autosync, stop_watcher
 
             slug, bucket = meta["storage"].split(":", 1)
             ws = meta["workspace"]
@@ -442,11 +633,20 @@ def pod_down(instance_id: str, yes: bool, no_sync: bool, exclude: tuple[str, ...
             console.print(f"\n[bold]Pushing workspace to {meta['storage']}...[/bold]")
             try:
                 with session_from_instance(inst) as sess:
+                    try:
+                        stop_autosync(sess)
+                        stop_watcher(sess)
+                    except Exception:
+                        pass
                     workspace_push(
                         sess, slug, bucket, ws,
                         extra_excludes=list(exclude) or None,
                     )
-                console.print("[green]✓ Workspace synced[/green]")
+                    sess.exec(
+                        "rm -rf /workspace/* /workspace/.[!.]* /workspace/..?* 2>/dev/null || true",
+                        stream=False,
+                    )
+                console.print("[green]✓ Workspace synced & wiped on pod[/green]")
             except Exception as e:
                 console.print(f"[yellow]⚠ Sync failed: {e}[/yellow]")
                 if not click.confirm("Terminate anyway? (workspace may be lost)"):
@@ -468,6 +668,7 @@ def pod_down(instance_id: str, yes: bool, no_sync: bool, exclude: tuple[str, ...
         pass
 
     cfg.delete(f"pods.{raw_id}")
+    clear_active_pod(if_matches=raw_id)
 
     console.print(f"\n[green]✓ {provider.name} instance {raw_id} terminated.[/green]")
     if has_workspace:

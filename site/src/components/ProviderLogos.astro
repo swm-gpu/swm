@@ -1,0 +1,36 @@
+---
+const providers = [
+	'RunPod', 'Vast.ai', 'Lambda', 'AWS', 'GCP',
+	'Azure', 'CoreWeave', 'Vultr', 'TensorDock', 'FluidStack'
+];
+---
+<div class="provider-strip">
+	{providers.map(name => (
+		<span class="provider-badge">{name}</span>
+	))}
+</div>
+
+<style>
+	.provider-strip {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 10px;
+		justify-content: center;
+		padding: 20px 0;
+	}
+	.provider-badge {
+		background: #1a1a1a;
+		border: 1px solid #333;
+		border-radius: 6px;
+		padding: 6px 14px;
+		color: #888;
+		font-family: 'JetBrains Mono', monospace;
+		font-size: 0.75rem;
+		letter-spacing: 0.02em;
+		transition: color 0.2s, border-color 0.2s;
+	}
+	.provider-badge:hover {
+		color: #00ff88;
+		border-color: #00ff88;
+	}
+</style>

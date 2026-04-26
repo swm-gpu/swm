@@ -1,8 +1,25 @@
 [project]
 name = "swm"
 version = "0.1.0"
-description = "Cloud GPU workflow manager for ComfyUI / SwarmUI video generation"
+description = "One CLI to search, provision, and manage cloud GPUs across 10 providers"
+readme = "README.md"
 requires-python = ">=3.11"
+license = {text = "Apache-2.0"}
+keywords = ["gpu", "cloud", "cli", "runpod", "vastai", "lambda", "aws", "gcp", "azure", "coreweave"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: System :: Systems Administration",
+]
 dependencies = [
     "click>=8.1",
     "rich>=13.0",
@@ -16,6 +33,12 @@ coreweave = ["kubernetes>=29.0"]
 b2 = ["b2>=4.0"]
 dev = ["nuitka", "ordered-set", "zstandard"]
 all = ["kubernetes>=29.0", "b2>=4.0"]
+
+[project.urls]
+Homepage = "https://swmgpu.com"
+Repository = "https://github.com/swm-gpu/swm"
+Documentation = "https://swmgpu.com/overview/"
+Issues = "https://github.com/swm-gpu/swm/issues"
 
 [project.scripts]
 swm = "swm.cli:main"

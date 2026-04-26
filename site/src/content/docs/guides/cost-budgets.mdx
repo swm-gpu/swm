@@ -1,0 +1,50 @@
+---
+title: Set Up Cost Budgets
+description: Configure spending limits and track GPU costs.
+---
+
+## Set budgets
+
+### Global monthly budget
+
+```bash
+swm costs budget set 200 --scope global --period monthly
+```
+
+### Per-provider weekly budget
+
+```bash
+swm costs budget set 50 --scope provider:runpod --period weekly
+```
+
+### Per-pod budget
+
+```bash
+swm costs budget set 20 --scope pod:abc123 --period total
+```
+
+## Monitor spending
+
+```bash
+swm costs budget show       # progress bars for all budgets
+swm costs live              # real-time active pod costs
+swm costs summary --period month
+```
+
+## Reconcile with provider charges
+
+```bash
+swm costs reconcile -p runpod
+```
+
+Compares your local tracking against the actual RunPod or Vast.ai billing API.
+
+## Combine with lifecycle guard
+
+For automatic cost control, pair budgets with the lifecycle guard:
+
+```bash
+swm guard defaults --mode auto-down --idle-timeout 30
+```
+
+This ensures idle pods are terminated automatically, keeping spending within budget.

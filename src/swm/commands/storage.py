@@ -190,3 +190,101 @@ def download(remote_path: str, local_path: str, bucket: str | None):
         raise click.ClickException(str(e))
 
     console.print(f"[green]✓[/green] Downloaded {provider.slug}:{bucket_name}/{remote_path} → {local_path}")
+
+
+def _humanize(n: int) -> str:
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if abs(n) < 1024:
+            return f"{n:.1f} {unit}" if unit != "B" else f"{n} B"
+        n /= 1024  # type: ignore[assignment]
+    return f"{n:.1f} PB"
+
+
+@storage.command(name="rm")
+@click.argument("prefix")
+@click.option("--bucket", "-b", default=None, help="Bucket (provider:bucket)")
+@click.option("--dry-run", is_flag=True, help="Count objects without deleting")
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompt")
+def storage_rm(prefix: str, bucket: str | None, dry_run: bool, yes: bool):
+    """Delete all objects under a prefix (directory).
+
+    Uses the S3 batch delete API — deletes 1000 objects per request,
+    ~1000x faster than deleting one at a time.
+
+    \b
+    Examples:
+      swm storage rm workspace2/SwarmUI/              # default bucket
+      swm storage rm workspace2/ -b b2:my-bucket      # explicit bucket
+      swm storage rm workspace2/SwarmUI/ --dry-run     # count only
+    """
+    from rich.progress import (
+        BarColumn,
+        MofNCompleteColumn,
+        Progress,
+        TextColumn,
+        TimeElapsedColumn,
+    )
+
+    from swm.storage import resolve_bucket
+    from swm.storage.base import S3CompatProvider
+
+    try:
+        provider, bucket_name = resolve_bucket(bucket)
+    except Exception as e:
+        raise click.ClickException(str(e))
+
+    if not isinstance(provider, S3CompatProvider):
+        raise click.ClickException(
+            f"{provider.name} does not support batch delete"
+        )
+
+    label = f"{provider.slug}:{bucket_name}/{prefix}"
+
+    with console.status(f"Counting objects under {label}…", spinner="dots"):
+        total = provider.delete_prefix(bucket_name, prefix, dry_run=True)
+
+    if total == 0:
+        console.print(f"[yellow]No objects found under {label}[/yellow]")
+        return
+
+    size_info = ""
+    try:
+        paginator = provider.s3.get_paginator("list_objects_v2")
+        pfx = prefix if prefix.endswith("/") else prefix + "/"
+        total_bytes = 0
+        for page in paginator.paginate(Bucket=bucket_name, Prefix=pfx):
+            for obj in page.get("Contents", []):
+                total_bytes += obj["Size"]
+        size_info = f" ({_humanize(total_bytes)})"
+    except Exception:
+        pass
+
+    console.print(
+        f"\n[bold]{total:,} objects{size_info}[/bold] under [cyan]{label}[/cyan]"
+    )
+
+    if dry_run:
+        console.print("[dim]Dry run — nothing deleted[/dim]")
+        return
+
+    if not yes:
+        click.confirm("Delete all these objects?", abort=True)
+
+    progress = Progress(
+        TextColumn("[bold cyan]Deleting"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeElapsedColumn(),
+        console=console,
+    )
+    with progress:
+        task = progress.add_task("delete", total=total)
+
+        def _on_batch(deleted: int, total: int) -> None:
+            progress.update(task, completed=deleted)
+
+        deleted = provider.delete_prefix(
+            bucket_name, prefix, progress_cb=_on_batch,
+        )
+
+    console.print(f"\n[green]✓ Deleted {deleted:,} objects from {label}[/green]")

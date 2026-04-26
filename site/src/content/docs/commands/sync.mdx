@@ -1,0 +1,34 @@
+---
+title: swm sync
+description: Workspace synchronization between pods and cloud storage.
+---
+
+## Subcommands
+
+| Command | Description |
+|---------|------------|
+| `sync push <id> [path]` | Push workspace to storage |
+| `sync pull <id> [path]` | Pull workspace from storage to pod |
+| `sync watch <id>` | Start/stop filesystem watcher |
+| `sync status <id>` | Show sync status |
+
+## Options (push/pull)
+
+| Option | Description |
+|--------|------------|
+| `-b`, `--bucket` | Override bucket (`provider:bucket`) |
+| `-d`, `--dest` | Override destination path |
+| `-x`, `--exclude` | Glob pattern to exclude (repeatable) |
+| `-f`, `--force` | Kill running transfer, start fresh |
+| `--tar` | Tarball mode (faster for many small files) |
+
+## Examples
+
+```bash
+swm sync push runpod:abc123
+swm sync push runpod:abc123 --tar
+swm sync pull lambda:def456 --tar
+swm sync push runpod:abc123 -x "*.pyc" -x "__pycache__"
+swm sync watch runpod:abc123
+swm sync watch runpod:abc123 --stop
+```

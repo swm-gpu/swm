@@ -111,6 +111,7 @@ class VastAIProvider(CloudProvider):
             n = offer.get("num_gpus", 1)
             key = (gpu_name, n)
             price = offer.get("dph_total")
+            geo = offer.get("geolocation", "")
             if key in seen:
                 existing = seen[key]
                 if price and (
@@ -118,6 +119,8 @@ class VastAIProvider(CloudProvider):
                     or price < existing.on_demand_price
                 ):
                     existing.on_demand_price = price
+                if geo and geo not in existing.regions:
+                    existing.regions.append(geo)
                 continue
             seen[key] = GpuInfo(
                 provider=self.slug,
@@ -128,6 +131,7 @@ class VastAIProvider(CloudProvider):
                 on_demand_price=price,
                 stock_level="available",
                 secure_cloud=offer.get("verification", "") == "verified",
+                regions=[geo] if geo else [],
             )
         return sorted(seen.values(), key=lambda g: (-g.vram_gb, g.gpu_count))
 
@@ -137,8 +141,7 @@ class VastAIProvider(CloudProvider):
         """Fetch the set of distinct GPU names currently on the marketplace."""
         data = self._post("bundles/", {
             "rentable": {"eq": True},
-            "order": [["dph_total", "asc"]],
-            "limit": 500,
+            "limit": 10000,
         })
         return list({o.get("gpu_name", "") for o in data.get("offers", []) if o.get("gpu_name")})
 
@@ -146,6 +149,7 @@ class VastAIProvider(CloudProvider):
         gpu_name = resolve_gpu_type(config.gpu_type, self._gpu_names())
         image = config.image or DEFAULT_IMAGE
 
+        disk_gb = max(config.container_disk_gb, config.volume_gb)
         search_body: dict = {
             "gpu_name": {"eq": gpu_name},
             "num_gpus": {"gte": config.gpu_count},
@@ -163,16 +167,31 @@ class VastAIProvider(CloudProvider):
                 f"No Vast.ai offers found for {gpu_name} x{config.gpu_count}"
             )
 
-        offer = offers[0]
-        result = self._put(f"asks/{offer['id']}/", {
+        rent_body = {
             "client_id": "me",
             "image": image,
-            "disk": config.container_disk_gb,
+            "disk": disk_gb,
             "label": config.name,
             "onstart": None,
             "runtype": "ssh_direc",
             "env": dict(config.env),
-        })
+        }
+
+        result = None
+        last_err = None
+        for offer in offers[:5]:
+            try:
+                result = self._put(f"asks/{offer['id']}/", rent_body)
+                break
+            except Exception as e:
+                last_err = e
+                continue
+
+        if result is None:
+            raise RuntimeError(
+                f"Failed to rent any of {min(5, len(offers))} offers for "
+                f"{gpu_name} x{config.gpu_count}: {last_err}"
+            )
 
         instance_id = str(result.get("new_contract") or result.get("id", ""))
         if not instance_id:

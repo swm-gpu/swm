@@ -1,0 +1,53 @@
+---
+title: Configuration
+description: API keys, storage credentials, and defaults.
+---
+
+swm stores configuration in `~/.config/swm/config.toml`.
+
+## Provider API keys
+
+| Provider | Config keys |
+|----------|------------|
+| RunPod | `runpod.api_key` |
+| Vast.ai | `vastai.api_key` |
+| Lambda Labs | `lambda.api_key` |
+| AWS | `aws.access_key`, `aws.secret_key` |
+| GCP | `gcp.project` (uses gcloud CLI auth) |
+| Azure | `azure.subscription_id`, `azure.tenant_id` |
+| CoreWeave | `coreweave.kubeconfig` |
+| Vultr | `vultr.api_key` |
+| TensorDock | `tensordock.api_key`, `tensordock.api_token` |
+| FluidStack | `fluidstack.api_key` |
+
+```bash
+swm config set runpod.api_key sk-xxxxxxxxxxxx
+```
+
+## Storage credentials
+
+| Provider | Config keys |
+|----------|------------|
+| Backblaze B2 | `b2.key_id`, `b2.app_key`, `b2.bucket` |
+| AWS S3 | `s3.access_key`, `s3.secret_key`, `s3.bucket` |
+| Google GCS | `gcs.hmac_access`, `gcs.hmac_secret` |
+
+## SSH keys
+
+```bash
+swm config set ssh.key_path ~/.ssh/id_ed25519
+```
+
+## Guard defaults
+
+```bash
+swm guard defaults --mode auto-down --idle-timeout 30 --poll-interval 300
+```
+
+## View all config
+
+```bash
+swm config list
+```
+
+Keys containing "key" or "secret" are automatically masked in output.

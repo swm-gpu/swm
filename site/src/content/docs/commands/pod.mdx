@@ -1,0 +1,50 @@
+---
+title: swm pod
+description: Instance lifecycle management — create, start, stop, terminate, and more.
+---
+
+Full lifecycle management for GPU pod instances.
+
+## Subcommands
+
+| Command | Description |
+|---------|------------|
+| `pod create` | Provision a new GPU instance |
+| `pod list` | List instances across all providers |
+| `pod status <id>` | Detailed status of one instance |
+| `pod start <id>` | Start a stopped instance |
+| `pod stop <id>` | Stop (pause billing, preserve volume) |
+| `pod terminate <id>` | Permanently destroy instance |
+| `pod down <id>` | Push workspace + terminate |
+| `pod prune` | Remove stale config entries |
+
+## pod create
+
+```bash
+swm pod create -p runpod -g "H100 SXM" -n my-project \
+  --lifecycle auto-down --idle-timeout 30 \
+  --volume 200 --gpu-count 4 -y
+```
+
+| Option | Description |
+|--------|------------|
+| `-p`, `--provider` | Provider (required) |
+| `-g`, `--gpu` | GPU type |
+| `-n`, `--name` | Pod name (required) |
+| `-w`, `--workspace` | Workspace to restore from storage |
+| `--volume` | Volume size in GB |
+| `--disk` | Container disk size in GB |
+| `--gpu-count` | Number of GPUs |
+| `--lifecycle` | Guard mode: auto-down, auto-stop, remind, manual |
+| `--idle-timeout` | Idle timeout in minutes |
+| `--no-storage` | Skip storage configuration |
+| `-y` | Skip confirmation prompt |
+
+## pod down
+
+Push workspace to S3 and terminate in one command:
+
+```bash
+swm pod down my-project
+swm pod down my-project --no-sync  # terminate without pushing
+```

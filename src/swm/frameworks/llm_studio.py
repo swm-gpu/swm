@@ -1,6 +1,6 @@
 """H2O LLM Studio — no-code LLM fine-tuning UI."""
 
-from swm.frameworks import Framework, Step
+from swm.frameworks import Framework, Step, nvidia_ld_exports
 
 _VENV = "/workspace/h2o-llmstudio/venv"
 _PIP = f"{_VENV}/bin/pip"
@@ -18,7 +18,11 @@ FRAMEWORK = Framework(
     category="training",
     stop_cmd="pkill -f 'wave.*llmstudio'",
     process_pattern="wave.*llmstudio",
-    env_setup=f"export PIP_CACHE_DIR={_PIP_CACHE} && [ -f {_VENV}/bin/activate ] && source {_VENV}/bin/activate || true",
+    env_setup=(
+        f"export PIP_CACHE_DIR={_PIP_CACHE} && "
+        f"{{ [ -f {_VENV}/bin/activate ] && source {_VENV}/bin/activate || true; }} && "
+        f"{nvidia_ld_exports(_VENV)}"
+    ),
     steps=[
         Step(
             label="Cloning H2O LLM Studio",
@@ -28,7 +32,7 @@ FRAMEWORK = Framework(
         ),
         Step(
             label="Creating virtual environment",
-            command=f"python -m venv {_VENV}",
+            command=f"python3 -m venv {_VENV}",
             check=f"[ -x {_PYTHON} ]",
         ),
         Step(
@@ -45,7 +49,7 @@ FRAMEWORK = Framework(
     pre_start=[
         Step(
             label="Ensuring Python venv and uv",
-            command=f"python -m venv {_VENV} && {_PIP} install --extra-index-url {_TORCH_INDEX} -r requirements.txt && {_PIP} install uv",
+            command=f"python3 -m venv {_VENV} && {_PIP} install --extra-index-url {_TORCH_INDEX} -r requirements.txt && {_PIP} install uv",
             check=f"[ -x {_VENV}/bin/uv ]",
         ),
     ],

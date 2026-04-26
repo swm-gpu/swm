@@ -1,0 +1,30 @@
+---
+title: swm setup
+description: Install and manage AI frameworks on pods.
+---
+
+## Subcommands
+
+| Command | Description |
+|---------|------------|
+| `setup list` | List all available frameworks |
+| `setup install <framework> <id>` | Install a framework |
+| `setup start <framework> <id>` | Start a framework |
+| `setup stop <framework> <id>` | Stop a framework |
+| `setup storage <id>` | Configure storage credentials on pod |
+
+## Examples
+
+```bash
+swm setup list
+swm setup install vllm runpod:abc123
+swm setup start vllm runpod:abc123 --port 8000
+swm setup stop vllm runpod:abc123
+swm setup storage runpod:abc123 -p b2
+```
+
+## Available frameworks
+
+vLLM, Open WebUI, Ollama, ComfyUI, SwarmUI, Axolotl, H2O LLM Studio.
+
+See [Frameworks](/concepts/frameworks/) for details.

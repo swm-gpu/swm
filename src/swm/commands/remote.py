@@ -5,11 +5,17 @@ import os
 
 import click
 
-from swm.commands._helpers import console, _instance_for
+from swm.commands._helpers import (
+    console,
+    _instance_for,
+    complete_pod_id,
+    pod_arg_callback,
+    split_pod_and_command,
+)
 
 
 @click.command(name="ssh")
-@click.argument("instance_id")
+@click.argument("instance_id", required=False, shell_complete=complete_pod_id, callback=pod_arg_callback)
 def ssh_connect(instance_id: str):
     """Open an interactive SSH session.
 
@@ -30,17 +36,23 @@ def ssh_connect(instance_id: str):
 
 
 @click.command(context_settings={"ignore_unknown_options": True})
-@click.argument("instance_id")
-@click.argument("command", nargs=-1, type=click.UNPROCESSED, required=True)
+@click.argument("instance_id", required=False, shell_complete=complete_pod_id)
+@click.argument("command", nargs=-1, type=click.UNPROCESSED)
 @click.option("--quiet", "-q", is_flag=True, help="Suppress real-time output")
-def run(instance_id: str, command: tuple[str, ...], quiet: bool):
+def run(instance_id: str | None, command: tuple[str, ...], quiet: bool):
     """Run a command on a remote instance.
 
-    Examples:\n
-      swm run runpod:abc123 nvidia-smi\n
-      swm run runpod:abc123 -- ls -la /workspace
+    \b
+    Examples:
+      swm run runpod:abc123 nvidia-smi       # explicit pod id
+      swm run nvidia-smi                     # uses active pod (`swm use`)
+      swm run runpod:abc123 -- ls -la /ws    # use -- to escape option parsing
     """
     from swm.remote.ssh import session_from_instance
+
+    instance_id, command = split_pod_and_command(instance_id, command)
+    if not command:
+        raise click.UsageError("Missing command to run on the pod.")
 
     inst = _instance_for(instance_id)
     cmd_str = " ".join(command)
@@ -63,7 +75,7 @@ def run(instance_id: str, command: tuple[str, ...], quiet: bool):
 
 
 @click.command()
-@click.argument("instance_id")
+@click.argument("instance_id", required=False, shell_complete=complete_pod_id, callback=pod_arg_callback)
 @click.argument("local_path", type=click.Path(exists=True))
 @click.argument("remote_path", default="")
 @click.option("-r", "--recursive", is_flag=True, help="Upload a directory recursively")
@@ -111,7 +123,7 @@ def upload(instance_id: str, local_path: str, remote_path: str, recursive: bool)
 
 
 @click.command()
-@click.argument("instance_id")
+@click.argument("instance_id", required=False, shell_complete=complete_pod_id, callback=pod_arg_callback)
 @click.argument("remote_path")
 @click.option("-d", "--dir", "local_dir", default=".", type=click.Path(), help="Local directory to save into (default: current dir)")
 def download(instance_id: str, remote_path: str, local_dir: str):

@@ -23,9 +23,14 @@ def record_start(
 ) -> int:
     """Open a new billing session for *inst*.
 
+    Closes any existing open sessions for the same pod first to prevent
+    duplicates (e.g. from retries or restarts).
+
     If ``inst.cost_per_hr`` is ``None``, attempts a rate lookup from the
     provider's ``list_gpus()`` before recording.
     """
+    end_session(inst.id, inst.provider)
+
     rate = inst.cost_per_hr
     if rate is None:
         rate = _lookup_rate(inst.provider, inst.gpu_type, inst.gpu_count)

@@ -1,0 +1,30 @@
+---
+title: swm models
+description: Search, download, and manage AI models on pods.
+---
+
+## Subcommands
+
+| Command | Description |
+|---------|------------|
+| `models search <query>` | Search HuggingFace Hub |
+| `models info <model>` | Detailed model info |
+| `models pull <id> <model>` | Download model to pod |
+| `models set <id> <model>` | Activate model for vLLM |
+| `models list <id>` | List downloaded models |
+| `models remove <id> <model>` | Remove a model |
+
+## Examples
+
+```bash
+swm models search "qwen3 coder" --sort downloads
+swm models info Qwen/Qwen3-235B-A22B
+swm models pull runpod:abc123 Qwen/Qwen3-8B
+swm models set runpod:abc123 Qwen/Qwen3-8B --restart
+swm models list runpod:abc123
+```
+
+## Dual-engine support
+
+- `org/model-name` (contains `/`) → HuggingFace download for vLLM
+- `model:tag` (no `/`) → Ollama pull

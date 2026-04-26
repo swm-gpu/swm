@@ -1,0 +1,44 @@
+---
+title: Supported Platforms
+description: How to install the swm skill on different AI agent platforms.
+---
+
+swm works with any AI agent that can execute shell commands. The SKILL.md provides structured instructions that agents follow.
+
+## Cursor
+
+Place the SKILL.md in your Cursor skills directory:
+
+```bash
+mkdir -p ~/.cursor/skills/swm-pod-framework-setup
+# Copy SKILL.md into this directory
+```
+
+Cursor will automatically discover and use the skill when you ask about GPU pods.
+
+## OpenAI Codex
+
+Add the SKILL.md content to your Codex project instructions or as a reference document in your workspace.
+
+## Claude Code (Anthropic)
+
+Include the SKILL.md as part of your CLAUDE.md or project context file.
+
+## Windsurf
+
+Add the SKILL.md to your Windsurf rules or workspace context.
+
+## GitHub Copilot
+
+Include the SKILL.md content in your `.github/copilot-instructions.md` or workspace context.
+
+## Any other agent
+
+The only requirement is that the agent can:
+
+1. Read the SKILL.md instructions
+2. Execute shell commands (`swm ...`)
+3. Parse command output
+4. Ask the user clarifying questions
+
+If your agent platform supports these capabilities, swm works with it.

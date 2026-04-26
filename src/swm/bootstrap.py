@@ -107,6 +107,124 @@ def configure_storage(
     )
 
 
+_WS_MARKER_NAMES = (
+    ".swm_last_push",
+    ".swm_changes.log",
+    ".swm_workspace.tar.gz",
+    ".swm_autosync.log",
+)
+
+
+def _ensure_workspace_empty_on_pod(session: RemoteSession) -> None:
+    """Raise if /workspace/ on the pod contains any non-marker files.
+
+    A blind ``touch PUSH_STAMP`` on a non-empty workspace would silently
+    declare those files synced even though they were never uploaded.
+    Refuse, and tell the user to push or clear before attaching.
+    """
+    excludes = " ".join(f"-not -name '{n}'" for n in _WS_MARKER_NAMES)
+    cmd = (
+        f"find /workspace -mindepth 1 -maxdepth 1 {excludes} 2>/dev/null "
+        "| head -5"
+    )
+    _, out, _ = session.exec(cmd, stream=False)
+    leftover = [line for line in out.splitlines() if line.strip()]
+    if leftover:
+        sample = ", ".join(p.rsplit("/", 1)[-1] for p in leftover[:3])
+        more = "" if len(leftover) <= 3 else f" (+ more)"
+        raise RuntimeError(
+            f"/workspace/ on the pod is not empty (e.g. {sample}{more}). "
+            "Refusing to mark this as a fresh workspace because those "
+            "files would not be uploaded. Either: (a) upload them first "
+            "with `swm sync push <pod> -b <provider:bucket> -d <name> "
+            "--force`, then re-run setup; or (b) clear /workspace/ on "
+            "the pod and re-run; or (c) re-run with an existing "
+            "workspace name to pull from storage."
+        )
+
+
+def bootstrap_workspace_on_pod(
+    session: RemoteSession,
+    storage_slug: str,
+    bucket: str,
+    workspace: str,
+    *,
+    qualified_id: str,
+    is_new: bool,
+    extra_excludes: list[str] | None = None,
+    autosync_interval: int = 60,
+    console_obj: Console | None = None,
+) -> list[tuple[str, str]]:
+    """Configure storage, pull (or watcher-init), and start auto-sync on a pod.
+
+    Returns a list of ``(label, recovery_command)`` tuples for any sub-step
+    that failed. An empty list means full success.
+    """
+    from swm.sync import start_watcher
+    from swm.sync.autosync import AutosyncUnsafeError, start_autosync
+    from swm.sync.paths import PUSH_STAMP, WATCH_LOG
+    from swm.sync.pull import workspace_pull
+
+    _con = console_obj or console
+    failed: list[tuple[str, str]] = []
+
+    def _fail(label: str, cmd: str, exc: Exception) -> None:
+        _con.print(f"  [yellow]⚠ {label} failed: {exc}[/yellow]")
+        failed.append((label, cmd))
+
+    storage_ok = False
+    try:
+        with _con.status(
+            "Installing s5cmd & configuring storage…", spinner="dots"
+        ):
+            configure_storage(session, storage_slug, bucket=bucket)
+        _con.print("[green]✓[/green] Storage configured")
+        storage_ok = True
+    except Exception as exc:
+        _fail("Storage configuration", f"swm setup storage {qualified_id}", exc)
+
+    pull_ok = False
+    if storage_ok:
+        try:
+            if is_new:
+                _ensure_workspace_empty_on_pod(session)
+                _con.print("  [dim]New workspace — skipping pull[/dim]")
+                session.exec(
+                    f": > {WATCH_LOG} 2>/dev/null; touch {PUSH_STAMP}",
+                    stream=False,
+                )
+                if start_watcher(session, "/workspace"):
+                    _con.print("  [dim]Watcher started for change tracking[/dim]")
+            else:
+                workspace_pull(
+                    session, storage_slug, bucket, workspace,
+                    extra_excludes=extra_excludes,
+                )
+            pull_ok = True
+        except Exception as exc:
+            _fail("Workspace pull", f"swm sync pull {qualified_id}", exc)
+    else:
+        failed.append(("Workspace pull", f"swm sync pull {qualified_id}"))
+
+    if pull_ok:
+        try:
+            if start_autosync(
+                session, storage_slug, bucket, workspace,
+                interval=autosync_interval,
+            ):
+                _con.print(
+                    "  [dim]Auto-sync started "
+                    f"(every {autosync_interval}s → "
+                    f"{storage_slug}:{bucket}/{workspace})[/dim]"
+                )
+        except (AutosyncUnsafeError, Exception) as exc:
+            _fail("Auto-sync start", f"swm sync auto {qualified_id}", exc)
+    else:
+        failed.append(("Auto-sync start", f"swm sync auto {qualified_id}"))
+
+    return failed
+
+
 _LOCK_FILE = "/tmp/.swm_transfer.lock"
 
 
@@ -196,13 +314,18 @@ _RE_EXPORTS: dict[str, str] = {
     "link_models_to_comfyui": "swm.bootstrap_frameworks",
     "wait_for_ssh": "swm.bootstrap_ssh",
     "next_workspace_name": "swm.bootstrap_ssh",
-    "DiskCheck": "swm.bootstrap_sync",
-    "preflight_check": "swm.bootstrap_sync",
-    "start_watcher": "swm.bootstrap_sync",
-    "stop_watcher": "swm.bootstrap_sync",
-    "is_watcher_alive": "swm.bootstrap_sync",
-    "workspace_pull": "swm.bootstrap_sync",
-    "workspace_push": "swm.bootstrap_sync",
+    "DiskCheck": "swm.sync",
+    "preflight_check": "swm.sync",
+    "start_watcher": "swm.sync",
+    "stop_watcher": "swm.sync",
+    "is_watcher_alive": "swm.sync",
+    "workspace_pull": "swm.sync",
+    "workspace_push": "swm.sync",
+    "tar_pull": "swm.sync",
+    "start_autosync": "swm.sync",
+    "stop_autosync": "swm.sync",
+    "is_autosync_alive": "swm.sync",
+    "autosync_status": "swm.sync",
 }
 
 

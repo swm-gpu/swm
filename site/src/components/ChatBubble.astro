@@ -1,0 +1,57 @@
+---
+interface Props {
+	role: 'user' | 'agent';
+}
+const { role } = Astro.props;
+---
+<div class:list={['chat-bubble', role]}>
+	<div class="chat-label">{role === 'user' ? 'You' : 'Agent'}</div>
+	<div class="chat-content">
+		<slot />
+	</div>
+</div>
+
+<style>
+	.chat-bubble {
+		border-radius: 8px;
+		padding: 14px 18px;
+		margin-bottom: 12px;
+		font-family: 'JetBrains Mono', monospace;
+		font-size: 0.85rem;
+		line-height: 1.6;
+	}
+	.chat-bubble.user {
+		background: #1a1a2e;
+		border-left: 3px solid #00ff88;
+	}
+	.chat-bubble.agent {
+		background: #111;
+		border-left: 3px solid #333;
+	}
+	.chat-label {
+		font-size: 0.7rem;
+		text-transform: uppercase;
+		letter-spacing: 0.1em;
+		margin-bottom: 6px;
+	}
+	.chat-bubble.user .chat-label {
+		color: #00ff88;
+	}
+	.chat-bubble.agent .chat-label {
+		color: #888;
+	}
+	.chat-content {
+		color: #ccc;
+	}
+	.chat-content :global(code) {
+		background: #0d0d0d;
+		padding: 2px 6px;
+		border-radius: 3px;
+		font-size: 0.8rem;
+		color: #00ff88;
+	}
+	.chat-content :global(a) {
+		color: #00ff88;
+		text-decoration: underline;
+	}
+</style>

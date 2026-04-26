@@ -1,0 +1,42 @@
+---
+title: Frameworks
+description: The 7 built-in AI frameworks swm can install and manage.
+---
+
+swm includes declarative framework definitions for common AI tools. Each framework is installed with `swm setup install` and managed with `start`/`stop`.
+
+## Built-in frameworks
+
+| Framework | Slug | Category | Default port |
+|-----------|------|----------|-------------|
+| vLLM | `vllm` | LLM inference | 8000 |
+| Open WebUI | `open-webui` | LLM chat UI | 8080 |
+| Ollama | `ollama` | LLM engine | 11434 |
+| ComfyUI | `comfyui` | Image/video gen | 8188 |
+| SwarmUI | `swarmui` | Generation UI | 7801 |
+| Axolotl | `axolotl` | LLM fine-tuning | — |
+| H2O LLM Studio | `llm-studio` | No-code fine-tuning | 10101 |
+
+## Usage
+
+```bash
+swm setup list                          # see all frameworks
+swm setup install vllm runpod:abc123    # install
+swm setup start vllm runpod:abc123      # start (background)
+swm setup stop vllm runpod:abc123       # stop
+```
+
+## Auto-detection
+
+- **Tensor parallelism**: vLLM auto-detects GPU count and sets `--tensor-parallel-size`
+- **SSH tunnels**: If a port isn't externally mapped, swm opens a background SSH tunnel
+- **Health probing**: After starting, swm probes the health endpoint with retries
+
+## Custom frameworks
+
+For tools not in the built-in list, use `swm run` to install and manage manually:
+
+```bash
+swm run runpod:abc123 "pip install my-framework"
+swm run runpod:abc123 "nohup my-server --port 8000 > /workspace/server.log 2>&1 &"
+```

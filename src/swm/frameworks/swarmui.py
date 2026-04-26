@@ -1,15 +1,17 @@
 """SwarmUI framework definition."""
 
-from swm.frameworks import Framework, Step
+from swm.frameworks import Framework, Step, nvidia_ld_exports
 
 _DOTNET_DIR = "/workspace/.dotnet"
 _NUGET_DIR = "/workspace/.nuget"
 _PIP_CACHE = "/workspace/.cache/pip"
+_COMFY_VENV = "/workspace/ComfyUI/venv"
 _ENV = (
     f"export PATH={_DOTNET_DIR}:$PATH "
     f"DOTNET_ROOT={_DOTNET_DIR} "
     f"NUGET_PACKAGES={_NUGET_DIR} "
-    f"PIP_CACHE_DIR={_PIP_CACHE}"
+    f"PIP_CACHE_DIR={_PIP_CACHE} && "
+    f"{nvidia_ld_exports(_COMFY_VENV)}"
 )
 
 FRAMEWORK = Framework(

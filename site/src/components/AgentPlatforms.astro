@@ -1,0 +1,39 @@
+---
+const platforms = [
+	'Cursor', 'Codex', 'Claude Code', 'Windsurf', 'Copilot'
+];
+---
+<div class="agent-strip">
+	{platforms.map(name => (
+		<span class="agent-badge">{name}</span>
+	))}
+	<span class="agent-badge any">+ any agent</span>
+</div>
+
+<style>
+	.agent-strip {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 10px;
+		justify-content: center;
+		padding: 16px 0;
+	}
+	.agent-badge {
+		background: #1a1a1a;
+		border: 1px solid #333;
+		border-radius: 6px;
+		padding: 6px 14px;
+		color: #888;
+		font-family: 'JetBrains Mono', monospace;
+		font-size: 0.75rem;
+		transition: color 0.2s, border-color 0.2s;
+	}
+	.agent-badge:hover {
+		color: #00ff88;
+		border-color: #00ff88;
+	}
+	.agent-badge.any {
+		border-style: dashed;
+		color: #555;
+	}
+</style>

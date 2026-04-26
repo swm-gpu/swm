@@ -1,0 +1,24 @@
+---
+title: swm storage
+description: Cloud storage bucket management.
+---
+
+## Subcommands
+
+| Command | Description |
+|---------|------------|
+| `storage list` | List buckets across providers |
+| `storage create <name>` | Create a new bucket |
+| `storage ls [path]` | List bucket contents |
+| `storage upload <local> <remote>` | Upload file to bucket |
+| `storage download <remote> <local>` | Download file from bucket |
+
+## Examples
+
+```bash
+swm storage list -p b2
+swm storage create my-workspace-bucket -p b2 -l us-west-004
+swm storage ls checkpoints/
+swm storage upload model.safetensors models/
+swm storage download models/model.safetensors ./local/
+```

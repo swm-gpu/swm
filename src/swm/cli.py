@@ -15,9 +15,13 @@ _WORKFLOW_EPILOG = """\b
 Workflow:
   gpus              Search live GPU availability and pricing
   pod create        Provision a new GPU instance
+  guard set         Add idle reminder / stop / down policy
   ssh <id>          SSH into a running instance
   setup install     Install frameworks (ComfyUI, SwarmUI, ...)
   setup start/stop  Start or stop installed frameworks
+  models search     Find models on HuggingFace Hub
+  models pull       Download a model to the pod
+  models set        Activate a model for vLLM
   sync pull/push    Sync workspace with cloud storage
   costs live        Show running cost of active pods
   costs summary     Spending breakdown by provider/GPU
@@ -41,6 +45,24 @@ def _provider_display(slug_or_name: str) -> str:
     return _SLUG_TO_NAME.get(slug_or_name, slug_or_name)
 
 
+def _detect_storage_region() -> str | None:
+    """Try to detect the configured storage region from B2/S3 endpoint URL."""
+    import re as _re
+    try:
+        from swm import config as _cfg
+        endpoint = _cfg.get("b2.s3_endpoint") or ""
+        if endpoint:
+            m = _re.search(r"s3\.([a-z0-9-]+)\.backblazeb2\.com", endpoint)
+            if m:
+                return m.group(1)
+        endpoint = _cfg.get("s3.endpoint") or _cfg.get("s3.region") or ""
+        if endpoint:
+            return str(endpoint)
+    except Exception:
+        pass
+    return None
+
+
 @main.command()
 @click.option("--gpu", "-g", default=None, help="Filter by GPU name (free text, e.g. h200, a100, rtx4090)")
 @click.option("--count", "-c", "gpu_count", default=None, type=int, help="GPU count (e.g. 4 for 4×GPU configs)")
@@ -52,11 +74,12 @@ def _provider_display(slug_or_name: str) -> str:
     type=click.Choice(["price", "vram", "provider"], case_sensitive=False),
     help="Sort order (default: price)",
 )
+@click.option("--region", "-r", default=None, help="Filter by region (free text, e.g. us-east, europe)")
 @click.option("--limit", "-n", default=20, type=int, help="Max rows to show (default: 20)")
 @click.option("--all", "show_all", is_flag=True, help="Show all results (no pagination)")
 def gpus(gpu: str | None, gpu_count: int | None, max_price: float | None,
          provider: str | None, secure: bool, sort_by: str,
-         limit: int, show_all: bool):
+         region: str | None, limit: int, show_all: bool):
     """Search live GPU availability and pricing across all providers.
 
     \b
@@ -70,6 +93,7 @@ def gpus(gpu: str | None, gpu_count: int | None, max_price: float | None,
       swm gpus -g h200 --secure       # secure cloud only
       swm gpus --max-price 4          # under $4/hr
       swm gpus -p vastai              # one provider
+      swm gpus -r us-west             # GPUs in US West regions
     """
     from rich.table import Table
     from swm.providers.base import GpuInfo
@@ -116,6 +140,13 @@ def gpus(gpu: str | None, gpu_count: int | None, max_price: float | None,
     if secure:
         all_gpus = [g for g in all_gpus if g.secure_cloud]
 
+    if region:
+        needle = region.lower()
+        all_gpus = [
+            g for g in all_gpus
+            if any(needle in r.lower() for r in g.regions)
+        ]
+
     if not all_gpus:
         console.print("[yellow]No GPUs found matching filters.[/yellow]")
         return
@@ -146,6 +177,7 @@ def gpus(gpu: str | None, gpu_count: int | None, max_price: float | None,
     table.add_column("$/hr", justify="right")
     table.add_column("Spot", justify="right")
     table.add_column("Stock")
+    table.add_column("Regions", max_width=30)
     table.add_column("Secure", justify="center")
 
     stock_styles = {
@@ -156,6 +188,9 @@ def gpus(gpu: str | None, gpu_count: int | None, max_price: float | None,
     for g in all_gpus:
         ss = stock_styles.get(g.stock_level, "dim")
         g_flag = f'"{g.type_id}"' if " " in g.type_id else g.type_id
+        regions_str = ", ".join(g.regions[:5]) if g.regions else "[dim]—[/dim]"
+        if len(g.regions) > 5:
+            regions_str += f" (+{len(g.regions) - 5})"
         table.add_row(
             _provider_display(g.provider),
             g.display_name,
@@ -165,6 +200,7 @@ def gpus(gpu: str | None, gpu_count: int | None, max_price: float | None,
             f"${g.on_demand_price:.2f}" if g.on_demand_price else "—",
             f"${g.spot_price:.2f}" if g.spot_price else "—",
             f"[{ss}]{g.stock_level or '—'}[/{ss}]",
+            regions_str,
             "[green]✓[/green]" if g.secure_cloud else "[dim]—[/dim]",
         )
 
@@ -179,6 +215,14 @@ def gpus(gpu: str | None, gpu_count: int | None, max_price: float | None,
         )
         console.print()
 
+    storage_region = _detect_storage_region()
+    if storage_region:
+        console.print(
+            f"[cyan]Storage region:[/cyan] {storage_region}  "
+            "[dim](GPUs in the same region will have fastest sync)[/dim]"
+        )
+        console.print()
+
     console.print(
         "[dim]Copy the [bold]-g[/bold] value into [bold]swm pod create -g <value>[/bold][/dim]"
     )
@@ -186,9 +230,10 @@ def gpus(gpu: str | None, gpu_count: int | None, max_price: float | None,
 
     gpu_hint = gpu.lower() if gpu else "<gpu>"
     count_hint = f" --gpu-count {gpu_count}" if gpu_count and gpu_count > 1 else ""
+    region_hint = f" --region {storage_region}" if storage_region else ""
     console.print(
         f"[bold]Next →[/bold]  swm pod create -p <provider> -g {gpu_hint} "
-        f"-n <name>{count_hint}"
+        f"-n <name>{count_hint}{region_hint}"
     )
     console.print(
         "[bold]Then →[/bold]  swm setup install <framework> <provider>:<id>"
@@ -205,6 +250,9 @@ from swm.commands.sync import sync  # noqa: E402
 from swm.commands.costs import costs  # noqa: E402
 from swm.commands.storage import storage  # noqa: E402
 from swm.commands.remote import ssh_connect, run, upload, download  # noqa: E402
+from swm.commands.models import models_group  # noqa: E402
+from swm.commands.guard import guard  # noqa: E402
+from swm.commands.use import use  # noqa: E402
 
 main.add_command(config_group)
 main.add_command(pricing)
@@ -217,33 +265,9 @@ main.add_command(ssh_connect)
 main.add_command(run)
 main.add_command(upload)
 main.add_command(download)
-
-
-# ── stubs ───────────────────────────────────────────────────────────
-
-
-@main.group()
-def models():
-    """Download, organise, and sync AI models."""
-
-
-@models.command()
-@click.argument("name")
-def pull(name: str):
-    """Download a model.  Example: swm models pull wan2.2"""
-    console.print("[dim]Coming soon — Phase 6[/dim]")
-
-
-@models.command()
-def sync():
-    """Sync models to/from cloud storage."""
-    console.print("[dim]Coming soon — Phase 6[/dim]")
-
-
-@models.command(name="list")
-def models_list():
-    """List available model presets."""
-    console.print("[dim]Coming soon — Phase 6[/dim]")
+main.add_command(models_group)
+main.add_command(guard)
+main.add_command(use)
 
 
 @main.group()

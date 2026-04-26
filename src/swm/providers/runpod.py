@@ -95,6 +95,7 @@ class RunPodProvider(CloudProvider):
                 }}
             }}
         """)
+
         results = []
         for g in data["gpuTypes"]:
             lp = g.get("lowestPrice") or {}

@@ -1,0 +1,62 @@
+---
+title: Deploy vLLM + Open WebUI Chat Stack
+description: Run a full LLM chat stack on a GPU pod in 5 minutes.
+---
+
+Deploy a production-ready LLM chat interface with vLLM serving and Open WebUI frontend.
+
+## Prerequisites
+
+- swm installed with a provider API key configured
+- Storage configured (for workspace persistence)
+
+## Steps
+
+### 1. Create a pod
+
+```bash
+swm pod create -p runpod -g "H100 SXM" -n llm-chat \
+  --lifecycle auto-down --idle-timeout 30 -y
+```
+
+### 2. Install vLLM
+
+```bash
+swm setup install vllm runpod:YOUR_POD_ID
+```
+
+### 3. Pull a model
+
+```bash
+swm models pull runpod:YOUR_POD_ID Qwen/Qwen3-8B
+swm models set runpod:YOUR_POD_ID Qwen/Qwen3-8B --restart
+```
+
+### 4. Install Open WebUI
+
+```bash
+swm setup install open-webui runpod:YOUR_POD_ID
+```
+
+### 5. Start both services
+
+```bash
+swm setup start vllm runpod:YOUR_POD_ID
+swm setup start open-webui runpod:YOUR_POD_ID
+```
+
+### 6. Access
+
+Open WebUI will be available at the proxy URL printed by swm, or via SSH tunnel at `http://localhost:8080`.
+
+## Multi-GPU models
+
+For larger models (70B+), use multiple GPUs. vLLM auto-detects GPU count:
+
+```bash
+swm pod create -p runpod -g "H100 SXM" -n llm-big \
+  --gpu-count 4 --lifecycle auto-down -y
+swm models pull runpod:ID Qwen/Qwen3-235B-A22B
+```
+
+vLLM will automatically set `--tensor-parallel-size 4`.

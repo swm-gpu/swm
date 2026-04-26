@@ -1,0 +1,27 @@
+---
+title: swm guard
+description: Lifecycle automation configuration and monitoring.
+---
+
+## Subcommands
+
+| Command | Description |
+|---------|------------|
+| `guard defaults` | View/update default policy |
+| `guard set <id>` | Set policy for a pod |
+| `guard disable <id>` | Disable guard for a pod |
+| `guard list` | List all guarded pods with status |
+| `guard run [ids...]` | Run guard loop manually |
+| `guard stop-daemon` | Stop background daemon |
+
+## Examples
+
+```bash
+swm guard defaults --mode auto-down --idle-timeout 60
+swm guard set runpod:abc123 --mode auto-down --idle-timeout 30
+swm guard disable runpod:abc123
+swm guard list
+swm guard run --once
+```
+
+See [Lifecycle Guard](/concepts/lifecycle-guard/) for details.

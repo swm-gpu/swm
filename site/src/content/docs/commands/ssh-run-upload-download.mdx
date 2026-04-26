@@ -1,0 +1,42 @@
+---
+title: ssh / run / upload / download
+description: Direct remote access and file transfer commands.
+---
+
+## swm ssh
+
+Open an interactive SSH session:
+
+```bash
+swm ssh runpod:abc123
+```
+
+## swm run
+
+Execute a command on a remote instance:
+
+```bash
+swm run runpod:abc123 nvidia-smi
+swm run runpod:abc123 -- ls -la /workspace
+swm run runpod:abc123 -q "echo hello"    # quiet mode
+```
+
+## swm upload
+
+Upload files to a running instance:
+
+```bash
+swm upload runpod:abc123 ./local-file.py /workspace/
+swm upload runpod:abc123 ./my-dir /workspace/ -r    # recursive
+```
+
+## swm download
+
+Download files from a running instance:
+
+```bash
+swm download runpod:abc123 /workspace/results.csv
+swm download runpod:abc123 /workspace/checkpoints/ -d ~/Downloads
+```
+
+Directory downloads use tar-over-SSH streaming for performance.

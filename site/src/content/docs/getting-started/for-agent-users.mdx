@@ -1,0 +1,50 @@
+---
+title: Getting Started (Agent Users)
+description: Let your AI agent manage GPU pods for you. 3-minute setup.
+---
+
+## Install swm
+
+```bash
+pip install swm
+```
+
+## Add your API keys
+
+```bash
+swm config set runpod.api_key YOUR_RUNPOD_KEY
+swm config set b2.key_id YOUR_B2_KEY
+swm config set b2.app_key YOUR_B2_SECRET
+swm config set b2.bucket my-swm-bucket
+```
+
+## Add the SKILL.md to your agent
+
+### Cursor
+
+Copy the swm SKILL.md to your Cursor skills directory:
+
+```bash
+mkdir -p ~/.cursor/skills/swm-pod-framework-setup
+cp SKILL.md ~/.cursor/skills/swm-pod-framework-setup/SKILL.md
+```
+
+### Codex / Claude Code / Windsurf
+
+Add the SKILL.md content to your agent's system instructions or project context.
+
+## Start asking
+
+Once the skill is installed, just ask your agent:
+
+- "Spin up an H100 and install vLLM"
+- "Find the cheapest A100 and fine-tune with Axolotl"
+- "Set up ComfyUI with auto-down after 20 minutes"
+- "How much have I spent on GPUs this week?"
+
+Your agent will search clouds, provision, install, verify, and hand you a URL.
+
+## Next steps
+
+- [Skill Overview](/agent-integration/skill-overview/)
+- [Supported Platforms](/agent-integration/supported-platforms/)

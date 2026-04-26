@@ -1,0 +1,86 @@
+---
+title: Getting Started (CLI)
+description: Install swm and create your first GPU pod in 5 minutes.
+---
+
+## Install
+
+```bash
+pip install swm
+```
+
+## Configure a provider
+
+Add at least one GPU cloud API key:
+
+```bash
+swm config set runpod.api_key YOUR_RUNPOD_KEY
+```
+
+Other providers: `vastai.api_key`, `lambda.api_key`, `aws.access_key` + `aws.secret_key`, etc.
+
+## Configure storage (optional)
+
+For workspace sync, configure an S3-compatible storage backend:
+
+```bash
+swm config set b2.key_id YOUR_KEY_ID
+swm config set b2.app_key YOUR_APP_KEY
+swm config set b2.bucket my-swm-bucket
+```
+
+## Enable shell autocomplete
+
+swm has built-in tab completion for commands, options, and pod IDs. Add one line to your shell profile:
+
+```bash
+# bash (~/.bashrc)
+eval "$(_SWM_COMPLETE=bash_source swm)"
+
+# zsh (~/.zshrc)
+eval "$(_SWM_COMPLETE=zsh_source swm)"
+
+# fish (~/.config/fish/config.fish)
+eval (env _SWM_COMPLETE=fish_source swm)
+```
+
+After reloading your shell, `swm <TAB>` completes commands and `swm pod stop <TAB>` completes pod IDs.
+
+## Search for GPUs
+
+```bash
+swm gpus -g h100 --max-price 3.00 --sort price
+```
+
+## Create your first pod
+
+```bash
+swm pod create -p runpod -g "H100 SXM" -n my-first-pod \
+  --lifecycle auto-down --idle-timeout 30 -y
+```
+
+## Install a framework
+
+```bash
+swm setup install vllm runpod:YOUR_POD_ID
+swm setup start vllm runpod:YOUR_POD_ID
+```
+
+## Push your workspace and terminate
+
+```bash
+swm pod down my-first-pod
+```
+
+Resume later on any cloud:
+
+```bash
+swm pod create -p lambda -g a100 -n my-first-pod -w my-first-pod -y
+```
+
+## Next steps
+
+- [Core Concepts: Providers](/concepts/providers/)
+- [Core Concepts: Workspaces & Storage](/concepts/workspaces-and-storage/)
+- [Command Reference](/commands/gpus/)
+- [Agent Integration](/agent-integration/skill-overview/)

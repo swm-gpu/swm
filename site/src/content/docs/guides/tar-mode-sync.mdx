@@ -1,0 +1,44 @@
+---
+title: "Tar Mode: Syncing Large Workspaces"
+description: Use tar mode to sync workspaces with hundreds of thousands of small files.
+---
+
+Standard `swm sync push` uploads files individually via s5cmd. This works well for most workspaces, but becomes slow with 100k+ small files (e.g., Python venvs, node_modules, model shards).
+
+## The problem
+
+A workspace with 600,000 small files means 600,000 individual S3 API calls. Even with 512 parallel workers, this takes a long time.
+
+## The solution: `--tar`
+
+```bash
+swm sync push runpod:abc123 --tar
+```
+
+This:
+1. Packs `/workspace` into a single `.tar.gz` using `pigz` (parallel gzip, auto-installed)
+2. Uploads one object to S3
+3. Cleans up the local tarball
+
+## Pull with tar mode
+
+```bash
+swm sync pull lambda:def456 --tar
+```
+
+Downloads and extracts the tarball in one stream.
+
+## When to use tar mode
+
+- Workspaces with 100k+ files
+- Large Python venvs or node_modules
+- First-time full pushes of big workspaces
+
+## When NOT to use tar mode
+
+- Incremental pushes (tar mode always pushes everything)
+- Workspaces where you only changed a few files (use standard mode)
+
+## Performance
+
+Tar mode uses `pigz` for parallel compression (uses all CPU cores) and `s5cmd` with `--concurrency 64 --part-size 100` for fast multipart uploads.

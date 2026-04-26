@@ -1,0 +1,46 @@
+---
+title: Run ComfyUI Remotely
+description: Set up ComfyUI with custom nodes on a GPU pod.
+---
+
+Run ComfyUI on a remote GPU with full custom node support.
+
+## Steps
+
+### 1. Create a pod
+
+```bash
+swm pod create -p runpod -g "RTX 4090" -n comfy \
+  --lifecycle auto-down --idle-timeout 20 -y
+```
+
+### 2. Install ComfyUI
+
+```bash
+swm setup install comfyui <provider>:<pod-id>
+```
+
+### 3. Add custom nodes (before starting)
+
+```bash
+swm run <provider>:<pod-id> \
+  "cd /workspace/ComfyUI/custom_nodes && \
+   git clone --depth 1 https://github.com/example/my-node.git && \
+   /workspace/ComfyUI/venv/bin/pip install -r my-node/requirements.txt"
+```
+
+### 4. Start ComfyUI
+
+```bash
+swm setup start comfyui <provider>:<pod-id>
+```
+
+### 5. Access
+
+ComfyUI will be available at the proxy URL or via SSH tunnel at `http://localhost:8188`.
+
+### 6. Download workflows
+
+```bash
+swm download <provider>:<pod-id> /workspace/ComfyUI/output/ -d ~/Downloads
+```
