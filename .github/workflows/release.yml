@@ -70,7 +70,6 @@ jobs:
             --include-package=httpcore \
             --include-package=idna \
             --include-package=anyio \
-            --include-package=sniffio \
             --include-package=h11 \
             --include-package=urllib3 \
             --include-package=jmespath \
