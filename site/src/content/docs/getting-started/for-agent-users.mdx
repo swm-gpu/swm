@@ -3,7 +3,7 @@ title: Getting Started (Agent Users)
 description: Let your AI agent manage GPU pods for you. 3-minute setup.
 ---
 
-## Install swm
+## 1. Install swm
 
 ```bash
 # Homebrew (macOS)
@@ -13,31 +13,63 @@ brew tap swm-gpu/swm && brew install swm
 pipx install swm-gpu
 ```
 
-## Add your API keys
+Verify: `swm --version`
+
+## 2. Add your API keys
 
 ```bash
 swm config set runpod.api_key YOUR_RUNPOD_KEY
+
+# Optional: storage for workspace sync
 swm config set b2.key_id YOUR_B2_KEY
 swm config set b2.app_key YOUR_B2_SECRET
 swm config set b2.bucket my-swm-bucket
 ```
 
-## Add the SKILL.md to your agent
+## 3. Install the SKILL.md
 
-### Cursor
+The skill teaches your agent how to use swm. Install it for your platform:
 
-Copy the swm SKILL.md to your Cursor skills directory:
+### Cursor (easiest)
+
+1. Open Settings (`Cmd+Shift+J`) → **Rules** → **Add Rule** → **Remote Rule (GitHub)**
+2. Paste: `https://github.com/swm-gpu/swm`
+
+Or copy manually:
 
 ```bash
-mkdir -p ~/.cursor/skills/swm-pod-framework-setup
-cp SKILL.md ~/.cursor/skills/swm-pod-framework-setup/SKILL.md
+mkdir -p .agents/skills/swm-gpu-workflow
+curl -sL https://raw.githubusercontent.com/swm-gpu/swm/main/.agents/skills/swm-gpu-workflow/SKILL.md \
+  -o .agents/skills/swm-gpu-workflow/SKILL.md
 ```
 
-### Codex / Claude Code / Windsurf
+### Claude Code
 
-Add the SKILL.md content to your agent's system instructions or project context.
+```bash
+mkdir -p .claude/skills/swm-gpu-workflow
+curl -sL https://raw.githubusercontent.com/swm-gpu/swm/main/.agents/skills/swm-gpu-workflow/SKILL.md \
+  -o .claude/skills/swm-gpu-workflow/SKILL.md
+```
 
-## Start asking
+### Codex
+
+```bash
+mkdir -p .codex/skills/swm-gpu-workflow
+curl -sL https://raw.githubusercontent.com/swm-gpu/swm/main/.agents/skills/swm-gpu-workflow/SKILL.md \
+  -o .codex/skills/swm-gpu-workflow/SKILL.md
+```
+
+### Copilot / Windsurf / Amp / Devin
+
+```bash
+mkdir -p .agents/skills/swm-gpu-workflow
+curl -sL https://raw.githubusercontent.com/swm-gpu/swm/main/.agents/skills/swm-gpu-workflow/SKILL.md \
+  -o .agents/skills/swm-gpu-workflow/SKILL.md
+```
+
+See [Supported Platforms](/agent-integration/supported-platforms/) for the full reference.
+
+## 4. Start asking
 
 Once the skill is installed, just ask your agent:
 
@@ -45,10 +77,12 @@ Once the skill is installed, just ask your agent:
 - "Find the cheapest A100 and fine-tune with Axolotl"
 - "Set up ComfyUI with auto-down after 20 minutes"
 - "How much have I spent on GPUs this week?"
+- "Pull Qwen3-235B and serve it with vLLM"
 
-Your agent will search clouds, provision, install, verify, and hand you a URL.
+Your agent will search 10 clouds, provision the cheapest GPU, install your framework, verify everything works, and hand you a URL.
 
 ## Next steps
 
-- [Skill Overview](/agent-integration/skill-overview/)
-- [Supported Platforms](/agent-integration/supported-platforms/)
+- [Skill Overview](/agent-integration/skill-overview/) — how the skill works internally
+- [Supported Platforms](/agent-integration/supported-platforms/) — detailed install for every agent
+- [Custom Skills](/agent-integration/custom-skills/) — write your own workflows on top of swm

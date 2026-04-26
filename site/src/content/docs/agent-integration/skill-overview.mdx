@@ -3,7 +3,19 @@ title: Skill Overview
 description: How the swm SKILL.md teaches agents to manage GPU infrastructure.
 ---
 
-The swm SKILL.md is a structured document that teaches AI agents how to provision and manage GPU pods end-to-end. When installed in your agent (Cursor, Codex, Claude Code, etc.), it enables natural language GPU management.
+The swm SKILL.md is a structured document that teaches AI agents how to provision and manage GPU pods end-to-end. It follows the open [Agent Skills standard](https://cursor.com/docs/context/skills) supported by Cursor, Claude Code, Codex, Copilot, Windsurf, and others.
+
+## Install the skill
+
+The fastest way to get started:
+
+```bash
+mkdir -p .agents/skills/swm-gpu-workflow
+curl -sL https://raw.githubusercontent.com/swm-gpu/swm/main/.agents/skills/swm-gpu-workflow/SKILL.md \
+  -o .agents/skills/swm-gpu-workflow/SKILL.md
+```
+
+See [Supported Platforms](/agent-integration/supported-platforms/) for platform-specific install instructions.
 
 ## The 6 Phases
 
@@ -14,7 +26,7 @@ The skill guides agents through a repeatable workflow:
 | **0. State check** | Check for existing pods with `swm pod list` |
 | **1. Clarify** | Ask user about VRAM needs, provider preference, lifecycle policy |
 | **2. Pick GPU** | Search live pricing with `swm gpus`, select cheapest match |
-| **3. Provision** | Create pod with `swm pod create`, wait for SSH |
+| **3. Provision** | Create pod with `swm pod create -y`, wait for SSH |
 | **4. Install** | Use `swm setup install` for built-in frameworks, or `swm run` for custom tools |
 | **5. Verify** | Health-check HTTP endpoints, validate GPU memory, check disk space |
 | **6. Hand off** | Report URL, lifecycle policy, and debugging commands to user |
@@ -22,21 +34,43 @@ The skill guides agents through a repeatable workflow:
 ## What the agent decides
 
 - GPU class based on VRAM requirements
-- Cheapest in-stock provider
-- Tensor parallelism configuration
+- Cheapest in-stock provider across all 10 clouds
+- Tensor parallelism configuration (auto-detected from GPU count)
 - Whether to use built-in `swm setup` or custom `swm run` chains
+- Lifecycle guard policy and idle timeout
 
 ## What the agent asks
 
 - VRAM floor needed
-- Provider preference
-- Lifecycle policy (auto-down, auto-stop, remind, manual)
+- Provider preference (or auto-select cheapest)
+- Lifecycle policy (`auto-down`, `auto-stop`, `remind`, `manual`)
 - Idle timeout duration
 - Whether to persist workspace to S3
 
 ## Built-in framework support
 
-The skill covers all 7 built-in frameworks: vLLM, Open WebUI, Ollama, ComfyUI, SwarmUI, Axolotl, and H2O LLM Studio. For unsupported tools, it guides agents through `swm run` command chains.
+The skill covers all 7 built-in frameworks:
+
+| Framework | Command | Use case |
+|-----------|---------|----------|
+| vLLM | `swm setup install vllm` | LLM inference server (OpenAI-compatible API) |
+| Open WebUI | `swm setup install open-webui` | Chat interface for LLMs |
+| Ollama | `swm setup install ollama` | Local model runner |
+| ComfyUI | `swm setup install comfyui` | Node-based image generation |
+| SwarmUI | `swm setup install swarmui` | Image generation UI |
+| Axolotl | `swm setup install axolotl` | LLM fine-tuning |
+| H2O LLM Studio | `swm setup install llm-studio` | No-code fine-tuning |
+
+For unsupported tools, the skill guides agents through `swm run` command chains.
+
+## Additional capabilities
+
+Beyond the core workflow, the skill covers:
+
+- **Lifecycle Guard** — `swm guard enable` to auto-terminate idle pods
+- **Cost Tracking** — `swm costs live` for real-time spend, `swm costs budget set` for alerts
+- **Model Management** — `swm models search` / `pull` / `set` for HuggingFace models
+- **Workspace Sync** — `swm sync watch` for continuous auto-push on file changes
 
 ## Anti-patterns the skill prevents
 
@@ -45,3 +79,4 @@ The skill covers all 7 built-in frameworks: vLLM, Open WebUI, Ollama, ComfyUI, S
 - Forgetting `-y` on `swm pod create` (hangs in agent context)
 - Mixing venvs across frameworks with conflicting torch versions
 - Handing off a pod before all health checks pass
+- Skipping the state check (creating duplicate pods)

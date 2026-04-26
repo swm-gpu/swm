@@ -3,44 +3,99 @@ title: Custom Skills
 description: Write your own agent workflows on top of swm.
 ---
 
-The built-in SKILL.md covers general GPU provisioning. You can create custom skills for specific workflows.
+The built-in SKILL.md covers general GPU provisioning. You can create custom skills for specific workflows by following the same [Agent Skills standard](https://cursor.com/docs/context/skills).
+
+## Skill structure
+
+Each custom skill is a directory with a `SKILL.md` file:
+
+```
+.agents/skills/
+├── swm-gpu-workflow/     # built-in swm skill
+│   └── SKILL.md
+└── deploy-model/         # your custom skill
+    └── SKILL.md
+```
+
+Use YAML frontmatter so agents know when to activate it:
+
+```markdown
+---
+name: deploy-model
+description: >
+  Use this skill when the user wants to deploy a HuggingFace model
+  to a vLLM inference server on a cloud GPU.
+---
+```
 
 ## Example: Auto-deploy fine-tuned model
 
-A custom skill that takes a HuggingFace model path and deploys it to vLLM:
-
 ```markdown
-# deploy-model
+---
+name: deploy-model
+description: >
+  Use this skill when the user wants to deploy a HuggingFace model to vLLM
+  on a cloud GPU. Do NOT use for training or fine-tuning tasks.
+---
+
+# Deploy Model to vLLM
+
+## Steps
 
 1. Search for GPU with enough VRAM: `swm gpus -g <class> --sort price`
 2. Create pod: `swm pod create -p <provider> -g <gpu> -n <model-name> -y`
-3. Pull model: `swm models pull <pod> <model-path>`
-4. Set as active: `swm models set <pod> <model-path> --restart`
-5. Verify: `swm run <pod> "curl localhost:8000/v1/models"`
-6. Report URL to user
+3. Install vLLM: `swm setup install vllm <pod-id>`
+4. Pull model: `swm models pull <pod-id> <model-path>`
+5. Set as active: `swm models set <pod-id> <model-path> --restart`
+6. Verify: `swm run <pod-id> "curl -s localhost:8000/v1/models"`
+7. Enable guard: `swm guard enable <pod-id> --policy auto-down --idle 30m`
+8. Report URL and pod ID to user
 ```
 
 ## Example: Batch training pipeline
 
-A skill that provisions, trains, pushes checkpoints, and terminates:
-
 ```markdown
-# batch-train
+---
+name: batch-train
+description: >
+  Use this skill when the user wants to fine-tune a model with Axolotl.
+  Provisions a GPU, trains, pushes checkpoints, and auto-terminates.
+---
 
-1. Create pod with auto-down: `swm pod create ... --lifecycle auto-down`
-2. Pull workspace: `swm sync pull <pod>`
-3. Install Axolotl: `swm setup install axolotl <pod>`
-4. Start training: `swm run <pod> "cd /workspace && axolotl train config.yml"`
-5. Push checkpoints: `swm sync push <pod>`
+# Batch Training Pipeline
+
+## Steps
+
+1. Create pod with auto-down: `swm pod create -p <provider> -g <gpu> -n train --lifecycle auto-down -y`
+2. Pull workspace: `swm sync pull <pod-id>`
+3. Install Axolotl: `swm setup install axolotl <pod-id>`
+4. Start training: `swm run <pod-id> "cd /workspace && axolotl train config.yml"`
+5. Push checkpoints: `swm sync push <pod-id>`
 6. Pod auto-terminates when training completes (GPU drops to 0%)
+
+## Verify
+
+- Check training logs: `swm run <pod-id> "tail -50 /workspace/axolotl/logs/latest.log"`
+- Check GPU utilization: `swm run <pod-id> "nvidia-smi"`
 ```
 
-## Skill structure
+## Best practices
 
 Follow the same phase structure as the built-in skill:
 
-1. **State check** — Look for existing resources
+1. **State check** — Look for existing resources (`swm pod list`)
 2. **Clarify** — Ask user for requirements
-3. **Execute** — Run swm commands
-4. **Verify** — Check that everything works
+3. **Execute** — Run swm commands with `-y` flags
+4. **Verify** — Check that everything works before handing off
 5. **Hand off** — Report results and next steps
+
+Keep your SKILL.md under ~5,000 tokens. If you need more detail, use a `references/` directory:
+
+```
+deploy-model/
+├── SKILL.md
+└── references/
+    └── vram-requirements.md
+```
+
+The agent loads references on demand, keeping context lean.

@@ -1,5 +1,5 @@
 <p align="center">
-  <img src=".github/logo.svg" alt="swm" width="400" />
+  <img src="https://raw.githubusercontent.com/swm-gpu/swm/main/.github/logo.svg" alt="swm" width="400" />
 </p>
 
 <p align="center">
@@ -63,9 +63,16 @@ swm pod down runpod:<id>
 
 ## Or just ask your agent
 
-Don't want to learn the CLI? Drop the [SKILL.md](SKILLS.md) into your project and your AI agent manages GPUs for you.
+Don't want to learn the CLI? Install the [SKILL.md](.agents/skills/swm-gpu-workflow/SKILL.md) and your AI agent manages GPUs for you:
 
-Works with **Cursor**, **Codex**, **Claude Code**, **Windsurf**, and any agent that can run shell commands.
+```bash
+# Universal (works with Cursor, Copilot, Windsurf, Amp, Devin)
+mkdir -p .agents/skills/swm-gpu-workflow
+curl -sL https://raw.githubusercontent.com/swm-gpu/swm/main/.agents/skills/swm-gpu-workflow/SKILL.md \
+  -o .agents/skills/swm-gpu-workflow/SKILL.md
+```
+
+Works with **Cursor**, **Claude Code**, **Codex**, **Copilot**, **Windsurf**, **Amp**, **Devin**, and any agent that can run shell commands.
 
 ## Supported Providers
 

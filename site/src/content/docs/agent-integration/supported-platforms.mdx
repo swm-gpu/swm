@@ -1,44 +1,134 @@
 ---
 title: Supported Platforms
-description: How to install the swm skill on different AI agent platforms.
+description: How to install the swm skill on every major AI agent platform.
 ---
 
-swm works with any AI agent that can execute shell commands. The SKILL.md provides structured instructions that agents follow.
+swm ships a standard `SKILL.md` that works with any agent that can execute shell commands. The file lives at `.agents/skills/swm-gpu-workflow/SKILL.md` in the swm repo.
+
+## Quick install (any platform)
+
+The `.agents/skills/` directory is the universal path recognized by Cursor, Codex, Copilot, Windsurf, Amp, and Devin. Clone it into your project:
+
+```bash
+# From your project root
+mkdir -p .agents/skills
+cp -r /path/to/swm/.agents/skills/swm-gpu-workflow .agents/skills/
+```
+
+Or grab it directly from GitHub:
+
+```bash
+mkdir -p .agents/skills/swm-gpu-workflow
+curl -sL https://raw.githubusercontent.com/swm-gpu/swm/main/.agents/skills/swm-gpu-workflow/SKILL.md \
+  -o .agents/skills/swm-gpu-workflow/SKILL.md
+```
 
 ## Cursor
 
-Place the SKILL.md in your Cursor skills directory:
+**Option A — Install from GitHub (easiest):**
+
+1. Open Cursor Settings (`Cmd+Shift+J`)
+2. Navigate to **Rules**
+3. Click **Add Rule** → **Remote Rule (GitHub)**
+4. Paste: `https://github.com/swm-gpu/swm`
+
+Cursor auto-imports the skill from the repo's `.agents/skills/` directory.
+
+**Option B — Copy to your project:**
 
 ```bash
-mkdir -p ~/.cursor/skills/swm-pod-framework-setup
-# Copy SKILL.md into this directory
+mkdir -p .cursor/skills/swm-gpu-workflow
+curl -sL https://raw.githubusercontent.com/swm-gpu/swm/main/.agents/skills/swm-gpu-workflow/SKILL.md \
+  -o .cursor/skills/swm-gpu-workflow/SKILL.md
 ```
 
-Cursor will automatically discover and use the skill when you ask about GPU pods.
+**Option C — Install globally (all projects):**
+
+```bash
+mkdir -p ~/.cursor/skills/swm-gpu-workflow
+curl -sL https://raw.githubusercontent.com/swm-gpu/swm/main/.agents/skills/swm-gpu-workflow/SKILL.md \
+  -o ~/.cursor/skills/swm-gpu-workflow/SKILL.md
+```
+
+The agent auto-discovers the skill. Ask "Spin up an H100 with vLLM" and it activates.
+
+## Claude Code
+
+Claude Code discovers skills from `.claude/skills/`:
+
+```bash
+mkdir -p .claude/skills/swm-gpu-workflow
+curl -sL https://raw.githubusercontent.com/swm-gpu/swm/main/.agents/skills/swm-gpu-workflow/SKILL.md \
+  -o .claude/skills/swm-gpu-workflow/SKILL.md
+```
+
+Or install globally:
+
+```bash
+mkdir -p ~/.claude/skills/swm-gpu-workflow
+curl -sL https://raw.githubusercontent.com/swm-gpu/swm/main/.agents/skills/swm-gpu-workflow/SKILL.md \
+  -o ~/.claude/skills/swm-gpu-workflow/SKILL.md
+```
+
+Claude Code also reads skills from `.agents/skills/` if present.
 
 ## OpenAI Codex
 
-Add the SKILL.md content to your Codex project instructions or as a reference document in your workspace.
+Codex discovers skills from `.codex/skills/`:
 
-## Claude Code (Anthropic)
+```bash
+mkdir -p .codex/skills/swm-gpu-workflow
+curl -sL https://raw.githubusercontent.com/swm-gpu/swm/main/.agents/skills/swm-gpu-workflow/SKILL.md \
+  -o .codex/skills/swm-gpu-workflow/SKILL.md
+```
 
-Include the SKILL.md as part of your CLAUDE.md or project context file.
+Or install globally:
 
-## Windsurf
-
-Add the SKILL.md to your Windsurf rules or workspace context.
+```bash
+mkdir -p ~/.codex/skills/swm-gpu-workflow
+curl -sL https://raw.githubusercontent.com/swm-gpu/swm/main/.agents/skills/swm-gpu-workflow/SKILL.md \
+  -o ~/.codex/skills/swm-gpu-workflow/SKILL.md
+```
 
 ## GitHub Copilot
 
-Include the SKILL.md content in your `.github/copilot-instructions.md` or workspace context.
+Copilot reads skills from `.agents/skills/`:
+
+```bash
+mkdir -p .agents/skills/swm-gpu-workflow
+curl -sL https://raw.githubusercontent.com/swm-gpu/swm/main/.agents/skills/swm-gpu-workflow/SKILL.md \
+  -o .agents/skills/swm-gpu-workflow/SKILL.md
+```
+
+## Windsurf / Amp / Devin
+
+All three read `.agents/skills/` natively:
+
+```bash
+mkdir -p .agents/skills/swm-gpu-workflow
+curl -sL https://raw.githubusercontent.com/swm-gpu/swm/main/.agents/skills/swm-gpu-workflow/SKILL.md \
+  -o .agents/skills/swm-gpu-workflow/SKILL.md
+```
 
 ## Any other agent
 
-The only requirement is that the agent can:
+The only requirements are that the agent can:
 
 1. Read the SKILL.md instructions
 2. Execute shell commands (`swm ...`)
-3. Parse command output
+3. Parse command output (plain text tables)
 4. Ask the user clarifying questions
 
-If your agent platform supports these capabilities, swm works with it.
+If your agent supports these capabilities, copy the SKILL.md into whatever instructions file your agent reads and it will work.
+
+## Skill discovery paths (reference)
+
+| Platform | Project-level | User-level (global) |
+|----------|--------------|-------------------|
+| Cursor | `.cursor/skills/`, `.agents/skills/` | `~/.cursor/skills/`, `~/.agents/skills/` |
+| Claude Code | `.claude/skills/` | `~/.claude/skills/` |
+| Codex | `.codex/skills/` | `~/.codex/skills/` |
+| Copilot | `.agents/skills/` | — |
+| Windsurf | `.agents/skills/` | — |
+| Amp | `.agents/skills/` | — |
+| Devin | `.agents/skills/` | — |
