@@ -110,9 +110,17 @@ import FeatureCard from '../components/FeatureCard.astro';
 	<!-- ═══════════════════════════════════════════════════════════════ -->
 	<section class="section workspace-section">
 		<h2>Your workspace follows you.</h2>
-		<p class="section-sub">Push from one cloud, pull to another. Resume where you left off.</p>
+		<p class="section-sub">Push from one cloud, pull to another. Resume where you left off — with continuous background sync.</p>
 
 		<div class="feature-grid two-col">
+			<FeatureCard title="Continuous auto-sync">
+				<pre><span class="prompt">$</span> swm pod create -p runpod -g h200 -n train
+<span class="success">  ✓ Workspace pulled
+  ✓ Watcher running
+  ✓ Auto-sync daemon: pushing every 60s</span></pre>
+				<p>Every pod created with a workspace gets a background daemon that tails the filesystem watcher and pushes new, changed, and deleted files to storage every 60 seconds. Non-destructive by default; deletions are opt-in and gated by a prior sync.</p>
+			</FeatureCard>
+
 			<FeatureCard title="Push and pull across clouds">
 				<pre><span class="prompt">$</span> swm sync push runpod:r1008si
 <span class="prompt">$</span> swm sync pull lambda:def456</pre>

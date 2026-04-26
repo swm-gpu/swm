@@ -22,15 +22,19 @@ Search live GPU availability and pricing across all configured providers.
 | `--max-price N` | Maximum on-demand price per hour |
 | `-p, --provider TEXT` | Filter to one provider |
 | `--secure` | Only show secure/certified cloud providers |
+| `-r, --region TEXT` | Filter by region (free text, e.g. us-east) |
 | `--sort [price\|vram\|provider]` | Sort order (default: price) |
 | `-n, --limit N` | Max rows to show (default: 20) |
 | `--all` | Show all results |
+
+The output table includes a **Min CUDA** column showing each GPU's minimum CUDA toolkit (e.g. Hopper → 11.8, Blackwell → 12.8). When all rows in the result share the same minimum, swm appends `--cuda <X.Y>` to the suggested next-step `swm pod create` command.
 
 ```bash
 swm gpus                              # everything
 swm gpus -g h200                      # filter GPU type
 swm gpus -g h200 -c 4 --secure       # 4x H200, secure clouds only
 swm gpus --max-price 4 -p vastai     # under $4/hr on Vast.ai
+swm gpus -r us-west                  # filter by region
 ```
 
 ## `swm pod`
@@ -52,17 +56,31 @@ Provision a new GPU instance with automatic workspace sync.
 | `--volume N` | Persistent volume size in GB (default: 100) |
 | `--disk N` | Container disk size in GB (default: 40) |
 | `--image TEXT` | Docker image (provider default if empty) |
+| `--cuda X.Y` | Auto-pick newest provider image matching this CUDA major.minor (e.g. `12.8`). Ignored if `--image` is set. |
 | `--cloud-type TEXT` | Cloud type: SECURE, COMMUNITY, ALL (default: SECURE) |
 | `--ports TEXT` | Ports to expose (default: 22/tcp,8888/http,8188/http) |
 | `--gpu-count N` | Number of GPUs (default: 1) |
 | `--region TEXT` | Datacenter/region ID |
+| `--lifecycle [manual\|remind\|auto-stop\|auto-down]` | Idle lifecycle policy for this pod (configures the guard) |
+| `--idle-timeout N` | Idle timeout in minutes (used with `--lifecycle`) |
 | `-x, --exclude PATTERN` | Glob pattern to exclude from pull (repeatable) |
 | `-y, --yes` | Skip confirmation |
 
+If a workspace is configured, `swm pod create` runs the full bootstrap over SSH (install s5cmd, configure storage, pull workspace, start the auto-sync daemon). On any partial failure (SSH probe timeout, storage misconfigured, pull aborted, …) it persists the pod ↔ workspace mapping unconditionally and prints exactly the swm commands you need to retry the missing steps:
+
+```
+⚠ Bootstrap incomplete. Re-run the remaining steps when ready:
+  Storage configuration:  swm setup storage runpod:abc123
+  Workspace pull:         swm sync pull runpod:abc123
+  Auto-sync start:        swm sync auto runpod:abc123
+```
+
 ```bash
 swm pod create -p runpod -g h200 -n my-session
+swm pod create -p runpod -g h200 -n my-session --cuda 12.8
 swm pod create -p vastai -g h200 -n train --gpu-count 4 --volume 500
-swm pod create -p runpod -g b200 -n gen -w my-workspace  # restore workspace
+swm pod create -p runpod -g b200 -n gen -w my-workspace          # restore workspace
+swm pod create -p runpod -g h100 -n train --lifecycle auto-down --idle-timeout 30
 ```
 
 ### `swm pod list`
@@ -126,6 +144,10 @@ Push workspace from the pod to cloud storage.
 | `-d, --dest TEXT` | Override destination in bucket |
 | `-x, --exclude PATTERN` | Glob pattern to exclude (repeatable) |
 | `-f, --force` | Kill any running transfer and start fresh |
+| `--tar` | Pack into a single compressed tarball before uploading (faster for many small files) |
+| `--delete` | Also delete files from storage that were deleted locally. Requires the watcher to be running so swm has an authoritative log of deletions. |
+
+By default, push is **non-destructive** — files removed locally are left untouched in the bucket. `--delete` opts in to mirror semantics. swm refuses `--delete` if the watcher isn't running so a missed change can't accidentally wipe storage.
 
 ### `swm sync watch <id>`
 
@@ -134,6 +156,28 @@ Start the filesystem change watcher for automatic push-on-change.
 | Option | Description |
 |--------|-------------|
 | `--stop` | Stop the watcher instead of starting it |
+
+### `swm sync auto <id>`
+
+Start a background daemon that auto-syncs `/workspace` every interval. Reads the watcher log, uploads changed files, and removes deleted files from storage.
+
+| Option | Description |
+|--------|-------------|
+| `-i, --interval N` | Sync interval in seconds (default: 60) |
+| `-b, --bucket TEXT` | Override bucket |
+| `-d, --dest TEXT` | Override destination path inside bucket |
+| `--status` | Show daemon status and recent log |
+| `--stop` | Stop the daemon |
+| `--force` | Bypass the safety check that requires a prior successful pull/push (DANGEROUS — local deletions will propagate) |
+
+The daemon is started automatically by `swm pod create` when a workspace is configured. **Safety:** it refuses to start unless a prior `swm sync pull` or `swm sync push` succeeded (marked by a push stamp on the pod). Without that signal, a stray local deletion would propagate to storage and erase the remote copy.
+
+```bash
+swm sync auto runpod:abc123              # start with 60s interval
+swm sync auto runpod:abc123 -i 30        # 30s interval
+swm sync auto runpod:abc123 --status     # check daemon + recent log
+swm sync auto runpod:abc123 --stop       # stop the daemon
+```
 
 ### `swm sync status <id>`
 
@@ -151,7 +195,9 @@ Show all available frameworks.
 
 Install a framework on a running instance.
 
-Supported frameworks: `comfyui`, `swarmui`, `axolotl`, `llm-studio`
+Supported frameworks: `vllm`, `open-webui`, `ollama`, `comfyui`, `swarmui`, `axolotl`, `llm-studio`.
+
+Run `swm setup list` to see the live list with categories, default ports, and recommended pairings.
 
 ### `swm setup start <framework> <id>`
 
@@ -172,6 +218,29 @@ Install s5cmd and verify storage connectivity on an instance.
 | Option | Description |
 |--------|-------------|
 | `-p, --provider TEXT` | Storage backend: b2, gcs, s3, all (default: all) |
+
+### `swm setup workspace <id>`
+
+Attach an object-storage workspace to an existing pod in one command. Performs the full bootstrap: install s5cmd, configure storage, pull (or initialize) the workspace, persist the pod ↔ workspace ↔ bucket mapping in config, and start the auto-sync daemon.
+
+| Option | Description |
+|--------|-------------|
+| `-n, --name TEXT` | Workspace name (default: pod name) |
+| `-b, --bucket TEXT` | Bucket spec `provider:bucket` (default: configured) |
+| `--force` | Reattach a pod that already has a workspace tracked |
+
+Use this when:
+
+- You created a pod with `--no-storage` and want to add a workspace later.
+- `swm pod create`'s SSH probe timed out and the bootstrap was skipped.
+- You want to reattach a pod to a different workspace (`--force`).
+
+```bash
+swm setup workspace runpod:abc123                   # ws name = pod name
+swm setup workspace runpod:abc123 -n my-ws          # custom name
+swm setup workspace runpod:abc123 -b b2:my-bucket   # explicit bucket
+swm setup workspace runpod:abc123 --force           # reattach
+```
 
 ## `swm costs`
 
@@ -233,6 +302,125 @@ Remove a budget.
 | Option | Description |
 |--------|-------------|
 | `-t, --period` | Budget period (default: monthly) |
+
+## `swm images`
+
+List Docker images available to `swm pod create --image` for a given provider, parsed live from the provider's image registry. Useful for picking a tag with a specific CUDA version.
+
+### `swm images list`
+
+| Option | Description |
+|--------|-------------|
+| `-p, --provider TEXT` | Provider to query (default: runpod) |
+| `--cuda X.Y` | Filter to images matching CUDA major.minor |
+| `--refresh` | Bypass the local cache and re-query the registry |
+| `-n, --limit N` | Max rows to show |
+
+```bash
+swm images list                                 # all RunPod pytorch images
+swm images list -p runpod --cuda 12.8           # CUDA 12.8 images only
+swm images list -p runpod --cuda 12.8 -n 5      # top 5
+```
+
+`swm pod create --cuda 12.8` resolves to the newest image returned here.
+
+## `swm guard`
+
+Lifecycle automation. Monitors SSH sessions, GPU utilization, filesystem writes, transfers, and active processes; reminds, stops, or terminates an idle pod according to its policy.
+
+### `swm guard defaults`
+
+Show or update the global default policy.
+
+| Option | Description |
+|--------|-------------|
+| `--mode [manual\|remind\|auto-stop\|auto-down]` | Default mode |
+| `--idle-timeout N` | Default idle timeout in minutes |
+| `--poll-interval N` | Default on-pod watcher poll interval in seconds |
+
+### `swm guard set <id>`
+
+Configure the policy for a single pod.
+
+| Option | Description |
+|--------|-------------|
+| `--mode [manual\|remind\|auto-stop\|auto-down]` | Required |
+| `--idle-timeout N` | Idle timeout in minutes |
+| `--poll-interval N` | On-pod watcher poll interval in seconds |
+
+### `swm guard disable <id>`
+
+Remove the per-pod policy (falls back to defaults).
+
+### `swm guard list`
+
+List guarded pods with current idle time, policy, and remote daemon status.
+
+### `swm guard run [ids...]`
+
+Run a guard cycle manually for one or more pods. Without IDs, evaluates every guarded pod.
+
+| Option | Description |
+|--------|-------------|
+| `--once` | Run a single cycle and exit (default loops every interval) |
+| `--interval N` | Loop interval in seconds |
+
+### `swm guard stop-daemon`
+
+Stop the local background `swm guard run` daemon.
+
+```bash
+swm guard defaults --mode auto-down --idle-timeout 60
+swm guard set runpod:abc123 --mode auto-down --idle-timeout 30
+swm guard list
+swm guard run --once
+```
+
+## `swm models`
+
+Search HuggingFace Hub, download models to pods, and hot-swap the active vLLM model. Supports both HuggingFace (`org/model-name`) and Ollama (`model:tag`).
+
+### `swm models search <query>`
+
+| Option | Description |
+|--------|-------------|
+| `--sort [downloads\|likes\|trending]` | Sort order |
+| `-n, --limit N` | Max results |
+
+### `swm models info <model>`
+
+Detailed metadata for a single model (size, license, tags).
+
+### `swm models pull <id> <model>`
+
+Download a model to the pod's `/workspace/models` directory.
+
+| Option | Description |
+|--------|-------------|
+| `--token TEXT` | HuggingFace token (overrides `swm config set hf_token`) |
+
+### `swm models set <id> <model>`
+
+Activate a model for vLLM (writes the launch config). By default this restarts vLLM so the new model takes effect immediately.
+
+| Option | Description |
+|--------|-------------|
+| `--no-restart` | Update the active-model file but leave vLLM running with the old model |
+
+### `swm models list <id>`
+
+List models already downloaded on the pod.
+
+### `swm models remove <id> <model>`
+
+Delete a model from the pod.
+
+```bash
+swm models search "qwen3 coder" --sort downloads
+swm models info Qwen/Qwen3-235B-A22B
+swm models pull runpod:abc123 Qwen/Qwen3-8B
+swm models set runpod:abc123 Qwen/Qwen3-8B --restart
+```
 
 ## `swm storage`
 

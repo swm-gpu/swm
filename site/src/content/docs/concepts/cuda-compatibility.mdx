@@ -1,0 +1,74 @@
+---
+title: CUDA & Image Compatibility
+description: How GPU architecture, host driver, and Docker image CUDA toolkit interact — and how swm picks images for you.
+---
+
+Picking the right Docker image for a GPU pod isn't always obvious. swm surfaces enough information in `swm gpus` and `swm images list` that you don't have to guess.
+
+## The three CUDA layers
+
+There are three "CUDA versions" in play on any pod, and they don't have to match exactly:
+
+1. **GPU architecture compute capability** — A property of the silicon. Hopper (H100/H200) is `9.0`, Ada (L40S/4090) is `8.9`, Blackwell (B200/B300/RTX 5090) is `10.0`/`12.0`. This determines the *minimum* CUDA toolkit that knows about the chip.
+2. **Host driver / CUDA runtime** — `nvidia-smi` reports something like "CUDA Version: 12.4". This is the maximum CUDA the kernel driver supports. Toolkits **newer** than this number cannot run.
+3. **Docker image CUDA toolkit** — Bundled with the image (e.g. `runpod/pytorch:1.0.3-cu1281-torch280-ubuntu2204` has CUDA 12.8). This is what your code links against.
+
+The constraint is: **GPU minimum ≤ image toolkit ≤ host driver**.
+
+If the image toolkit is older than the GPU minimum, the GPU literally isn't recognized. If the image toolkit is newer than the host driver, you get the classic `CUDA driver too old` runtime error.
+
+## What swm does for you
+
+### `swm gpus`
+
+Every result row includes a **Min CUDA** column showing the minimum CUDA toolkit that supports that GPU. When all rows in a filtered result share the same minimum, the suggested next-step `swm pod create` command is hinted with `--cuda <X.Y>`.
+
+### `swm pod create --cuda X.Y`
+
+Resolves to the newest provider image whose toolkit matches `X.Y`. Skip the manual image lookup entirely.
+
+```bash
+swm pod create -p runpod -g h200 -n train --cuda 12.8
+# Resolved --cuda 12.8 → runpod/pytorch:1.0.3-cu1281-torch280-ubuntu2204
+```
+
+If you also pass `--image` explicitly, `--cuda` is ignored. swm cross-checks the image's toolkit against the GPU minimum and prints a yellow warning if the image is too old:
+
+```
+⚠ Image CUDA 12.4 is below H200's minimum (11.8).
+  The pod may fail to start GPU workloads.
+```
+
+### `swm images list -p <provider> --cuda X.Y`
+
+Browse the provider's image catalog directly when you want full control. Currently RunPod is the only provider with a queryable Docker Hub catalog; for others, look up images on the provider's own dashboard and pass `--image` to `pod create`.
+
+## Picking a CUDA version
+
+Defaults that work in 2026:
+
+| GPU family | Min CUDA | Recommended `--cuda` |
+|------------|----------|----------------------|
+| Blackwell (B200/B300, RTX 5090) | 12.8 | 12.8 |
+| Hopper (H100, H200, GH200) | 11.8 | 12.4 or 12.8 |
+| Ada (L40S, RTX 4090, RTX 6000 Ada) | 11.8 | 12.4 |
+| Ampere (A100, A40, RTX 3090) | 11.0 | 12.4 |
+| Turing (T4, RTX 2080) | 10.0 | 11.8 |
+
+Newer is generally better — frameworks like PyTorch 2.7+ and the most recent custom CUDA kernels (FlashAttention 3, vLLM v0.7+, etc.) increasingly require 12.x. Older GPUs still work with newer toolkits as long as the host driver is recent enough.
+
+## When things still go wrong
+
+If a pod's host driver is older than the image toolkit (`nvidia-smi` shows e.g. CUDA 12.4 but the image needs 12.8), you'll see runtime errors like:
+
+```
+RuntimeError: The NVIDIA driver on your system is too old (found version 12040).
+```
+
+The fix is to `swm pod down` and create a new pod with an image whose CUDA version is `≤` the host driver. This is most common on community-cloud pods or providers that don't roll drivers forward.
+
+## Related
+
+- [`swm gpus`](/commands/gpus/)
+- [`swm images list`](/commands/images/)
+- [`swm pod create`](/commands/pod/)

@@ -47,7 +47,10 @@ Once SSH is up, swm runs a series of commands over SSH:
 1. **Install s5cmd** — a high-performance S3 client for parallel file transfers
 2. **Configure storage** — verifies connectivity to your B2/S3/GCS bucket
 3. **Pull workspace** — copies your workspace from cloud storage to `/workspace` on the pod
-4. **Install inotify** — sets up a filesystem watcher for automatic push-on-change (optional)
+4. **Start the watcher** — installs `inotify-tools` and launches an `inotifywait` daemon that records every file change to a log
+5. **Start auto-sync** — a background daemon that tails the watcher log and pushes new/changed/deleted files to storage every 60 seconds
+
+If any step fails (SSH probe timeout, missing storage credentials, network blip, …), swm persists the pod ↔ workspace mapping anyway and prints the exact swm commands to retry the missing steps. You can re-attach the workspace later with `swm setup workspace <pod>`.
 
 ### 3. Working
 
@@ -75,11 +78,20 @@ Workspaces are named directories in a cloud storage bucket (e.g., `b2:my-bucket/
 **Pull** (storage to pod): Uses `s5cmd cp --no-clobber` — downloads files that don't already exist on the pod. Existing files are never overwritten.
 
 **Push** (pod to storage): Uses a three-tier strategy:
-1. **Inotify watcher** — if running, instantly pushes files as they change
-2. **Timestamp-based delta** — finds files modified since the last push using `find -newer`
+1. **Inotify watcher** — if running, the change log records exactly which files moved; push uploads only those
+2. **Timestamp-based delta** — without a watcher, `find -newer` enumerates files modified since the last push
 3. **Full scan** — falls back to `s5cmd cp --if-size-differ` for a complete comparison
 
-Both directions are non-destructive. Files are never deleted from cloud storage.
+**Continuous mode** (`swm sync auto`): A daemon tails the watcher log every interval and pushes changed files plus removes deleted ones. It refuses to start unless a prior pull/push has confirmed pod and bucket are in sync — so a stray local deletion never wipes the bucket on first run.
+
+### Deletion semantics
+
+By default, all sync paths are **non-destructive** — `sync push`, `sync pull`, and `pod down` never remove files from cloud storage. Deletions are opt-in:
+
+- `swm sync push --delete` propagates local deletions (requires an active watcher so swm has an authoritative deletion log).
+- `swm sync auto` propagates local deletions on every cycle (gated by the safety check above).
+
+The watcher's exclude list is fingerprinted on the pod, so when swm is upgraded with new excludes, long-lived watchers detect the drift and restart with the latest configuration on the next auto-sync cycle.
 
 ## Provider Abstraction
 

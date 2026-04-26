@@ -15,7 +15,9 @@ from swm.sync.paths import (
     AUTO_SCRIPT,
     PUSH_STAMP,
     TRANSFER_LOCK,
+    WATCH_EXCLUDES,
     WATCH_LOG,
+    WATCHER_EXCLUDES_FILE,
 )
 from swm.sync.watcher import is_watcher_alive, start_watcher
 
@@ -80,6 +82,8 @@ def _render_daemon_script(
         "__SWM_PUSH_STAMP__": PUSH_STAMP,
         "__SWM_AUTO_LOG__": AUTO_LOG,
         "__SWM_TRANSFER_LOCK__": TRANSFER_LOCK,
+        "__SWM_WATCHER_EXCLUDES_FILE__": WATCHER_EXCLUDES_FILE,
+        "__SWM_WATCHER_EXCLUDES__": "|".join(WATCH_EXCLUDES),
         "__SWM_ENV_EXPORTS__": _storage_env_exports(storage_slug),
     }
     for placeholder, value in replacements.items():

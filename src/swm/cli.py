@@ -97,6 +97,7 @@ def gpus(gpu: str | None, gpu_count: int | None, max_price: float | None,
     """
     from rich.table import Table
     from swm.providers.base import GpuInfo
+    from swm.cuda import min_cuda_for
 
     if provider:
         try:
@@ -177,6 +178,7 @@ def gpus(gpu: str | None, gpu_count: int | None, max_price: float | None,
     table.add_column("$/hr", justify="right")
     table.add_column("Spot", justify="right")
     table.add_column("Stock")
+    table.add_column("Min CUDA", justify="right")
     table.add_column("Regions", max_width=30)
     table.add_column("Secure", justify="center")
 
@@ -191,6 +193,8 @@ def gpus(gpu: str | None, gpu_count: int | None, max_price: float | None,
         regions_str = ", ".join(g.regions[:5]) if g.regions else "[dim]—[/dim]"
         if len(g.regions) > 5:
             regions_str += f" (+{len(g.regions) - 5})"
+        mc = min_cuda_for(g.display_name) or min_cuda_for(g.type_id)
+        mc_str = mc if mc else "[dim]—[/dim]"
         table.add_row(
             _provider_display(g.provider),
             g.display_name,
@@ -200,6 +204,7 @@ def gpus(gpu: str | None, gpu_count: int | None, max_price: float | None,
             f"${g.on_demand_price:.2f}" if g.on_demand_price else "—",
             f"${g.spot_price:.2f}" if g.spot_price else "—",
             f"[{ss}]{g.stock_level or '—'}[/{ss}]",
+            mc_str,
             regions_str,
             "[green]✓[/green]" if g.secure_cloud else "[dim]—[/dim]",
         )
@@ -231,9 +236,15 @@ def gpus(gpu: str | None, gpu_count: int | None, max_price: float | None,
     gpu_hint = gpu.lower() if gpu else "<gpu>"
     count_hint = f" --gpu-count {gpu_count}" if gpu_count and gpu_count > 1 else ""
     region_hint = f" --region {storage_region}" if storage_region else ""
+    cuda_hint = ""
+    if all_gpus:
+        cudas = {min_cuda_for(g.display_name) or min_cuda_for(g.type_id) for g in all_gpus}
+        cudas.discard(None)
+        if len(cudas) == 1:
+            cuda_hint = f" --cuda {next(iter(cudas))}"
     console.print(
         f"[bold]Next →[/bold]  swm pod create -p <provider> -g {gpu_hint} "
-        f"-n <name>{count_hint}{region_hint}"
+        f"-n <name>{count_hint}{region_hint}{cuda_hint}"
     )
     console.print(
         "[bold]Then →[/bold]  swm setup install <framework> <provider>:<id>"
@@ -253,6 +264,7 @@ from swm.commands.remote import ssh_connect, run, upload, download  # noqa: E402
 from swm.commands.models import models_group  # noqa: E402
 from swm.commands.guard import guard  # noqa: E402
 from swm.commands.use import use  # noqa: E402
+from swm.commands.images import images  # noqa: E402
 
 main.add_command(config_group)
 main.add_command(pricing)
@@ -268,6 +280,7 @@ main.add_command(download)
 main.add_command(models_group)
 main.add_command(guard)
 main.add_command(use)
+main.add_command(images)
 
 
 @main.group()

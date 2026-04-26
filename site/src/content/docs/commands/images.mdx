@@ -1,0 +1,43 @@
+---
+title: swm images
+description: List Docker images available to swm pod create --image, with CUDA / Torch / Ubuntu metadata.
+---
+
+List Docker images discoverable for a provider, parsed live from the provider's image registry. Useful for picking a tag with a specific CUDA toolkit or PyTorch version.
+
+## Subcommands
+
+| Command | Description |
+|---------|------------|
+| `images list` | List images for a provider, sorted newest-first |
+
+## images list
+
+| Option | Description |
+|--------|------------|
+| `-p`, `--provider` | Provider to query (default: `runpod`) |
+| `--cuda X.Y` | Filter to images matching CUDA major.minor |
+| `--refresh` | Bypass the local cache and re-query the registry |
+| `-n`, `--limit` | Max rows to show (default: 20) |
+| `--all` | Show every image |
+
+## Examples
+
+```bash
+swm images list                            # all RunPod pytorch images
+swm images list -p runpod --cuda 12.8      # only CUDA 12.8 images
+swm images list -p runpod --cuda 11.8 -n 5 # top 5
+swm images list --refresh                  # bypass cache
+```
+
+The output table shows `Tag`, `CUDA`, `Torch`, `Ubuntu`, and `Updated` columns. Pick a tag and pass it to `swm pod create --image <tag>`, or skip this step entirely and pass `--cuda <X.Y>` to `pod create` — swm will resolve to the newest matching tag automatically.
+
+## Provider coverage
+
+swm only resolves images for providers that publish a Docker Hub catalog (currently RunPod). For other providers, pass `--image` directly to `swm pod create`.
+
+## Related
+
+- [`swm gpus`](/commands/gpus/) — surfaces each GPU's minimum CUDA in the result table
+- [`swm pod create --cuda`](/commands/pod/) — auto-resolves to a compatible image
+- [CUDA & image compatibility](/concepts/cuda-compatibility/) — concept overview

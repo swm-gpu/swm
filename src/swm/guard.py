@@ -297,8 +297,17 @@ def start_remote_guard(session: RemoteSession, policy: GuardPolicy) -> bool:
 
 
 def stop_remote_guard(session: RemoteSession) -> None:
+    """Terminate the remote guard daemon.
+
+    Belt-and-braces: kills by PID file first, then falls back to
+    ``pkill -f`` against the watcher script path. The fallback catches
+    duplicate guards left over from race conditions or stale PID files
+    (e.g. an older guard whose PID was overwritten before it received
+    SIGTERM).
+    """
     session.exec(
         f"test -f {_GUARD_PID} && kill $(cat {_GUARD_PID}) 2>/dev/null; "
+        f"pkill -f '{_GUARD_SCRIPT}' 2>/dev/null || true; "
         f"rm -f {_GUARD_PID}",
         stream=False,
     )

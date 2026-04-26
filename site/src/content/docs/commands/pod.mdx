@@ -22,8 +22,8 @@ Full lifecycle management for GPU pod instances.
 
 ```bash
 swm pod create -p runpod -g "H100 SXM" -n my-project \
-  --lifecycle auto-down --idle-timeout 30 \
-  --volume 200 --gpu-count 4 -y
+  --cuda 12.8 --gpu-count 4 --volume 200 \
+  --lifecycle auto-down --idle-timeout 30 -y
 ```
 
 | Option | Description |
@@ -32,19 +32,44 @@ swm pod create -p runpod -g "H100 SXM" -n my-project \
 | `-g`, `--gpu` | GPU type |
 | `-n`, `--name` | Pod name (required) |
 | `-w`, `--workspace` | Workspace to restore from storage |
-| `--volume` | Volume size in GB |
+| `-b`, `--bucket` | Storage bucket (`provider:bucket`) |
+| `--no-storage` | Skip storage configuration entirely |
+| `--volume` | Persistent volume size in GB |
 | `--disk` | Container disk size in GB |
 | `--gpu-count` | Number of GPUs |
-| `--lifecycle` | Guard mode: auto-down, auto-stop, remind, manual |
-| `--idle-timeout` | Idle timeout in minutes |
-| `--no-storage` | Skip storage configuration |
+| `--image` | Docker image (provider default if empty) |
+| `--cuda X.Y` | Auto-pick the newest provider image matching this CUDA major.minor (e.g. `12.8`). Ignored if `--image` is set. |
+| `--cloud-type` | RunPod cloud type: SECURE, COMMUNITY, ALL |
+| `--ports` | Ports to expose (default: `22/tcp,8888/http,8188/http`) |
+| `--region` | Datacenter/region ID |
+| `--lifecycle` | Guard mode: `auto-down`, `auto-stop`, `remind`, `manual` |
+| `--idle-timeout N` | Idle timeout in minutes |
+| `-x`, `--exclude` | Glob pattern to exclude from pull (repeatable) |
 | `-y` | Skip confirmation prompt |
+
+If a workspace is configured, `pod create` runs the full bootstrap over SSH:
+
+1. Install `s5cmd` and configure storage
+2. Pull the workspace (or initialize empty for a new one)
+3. Start the inotify watcher
+4. Start the auto-sync daemon (default interval 60s)
+
+If any step fails, swm persists the pod ↔ workspace mapping unconditionally and prints exactly the commands you need to retry the missing steps:
+
+```
+⚠ Bootstrap incomplete. Re-run the remaining steps when ready:
+  Storage configuration:  swm setup storage runpod:abc123
+  Workspace pull:         swm sync pull runpod:abc123
+  Auto-sync start:        swm sync auto runpod:abc123
+```
+
+The `--cuda` flag complements the **Min CUDA** column in `swm gpus`. swm cross-checks the resolved image against the GPU's minimum CUDA and warns if the image is too old for the hardware.
 
 ## pod down
 
-Push workspace to S3 and terminate in one command:
+Push workspace to storage and terminate in one command:
 
 ```bash
 swm pod down my-project
-swm pod down my-project --no-sync  # terminate without pushing
+swm pod down my-project --no-sync       # terminate without pushing
 ```

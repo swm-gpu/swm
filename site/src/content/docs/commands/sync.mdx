@@ -9,7 +9,8 @@ description: Workspace synchronization between pods and cloud storage.
 |---------|------------|
 | `sync push <id> [path]` | Push workspace to storage |
 | `sync pull <id> [path]` | Pull workspace from storage to pod |
-| `sync watch <id>` | Start/stop filesystem watcher |
+| `sync watch <id>` | Start/stop the filesystem watcher |
+| `sync auto <id>` | Start/stop the background auto-sync daemon |
 | `sync status <id>` | Show sync status |
 
 ## Options (push/pull)
@@ -21,14 +22,42 @@ description: Workspace synchronization between pods and cloud storage.
 | `-x`, `--exclude` | Glob pattern to exclude (repeatable) |
 | `-f`, `--force` | Kill running transfer, start fresh |
 | `--tar` | Tarball mode (faster for many small files) |
+| `--delete` (push only) | Mirror local deletions to storage. Requires an active watcher. |
+
+By default, push is **non-destructive** — files removed locally are left intact in the bucket. `--delete` opts in to mirror semantics; swm refuses it without an active watcher so a missed change can't accidentally wipe storage.
 
 ## Examples
 
 ```bash
 swm sync push runpod:abc123
 swm sync push runpod:abc123 --tar
+swm sync push runpod:abc123 --delete                 # mirror deletions
 swm sync pull lambda:def456 --tar
 swm sync push runpod:abc123 -x "*.pyc" -x "__pycache__"
 swm sync watch runpod:abc123
 swm sync watch runpod:abc123 --stop
 ```
+
+## sync auto
+
+Runs a background daemon on the pod that tails the watcher log and pushes new/changed/deleted files to storage every interval. `swm pod create` starts this for you when a workspace is configured; use `sync auto` to inspect it, change the interval, or restart it.
+
+| Option | Description |
+|--------|------------|
+| `-i`, `--interval N` | Sync interval in seconds (default: 60) |
+| `-b`, `--bucket` | Override bucket |
+| `-d`, `--dest` | Override destination path inside bucket |
+| `--status` | Show daemon status + recent log tail |
+| `--stop` | Stop the daemon |
+| `--force` | Bypass the prior-sync safety check (DANGEROUS) |
+
+**Safety:** the daemon refuses to start unless a prior `sync pull` or `sync push` succeeded for this pod (marked by a push stamp file). Without that signal, a stray local deletion would propagate to storage and erase the remote copy. `--force` bypasses the check — use only when the pod is the authoritative copy.
+
+```bash
+swm sync auto runpod:abc123              # start with 60s interval
+swm sync auto runpod:abc123 -i 30        # 30s interval
+swm sync auto runpod:abc123 --status     # check daemon + recent log
+swm sync auto runpod:abc123 --stop       # stop the daemon
+```
+
+The watcher's exclude list is fingerprinted on the pod, so when swm is upgraded, long-lived watchers detect drift and restart with the latest excludes on the next cycle — no manual `swm sync watch --stop && swm sync watch` needed.

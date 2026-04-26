@@ -1,6 +1,6 @@
 ---
 title: swm setup
-description: Install and manage AI frameworks on pods.
+description: Install and manage AI frameworks on pods, plus workspace and storage bootstrap.
 ---
 
 ## Subcommands
@@ -12,6 +12,7 @@ description: Install and manage AI frameworks on pods.
 | `setup start <framework> <id>` | Start a framework |
 | `setup stop <framework> <id>` | Stop a framework |
 | `setup storage <id>` | Configure storage credentials on pod |
+| `setup workspace <id>` | Attach an object-storage workspace to an existing pod |
 
 ## Examples
 
@@ -21,6 +22,8 @@ swm setup install vllm runpod:abc123
 swm setup start vllm runpod:abc123 --port 8000
 swm setup stop vllm runpod:abc123
 swm setup storage runpod:abc123 -p b2
+swm setup workspace runpod:abc123                  # ws name = pod name
+swm setup workspace runpod:abc123 -n my-ws         # custom name
 ```
 
 ## Available frameworks
@@ -28,3 +31,27 @@ swm setup storage runpod:abc123 -p b2
 vLLM, Open WebUI, Ollama, ComfyUI, SwarmUI, Axolotl, H2O LLM Studio.
 
 See [Frameworks](/concepts/frameworks/) for details.
+
+## setup workspace
+
+Attach an object-storage workspace to a pod that doesn't have one — in one command. Performs the full bootstrap: install s5cmd, configure storage, pull (or initialize) the workspace, persist the pod ↔ workspace ↔ bucket mapping in config, and start the auto-sync daemon.
+
+| Option | Description |
+|--------|------------|
+| `-n`, `--name` | Workspace name (default: pod name) |
+| `-b`, `--bucket` | Bucket spec `provider:bucket` (default: configured) |
+| `--force` | Reattach a pod that already has a workspace tracked |
+
+Use this when:
+
+- You created the pod with `--no-storage` and want a workspace later.
+- `swm pod create`'s SSH probe timed out before bootstrap could finish.
+- You want to reattach a pod to a different workspace (`--force`).
+
+```bash
+swm setup workspace runpod:abc123
+swm setup workspace runpod:abc123 -b b2:my-bucket
+swm setup workspace runpod:abc123 --force
+```
+
+If any step fails, swm prints the remaining recovery commands so you can pick up where it left off.

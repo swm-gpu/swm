@@ -11,6 +11,9 @@ WATCH_LOG="__SWM_WATCH_LOG__"
 PUSH_STAMP="__SWM_PUSH_STAMP__"
 AUTO_LOG="__SWM_AUTO_LOG__"
 TRANSFER_LOCK="__SWM_TRANSFER_LOCK__"
+WATCHER_EXCLUDES_FILE="__SWM_WATCHER_EXCLUDES_FILE__"
+# Single-quoted to preserve regex meta-characters ($, |, \) verbatim.
+EXPECTED_EXCLUDES='__SWM_WATCHER_EXCLUDES__'
 
 __SWM_ENV_EXPORTS__
 
@@ -23,10 +26,14 @@ lock_held() {
 }
 
 ensure_watcher_healthy() {
-  # Detect and recover from a watcher whose stdout fd points to a deleted
-  # inode (events get silently dropped). Also restart it if the process
-  # is gone entirely. Relies on start_watcher having installed
-  # /tmp/.swm_start_watcher.sh.
+  # Detect and recover from:
+  #   - a watcher whose stdout fd points to a deleted inode (events get
+  #     silently dropped),
+  #   - a watcher process that's gone entirely,
+  #   - a watcher started with a stale exclude regex (swm was upgraded
+  #     since the pod was bootstrapped — current excludes won't take
+  #     effect on this pod until the watcher is restarted).
+  # Relies on start_watcher having installed /tmp/.swm_start_watcher.sh.
   local wpid_file="/tmp/.swm_watcher.pid"
   local watcher_script="/tmp/.swm_start_watcher.sh"
   local wpid
@@ -47,6 +54,17 @@ ensure_watcher_healthy() {
         restart=1
         ;;
     esac
+    if [ "$restart" = "0" ] && [ -n "$WATCHER_EXCLUDES_FILE" ]; then
+      local actual
+      actual=$(cat "$WATCHER_EXCLUDES_FILE" 2>/dev/null)
+      if [ "$actual" != "$EXPECTED_EXCLUDES" ]; then
+        log "watcher exclude list stale — restarting (was: ${actual:0:60}…)"
+        kill "$wpid" 2>/dev/null || true
+        pkill -f 'inotifywait -m -r --exclude' 2>/dev/null || true
+        sleep 1
+        restart=1
+      fi
+    fi
   fi
 
   if [ "$restart" = "1" ] && [ -x "$watcher_script" ]; then

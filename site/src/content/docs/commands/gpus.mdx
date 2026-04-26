@@ -20,6 +20,7 @@ swm gpus [OPTIONS]
 | `--max-price` | Maximum price per hour |
 | `-p`, `--provider` | Filter to specific provider |
 | `--secure` | Only show secure cloud offers |
+| `-r`, `--region` | Filter by region (free text, e.g. `us-west`) |
 | `--sort` | Sort by: `price` (default), `vram`, `provider` |
 | `-n`, `--limit` | Max results to show |
 | `--all` | Show all results (no limit) |
@@ -30,8 +31,19 @@ swm gpus [OPTIONS]
 swm gpus -g h100 --max-price 3.00 --sort price
 swm gpus -g a100 -p runpod --secure
 swm gpus -g "rtx 4090" -c 4
+swm gpus -r us-west
 swm gpus --all --sort vram
 ```
+
+## Output
+
+The result table includes a **Min CUDA** column showing each GPU's minimum CUDA toolkit (e.g. Hopper → 11.8, Ada → 11.8, Blackwell → 12.8). When all rows in the filtered result share the same minimum, swm appends `--cuda <X.Y>` to the suggested next-step `swm pod create` command:
+
+```
+Next →  swm pod create -p <provider> -g h200 -n <name> --cuda 11.8
+```
+
+Pair this with `swm images list -p <provider> --cuda <X.Y>` to see compatible Docker images, or just pass `--cuda` to `pod create` and let swm pick the newest matching image automatically. See [CUDA & image compatibility](/concepts/cuda-compatibility/) for the full picture.
 
 ## Fuzzy matching
 

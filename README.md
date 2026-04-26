@@ -48,16 +48,16 @@ git clone https://github.com/swm-gpu/swm.git && cd swm && pip install -e .
 # 1. Add your API key
 swm config set runpod.api_key <your-key>
 
-# 2. Find a GPU
+# 2. Find a GPU (the table tells you each GPU's minimum CUDA)
 swm gpus -g h200
 
-# 3. Create a pod
-swm pod create -p runpod -g h200 -n my-session
+# 3. Create a pod (auto-picks a CUDA-compatible image; auto-saves to storage)
+swm pod create -p runpod -g h200 -n my-session --cuda 12.8
 
 # 4. Install a framework
 swm setup install vllm runpod:<id>
 
-# 5. Done — saves workspace and terminates
+# 5. Done — pushes workspace to storage and terminates
 swm pod down runpod:<id>
 ```
 
@@ -97,21 +97,28 @@ Works with **Cursor**, **Claude Code**, **Codex**, **Copilot**, **Windsurf**, **
 swm gpus                            # all GPUs, all providers
 swm gpus -g h200 -c 4              # 4×H200 configs
 swm gpus --max-price 4 --secure    # under $4/hr, certified clouds
-swm pod create -p runpod -g h200 -n train
+swm images list -p runpod --cuda 12.8  # see compatible Docker images
+swm pod create -p runpod -g h200 -n train --cuda 12.8
 swm pod down runpod:<id>            # sync + terminate
 ```
+
+`swm gpus` reports each GPU's minimum CUDA toolkit. Pass `--cuda <major.minor>` to `swm pod create` to auto-pick the newest provider image that satisfies it.
 
 ### Workspace Sync
 
 Your `/workspace` directory follows you across clouds via S3-compatible storage (Backblaze B2, Amazon S3, Google GCS).
 
 ```bash
-swm sync push runpod:<id>           # pod → storage
 swm sync pull runpod:<id>           # storage → pod
-swm sync watch runpod:<id>          # auto-push on file changes
+swm sync push runpod:<id>           # pod → storage (incremental)
+swm sync push runpod:<id> --delete  # also remove files deleted locally
+swm sync watch runpod:<id>          # filesystem change watcher
+swm sync auto runpod:<id>           # background daemon: push every 60s
 ```
 
 Three-tier smart sync: inotify watcher tracks changes, incremental push uploads only what changed, tar mode packs 600k small files into one S3 object.
+
+**Continuous auto-sync.** `swm pod create` starts an auto-sync daemon by default — it tails the watcher log and pushes every 60s with no manual intervention. Adopt an existing pod with `swm setup workspace <pod>` if you created it with `--no-storage` or the bootstrap was interrupted.
 
 ### Frameworks
 
@@ -132,7 +139,9 @@ Auto-detects GPU count for tensor parallelism, opens SSH tunnels for unexposed p
 Monitors SSH sessions, GPU utilization, filesystem writes, and active processes. If nothing's happening, it saves your workspace and terminates the pod.
 
 ```bash
-swm guard enable runpod:<id> --policy auto-down --idle 30m
+swm pod create -p runpod -g h200 -n train \
+  --lifecycle auto-down --idle-timeout 30   # bake the policy into create
+swm guard set runpod:<id> --mode auto-down --idle-timeout 30
 swm guard list
 ```
 
@@ -173,7 +182,7 @@ Credentials are never stored on the pod. Storage keys are passed as transient en
 
 - **SSH key authentication only** — no passwords stored anywhere
 - **No credentials on pods** — storage keys passed transiently, never written to disk
-- **Non-destructive syncs** — files are never deleted from your storage bucket
+- **Non-destructive by default** — `sync push`, `sync pull`, and `pod down` never remove files from your storage bucket. Deletions are opt-in (`sync push --delete`) and the auto-sync daemon refuses to start unless a prior pull/push has confirmed pod ↔ bucket are in sync
 - **Secure cloud default** — `swm pod create` defaults to SOC 2 / HIPAA certified data centers
 
 ## Documentation

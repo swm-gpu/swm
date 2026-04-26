@@ -112,6 +112,7 @@ When you run `swm pod create`, swm automatically:
 1. Installs **s5cmd** on the pod (a high-performance S3 transfer tool)
 2. Configures storage credentials (passed transiently via SSH, never written to disk)
 3. Pulls your workspace from the bucket to `/workspace` on the pod
+4. Starts the inotify watcher and the **auto-sync daemon** so changes flow to storage automatically (default: every 60s)
 
 When you run `swm pod down`, swm:
 
@@ -121,9 +122,34 @@ When you run `swm pod down`, swm:
 ### Sync behavior
 
 - **Pull** uses `s5cmd cp --no-clobber` — skips files that already exist on the pod
-- **Push** uses a three-tier strategy: inotify watcher, timestamp-based delta, or full `s5cmd cp --if-size-differ`
-- Both directions are **non-destructive** — files are never deleted from your bucket
+- **Push** uses a three-tier strategy: inotify watcher → timestamp-based delta → full `s5cmd cp --if-size-differ`
+- **Non-destructive by default** — `sync push`, `sync pull`, and `pod down` never delete from your bucket
+- **Opt-in deletion** — pass `--delete` to `swm sync push` (or use `swm sync auto`) to mirror local deletions to storage. swm refuses these unless an active watcher is recording changes
 - Exclude patterns are supported: `swm sync push <id> -x "*.tmp" -x "__pycache__"`
+
+### Continuous auto-sync
+
+`swm sync auto <id>` runs a background daemon that tails the watcher log and pushes changes every interval (default 60s). It's started for you by `swm pod create`; manage it with:
+
+```bash
+swm sync auto runpod:abc123 --status   # daemon state + recent log
+swm sync auto runpod:abc123 -i 30      # 30s interval
+swm sync auto runpod:abc123 --stop     # stop the daemon
+```
+
+The daemon refuses to start unless a prior `swm sync pull` or `swm sync push` succeeded for this pod — without that signal, a stray local deletion would propagate to storage and erase the remote copy.
+
+### Attaching a workspace later
+
+If you created a pod with `--no-storage`, or `swm pod create`'s SSH probe timed out before bootstrap finished, attach storage in one shot:
+
+```bash
+swm setup workspace runpod:abc123                  # workspace name = pod name
+swm setup workspace runpod:abc123 -n my-ws         # custom name
+swm setup workspace runpod:abc123 -b b2:my-bucket  # explicit bucket
+```
+
+This installs s5cmd, configures storage, pulls (or initializes) the workspace, persists the mapping in config, and starts auto-sync.
 
 ### Workspace names
 

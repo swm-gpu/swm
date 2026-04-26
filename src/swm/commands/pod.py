@@ -148,6 +148,12 @@ def pod_prune():
 @click.option("--volume", default=100, type=int, help="Persistent volume size in GB")
 @click.option("--disk", default=40, type=int, help="Container disk size in GB")
 @click.option("--image", default="", help="Docker image (provider default if empty)")
+@click.option(
+    "--cuda", "cuda",
+    default=None,
+    help="Auto-pick newest provider image matching this CUDA major.minor "
+         "(e.g. 12.8). Ignored if --image is set.",
+)
 @click.option("--cloud-type", default="SECURE", help="RunPod cloud type: SECURE, COMMUNITY, ALL")
 @click.option("--ports", default="22/tcp,8888/http,8188/http", help="Ports to expose")
 @click.option("--gpu-count", default=1, type=int, help="Number of GPUs")
@@ -171,6 +177,7 @@ def create(
     volume: int,
     disk: int,
     image: str,
+    cuda: str | None,
     cloud_type: str,
     ports: str,
     gpu_count: int,
@@ -235,6 +242,37 @@ def create(
                 "[bold]swm setup storage <pod>[/bold] and "
                 "[bold]swm sync pull <pod>[/bold]. "
                 "Pass --no-storage to silence this warning.[/dim]"
+            )
+
+    if not image and cuda:
+        from swm.images import resolve_image
+
+        try:
+            resolved = resolve_image(provider, cuda)
+        except Exception as exc:
+            raise click.ClickException(f"Could not look up images: {exc}")
+        if not resolved:
+            raise click.ClickException(
+                f"No image found for {provider} with CUDA {cuda}. "
+                f"Run [bold]swm images list -p {provider}[/bold] to see options, "
+                "or pass --image explicitly."
+            )
+        image = resolved
+        console.print(
+            f"[dim]Resolved --cuda {cuda} → "
+            f"[cyan]{image}[/cyan][/dim]"
+        )
+
+    if image and gpu:
+        from swm.cuda import min_cuda_for, cuda_at_least
+        from swm.images import parse_image_cuda
+
+        gpu_min = min_cuda_for(gpu)
+        img_cuda = parse_image_cuda(image)
+        if gpu_min and img_cuda and not cuda_at_least(img_cuda, gpu_min):
+            console.print(
+                f"[yellow]⚠ Image CUDA {img_cuda} is below {gpu}'s minimum "
+                f"({gpu_min}). The pod may fail to start GPU workloads.[/yellow]"
             )
 
     config = CreateConfig(

@@ -9,6 +9,13 @@ WATCH_LOG = "/workspace/.swm_changes.log"
 WATCH_PID = "/tmp/.swm_watcher.pid"
 WATCHER_SCRIPT = "/tmp/.swm_start_watcher.sh"
 
+# Fingerprint of the regex passed to inotifywait --exclude on the
+# currently-running watcher.  Lets swm detect when a pod is running a
+# watcher started by an older version with a stale exclude list, and
+# restart it so changes to WATCH_EXCLUDES below actually take effect on
+# long-lived pods.
+WATCHER_EXCLUDES_FILE = "/tmp/.swm_watcher.excludes"
+
 # ── Push-time staging ──────────────────────────────────────────────
 
 STAGING = "/tmp/.swm_push_staging"
