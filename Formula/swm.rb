@@ -13,7 +13,7 @@ class Swm < Formula
   on_macos do
     on_arm do
       url "https://github.com/swm-gpu/swm/releases/download/v#{version}/swm-#{version}-darwin-arm64"
-      sha256 "PLACEHOLDER_SHA256_ARM64"
+      sha256 "e05b409e40b626976340579f86c1029c5355a7a06b2d761c007bd238de40ae58"
     end
     on_intel do
       url "https://github.com/swm-gpu/swm/releases/download/v#{version}/swm-#{version}-darwin-amd64"

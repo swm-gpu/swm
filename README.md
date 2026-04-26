@@ -4,8 +4,8 @@
 
 <p align="center">
   <a href="https://opensource.org/licenses/Apache-2.0"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License" /></a>
-  <a href="https://pypi.org/project/swm/"><img src="https://img.shields.io/pypi/v/swm.svg" alt="PyPI" /></a>
-  <a href="https://pypi.org/project/swm/"><img src="https://img.shields.io/pypi/pyversions/swm.svg" alt="Python" /></a>
+  <a href="https://pypi.org/project/swm-gpu/"><img src="https://img.shields.io/pypi/v/swm-gpu.svg" alt="PyPI" /></a>
+  <a href="https://pypi.org/project/swm-gpu/"><img src="https://img.shields.io/pypi/pyversions/swm-gpu.svg" alt="Python" /></a>
 </p>
 
 <p align="center">
@@ -36,7 +36,7 @@ $ swm gpus -g h200 --max-price 4
 brew tap swm-gpu/swm && brew install swm
 
 # Python (3.11+)
-pipx install swm
+pipx install swm-gpu
 
 # From source
 git clone https://github.com/swm-gpu/swm.git && cd swm && pip install -e .
