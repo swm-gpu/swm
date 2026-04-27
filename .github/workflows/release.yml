@@ -199,3 +199,41 @@ jobs:
           git add Formula/swm.rb
           git commit -m "Update formula to v${{ steps.v.outputs.version }}"
           git push
+
+  pypi:
+    needs: release
+    runs-on: ubuntu-latest
+    name: Publish to PyPI
+    environment:
+      name: pypi
+      url: https://pypi.org/project/swm-gpu/
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Verify version drift (tag vs pyproject vs __version__)
+        run: |
+          TAG="${GITHUB_REF#refs/tags/v}"
+          PKG=$(python -c "from swm import __version__; print(__version__)")
+          TOML=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          echo "tag=$TAG  __version__=$PKG  pyproject=$TOML"
+          if [ "$TAG" != "$PKG" ] || [ "$TAG" != "$TOML" ]; then
+            echo "::error::version drift detected (tag=$TAG, __version__=$PKG, pyproject=$TOML)"
+            exit 1
+          fi
+
+      - name: Build distributions
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+          ls -la dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
