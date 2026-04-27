@@ -296,19 +296,47 @@ def start_remote_guard(session: RemoteSession, policy: GuardPolicy) -> bool:
     return remote_guard_running(session)
 
 
-def stop_remote_guard(session: RemoteSession) -> None:
-    """Terminate the remote guard daemon.
+_STOP_GUARD_SCRIPT = "/tmp/.swm_stop_guard.sh"
 
-    Belt-and-braces: kills by PID file first, then falls back to
-    ``pkill -f`` against the watcher script path. The fallback catches
-    duplicate guards left over from race conditions or stale PID files
-    (e.g. an older guard whose PID was overwritten before it received
-    SIGTERM).
+
+def stop_remote_guard(session: RemoteSession) -> None:
+    """Terminate the remote guard daemon and any zombies.
+
+    Sends SIGTERM (via PID file + ``pkill -f``), waits up to ~3 s for
+    graceful exit, then escalates to SIGKILL for any survivors. The
+    ``-9`` fallback catches daemons that lost SIGTERM (overwritten PID
+    file, blocked I/O, race-spawned siblings) so the next
+    ``start_remote_guard`` is guaranteed to be the only watcher running.
+
+    The kill logic is written to a tiny on-pod script and executed via
+    ``bash /tmp/.swm_stop_guard.sh``. This is critical: ``pkill -f``
+    inspects the full command line of every process, so passing the
+    pattern inline (``ssh host "pkill -f .../watcher.py"``) would match
+    our own controlling shell — killing it before the SIGKILL stage and
+    leaving zombies alive. The script file's argv is just
+    ``bash /tmp/.swm_stop_guard.sh`` which does not contain the watcher
+    path, so the only matches are the actual watcher daemons.
+
+    Safe even if ``status.json`` is mid-write: it uses an atomic
+    ``rename``, so a SIGKILL leaves either the old or new file intact,
+    never a partial one.
     """
+    script = (
+        "#!/bin/bash\n"
+        f"test -f {_GUARD_PID} && kill $(cat {_GUARD_PID}) 2>/dev/null\n"
+        f"pkill -f '{_GUARD_SCRIPT}' 2>/dev/null\n"
+        "for _ in 1 2 3; do\n"
+        f"  pgrep -f '{_GUARD_SCRIPT}' >/dev/null 2>&1 || break\n"
+        "  sleep 1\n"
+        "done\n"
+        f"pkill -9 -f '{_GUARD_SCRIPT}' 2>/dev/null || true\n"
+        f"rm -f {_GUARD_PID}\n"
+    )
+    payload = base64.b64encode(script.encode("utf-8")).decode("ascii")
     session.exec(
-        f"test -f {_GUARD_PID} && kill $(cat {_GUARD_PID}) 2>/dev/null; "
-        f"pkill -f '{_GUARD_SCRIPT}' 2>/dev/null || true; "
-        f"rm -f {_GUARD_PID}",
+        f"echo '{payload}' | base64 -d > {_STOP_GUARD_SCRIPT} && "
+        f"bash {_STOP_GUARD_SCRIPT}; "
+        f"rm -f {_STOP_GUARD_SCRIPT}",
         stream=False,
     )
 
