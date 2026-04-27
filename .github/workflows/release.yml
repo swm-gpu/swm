@@ -221,7 +221,7 @@ jobs:
       - name: Verify version drift (tag vs pyproject vs __version__)
         run: |
           TAG="${GITHUB_REF#refs/tags/v}"
-          PKG=$(python -c "from swm import __version__; print(__version__)")
+          PKG=$(python -c "import re,sys; m=re.search(r'__version__\s*=\s*[\"\x27]([^\"\x27]+)', open('src/swm/__init__.py').read()); print(m.group(1) if m else sys.exit('no __version__ in src/swm/__init__.py'))")
           TOML=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
           echo "tag=$TAG  __version__=$PKG  pyproject=$TOML"
           if [ "$TAG" != "$PKG" ] || [ "$TAG" != "$TOML" ]; then
