@@ -322,7 +322,6 @@ def _render_report(report) -> None:
         if has_receipt:
             pay_table.add_column("Receipt")
 
-        from collections import defaultdict as _ddict
         grouped: dict[tuple, dict] = {}
         for p in r.payments:
             key = (p.date, p.method, p.description)

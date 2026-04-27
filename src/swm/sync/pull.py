@@ -16,8 +16,6 @@ def workspace_pull(
     workspace: str,
     dest: str = "/workspace",
     extra_excludes: list[str] | None = None,
-    total_bytes: int = 0,
-    total_files: int = 0,
     force: bool = False,
 ) -> None:
     """Non-destructive pull: download workspace from storage to pod.
@@ -48,8 +46,6 @@ def workspace_pull(
         f"{env} s5cmd cp{noclobber} --show-progress{excludes} "
         f"'s3://{bucket}/{workspace}/*' '{dest}/'",
         force=force,
-        total_bytes=total_bytes,
-        total_files=total_files,
     )
 
     restore_permissions(session, dest)

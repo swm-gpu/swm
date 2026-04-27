@@ -15,7 +15,6 @@ from swm.providers.base import InstanceStatus
 from swm.commands._helpers import (
     console,
     _instance_for,
-    _preflight_pull,
     complete_pod_id,
     pod_arg_callback,
     clear_active_pod,
@@ -216,9 +215,15 @@ def create(
     bucket_name = None
     ws_action = ""
     ws_is_new = False
+    from swm.guard import _coalesce_int
+
     guard_defaults = cfg.get("guard.defaults", {}) or {}
     lifecycle_mode = lifecycle or guard_defaults.get("mode")
-    lifecycle_idle = idle_timeout or guard_defaults.get("idle_timeout_minutes") or 60
+    lifecycle_idle = _coalesce_int(
+        idle_timeout,
+        guard_defaults.get("idle_timeout_minutes"),
+        default=60,
+    )
 
     if not no_storage:
         try:
@@ -326,7 +331,7 @@ def create(
         from swm.costs.budget import check_budget
 
         record_start(inst, workspace=ws_name)
-        warning = check_budget(provider, inst.cost_per_hr)
+        warning = check_budget(provider)
         if warning:
             for line in warning.splitlines():
                 console.print(f"  [yellow]⚠ {line}[/yellow]")
@@ -508,7 +513,7 @@ def start(instance_id: str):
         from swm.costs.budget import check_budget
 
         record_start(inst)
-        warning = check_budget(provider.slug, inst.cost_per_hr)
+        warning = check_budget(provider.slug)
         if warning:
             for line in warning.splitlines():
                 console.print(f"  [yellow]⚠ {line}[/yellow]")

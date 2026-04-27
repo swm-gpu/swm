@@ -27,7 +27,6 @@ DELETED_LIST = "/tmp/.swm_push_deleted"
 AUTO_PID = "/tmp/.swm_autosync.pid"
 AUTO_LOG = "/workspace/.swm_autosync.log"
 AUTO_SCRIPT = "/tmp/.swm_autosync.sh"
-AUTO_LOCK = "/tmp/.swm_autosync.lock"
 
 # Shared across manual push + auto-sync so they don't clobber each other.
 TRANSFER_LOCK = "/tmp/.swm_transfer.lock"

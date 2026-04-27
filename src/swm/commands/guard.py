@@ -44,7 +44,7 @@ def guard_defaults(mode: str | None, idle_timeout: int | None, poll_interval: in
 
     Run without options to see current defaults.
     """
-    if mode or idle_timeout or poll_interval:
+    if mode is not None or idle_timeout is not None or poll_interval is not None:
         policy = set_defaults(
             mode=mode,
             idle_timeout_minutes=idle_timeout,

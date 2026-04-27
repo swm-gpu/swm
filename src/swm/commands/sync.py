@@ -83,7 +83,7 @@ def pull(instance_id: str, path: str, bucket: str | None, dest: str, exclude: tu
         return
 
     with console.status("Running preflight checks…", spinner="dots"):
-        extra_excludes, total_bytes, total_files = _preflight_pull(
+        extra_excludes = _preflight_pull(
             remote, bucket_name, ws, volume_gb=inst.volume_gb or 100,
         )
 
@@ -93,7 +93,6 @@ def pull(instance_id: str, path: str, bucket: str | None, dest: str, exclude: tu
         workspace_pull(
             sess, remote, bucket_name, ws,
             dest=dest, extra_excludes=all_excludes or None,
-            total_bytes=total_bytes, total_files=total_files,
             force=force,
         )
 

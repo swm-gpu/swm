@@ -219,15 +219,12 @@ def bootstrap_workspace_on_pod(
                     f"(every {autosync_interval}s → "
                     f"{storage_slug}:{bucket}/{workspace})[/dim]"
                 )
-        except (AutosyncUnsafeError, Exception) as exc:
+        except Exception as exc:
             _fail("Auto-sync start", f"swm sync auto {qualified_id}", exc)
     else:
         failed.append(("Auto-sync start", f"swm sync auto {qualified_id}"))
 
     return failed
-
-
-_LOCK_FILE = "/tmp/.swm_transfer.lock"
 
 
 def _acquire_transfer_lock(session: RemoteSession, force: bool = False) -> None:
@@ -236,8 +233,10 @@ def _acquire_transfer_lock(session: RemoteSession, force: bool = False) -> None:
     If a lock exists with a live PID, raises unless *force* is True
     (which kills the stale process first).
     """
+    from swm.sync.paths import TRANSFER_LOCK
+
     code, out, _ = session.exec(
-        f"cat {_LOCK_FILE} 2>/dev/null", stream=False,
+        f"cat {TRANSFER_LOCK} 2>/dev/null", stream=False,
     )
     old_pid = out.strip()
 
@@ -268,7 +267,7 @@ def _acquire_transfer_lock(session: RemoteSession, force: bool = False) -> None:
         if n and n != "0":
             console.print(f"  [dim]Removed {n} orphaned temp files[/dim]")
 
-    session.exec(f"echo $$ > {_LOCK_FILE}", stream=False)
+    session.exec(f"echo $$ > {TRANSFER_LOCK}", stream=False)
 
 
 def _s5cmd_transfer(
@@ -276,8 +275,6 @@ def _s5cmd_transfer(
     label: str,
     s5cmd_cmd: str,
     force: bool = False,
-    total_bytes: int = 0,
-    total_files: int = 0,
 ) -> int:
     """Run an s5cmd transfer with output streamed directly to the terminal.
 
@@ -287,12 +284,14 @@ def _s5cmd_transfer(
 
     Returns the process exit code.
     """
+    from swm.sync.paths import TRANSFER_LOCK
+
     console.print(f"\n[bold cyan]▸ {label}[/bold cyan]")
     _acquire_transfer_lock(session, force=force)
 
     wrapped = (
-        f"trap 'rm -f {_LOCK_FILE}' EXIT; "
-        f"echo $$ > {_LOCK_FILE}; "
+        f"trap 'rm -f {TRANSFER_LOCK}' EXIT; "
+        f"echo $$ > {TRANSFER_LOCK}; "
         f"{s5cmd_cmd}"
     )
     cmd = session._ssh_cmd() + [wrapped]
@@ -311,8 +310,6 @@ _RE_EXPORTS: dict[str, str] = {
     "install_framework": "swm.bootstrap_frameworks",
     "start_framework": "swm.bootstrap_frameworks",
     "stop_framework": "swm.bootstrap_frameworks",
-    "install_comfyui": "swm.bootstrap_frameworks",
-    "install_swarmui": "swm.bootstrap_frameworks",
     "link_models_to_comfyui": "swm.bootstrap_frameworks",
     "wait_for_ssh": "swm.bootstrap_ssh",
     "next_workspace_name": "swm.bootstrap_ssh",

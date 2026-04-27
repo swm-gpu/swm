@@ -177,6 +177,18 @@ class GuardPolicy:
         return self.mode
 
 
+def _coalesce_int(*values, default: int) -> int:
+    """Return ``int(first non-None value)``, falling back to ``default``.
+
+    Distinct from ``int(... or default)`` because explicit ``0`` is honoured
+    instead of being silently replaced by ``default``.
+    """
+    for v in values:
+        if v is not None:
+            return int(v)
+    return default
+
+
 def _normalize_mode(mode: str | None) -> str:
     raw = str(mode or "manual").strip().lower()
     aliases = {
@@ -197,8 +209,8 @@ def get_defaults() -> GuardPolicy:
     d = cfg.get("guard.defaults", {}) or {}
     return GuardPolicy(
         mode=_normalize_mode(d.get("mode") or "manual"),
-        idle_timeout_minutes=int(d.get("idle_timeout_minutes") or 60),
-        poll_interval_seconds=int(d.get("poll_interval_seconds") or 60),
+        idle_timeout_minutes=_coalesce_int(d.get("idle_timeout_minutes"), default=60),
+        poll_interval_seconds=_coalesce_int(d.get("poll_interval_seconds"), default=60),
     )
 
 
@@ -212,8 +224,8 @@ def set_defaults(
     cur = get_defaults()
     policy = GuardPolicy(
         mode=_normalize_mode(mode) if mode else cur.mode,
-        idle_timeout_minutes=idle_timeout_minutes or cur.idle_timeout_minutes,
-        poll_interval_seconds=poll_interval_seconds or cur.poll_interval_seconds,
+        idle_timeout_minutes=_coalesce_int(idle_timeout_minutes, default=cur.idle_timeout_minutes),
+        poll_interval_seconds=_coalesce_int(poll_interval_seconds, default=cur.poll_interval_seconds),
     )
     cfg.set_value("guard.defaults.mode", policy.mode)
     cfg.set_value("guard.defaults.idle_timeout_minutes", str(policy.idle_timeout_minutes))
@@ -225,8 +237,16 @@ def get_policy(instance_id: str) -> GuardPolicy:
     defaults = cfg.get("guard.defaults", {}) or {}
     pod = cfg.get(f"pods.{instance_id}.guard", {}) or {}
     mode = _normalize_mode(pod.get("mode") or defaults.get("mode") or "manual")
-    idle = int(pod.get("idle_timeout_minutes") or defaults.get("idle_timeout_minutes") or 60)
-    poll = int(pod.get("poll_interval_seconds") or defaults.get("poll_interval_seconds") or 60)
+    idle = _coalesce_int(
+        pod.get("idle_timeout_minutes"),
+        defaults.get("idle_timeout_minutes"),
+        default=60,
+    )
+    poll = _coalesce_int(
+        pod.get("poll_interval_seconds"),
+        defaults.get("poll_interval_seconds"),
+        default=60,
+    )
     return GuardPolicy(mode=mode, idle_timeout_minutes=idle, poll_interval_seconds=poll)
 
 
@@ -482,9 +502,11 @@ def run_guard_cycle(instance_ids: tuple[str, ...] = ()) -> list[str]:
         if policy.mode == "remind":
             if _notice_due(instance_id):
                 _record_notice(instance_id)
+                cost = inst.cost_per_hr
+                cost_str = f"${cost:.2f}/hr" if cost is not None else "unknown $/hr"
                 messages.append(
                     f"[yellow]⚠ {inst.qualified_id} idle for {_format_idle(idle_seconds)} "
-                    f"at ${inst.cost_per_hr:.2f}/hr — consider stop or down[/yellow]"
+                    f"at {cost_str} — consider stop or down[/yellow]"
                 )
             continue
 
@@ -517,8 +539,6 @@ _LOCAL_LOG_FILE = cfg.CONFIG_DIR / "guard.log"
 
 
 def _local_daemon_alive() -> bool:
-    import signal
-
     if not _LOCAL_PID_FILE.exists():
         return False
     try:
@@ -546,14 +566,14 @@ def ensure_local_daemon(interval: int = 60) -> bool:
         return False
 
     cfg.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
-    log_fd = open(_LOCAL_LOG_FILE, "a")
-    proc = subprocess.Popen(
-        [swm_bin, "guard", "run", "--interval", str(interval)],
-        stdin=subprocess.DEVNULL,
-        stdout=log_fd,
-        stderr=log_fd,
-        start_new_session=True,
-    )
+    with open(_LOCAL_LOG_FILE, "a") as log_fd:
+        proc = subprocess.Popen(
+            [swm_bin, "guard", "run", "--interval", str(interval)],
+            stdin=subprocess.DEVNULL,
+            stdout=log_fd,
+            stderr=log_fd,
+            start_new_session=True,
+        )
     _LOCAL_PID_FILE.write_text(str(proc.pid))
     return True
 

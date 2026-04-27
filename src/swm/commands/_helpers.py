@@ -84,6 +84,7 @@ def pod_arg_callback(ctx, param, value):
 
 _PROVIDER_PREFIXES = (
     "runpod:", "vastai:", "lambda:", "aws:", "gcp:", "coreweave:", "vultr:",
+    "tensordock:", "fluidstack:", "azure:",
 )
 
 
@@ -204,11 +205,11 @@ def _preflight_pull(
     bucket: str,
     workspace: str,
     volume_gb: int,
-) -> tuple[list[str], int, int]:
-    """Run pre-flight size check and return (extra_excludes, total_bytes, total_files).
+) -> list[str]:
+    """Run pre-flight size check and return any directory excludes.
 
     Runs locally — no SSH session needed.
-    Returns an empty exclude list when the workspace fits.
+    Returns an empty list when the workspace fits.
     Raises ``SystemExit`` if the user aborts.
     """
     from swm.bootstrap import preflight_check, _humanize
@@ -216,7 +217,7 @@ def _preflight_pull(
     check = preflight_check(storage_slug, bucket, workspace, volume_gb)
 
     if check.fits:
-        return [], check.workspace_bytes, 0
+        return []
 
     if check.dir_sizes:
         table = Table(title="Directory Breakdown", show_lines=True)
@@ -250,7 +251,7 @@ def _preflight_pull(
 
     if choice.lower() == "continue":
         console.print("[yellow]⚠ Proceeding — disk may fill up[/yellow]")
-        return [], check.workspace_bytes, 0
+        return []
 
     extra = [f"{d.strip()}/**" for d in choice.split(",") if d.strip()]
     if extra:
@@ -262,4 +263,4 @@ def _preflight_pull(
             f"  Adjusted size: [bold]{_humanize(remaining)}[/bold] "
             f"(excluding {', '.join(d.strip() for d in choice.split(','))})"
         )
-    return extra, check.workspace_bytes, 0
+    return extra

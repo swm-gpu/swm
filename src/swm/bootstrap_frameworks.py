@@ -151,16 +151,6 @@ def stop_framework(
     _con.print(f"  [green]✓ {fw.label} stopped[/green]")
 
 
-def install_comfyui(session: RemoteSession) -> None:
-    """Backward-compatible wrapper."""
-    install_framework(session, "comfyui")
-
-
-def install_swarmui(session: RemoteSession) -> None:
-    """Backward-compatible wrapper."""
-    install_framework(session, "swarmui")
-
-
 # ── symlinks ────────────────────────────────────────────────────────
 
 

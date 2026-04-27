@@ -108,6 +108,9 @@ sync_once() {
 
   echo $$ > "$TRANSFER_LOCK"
 
+  local cp_rc=0
+  local rm_rc=0
+
   if [ "$n_up" -gt 0 ]; then
     log "uploading $n_up file(s)"
     local staging="/tmp/.swm_autosync_staging"
@@ -118,6 +121,7 @@ sync_once() {
       ln "$f" "$staging/$rel" 2>/dev/null || cp "$f" "$staging/$rel"
     done < "$uploads"
     s5cmd --log error cp "$staging/*" "s3://$BUCKET/$WORKSPACE/" >> "$AUTO_LOG" 2>&1
+    cp_rc=$?
     rm -rf "$staging"
   fi
 
@@ -130,7 +134,17 @@ sync_once() {
       echo "s3://$BUCKET/$WORKSPACE/$rel" >> "$keylist"
     done < "$deletes"
     xargs -a "$keylist" -d '\n' -n 100 s5cmd --log error rm >> "$AUTO_LOG" 2>&1
+    rm_rc=$?
     rm -f "$keylist"
+  fi
+
+  if [ "$cp_rc" -ne 0 ] || [ "$rm_rc" -ne 0 ]; then
+    # Re-queue the snapshot so the next cycle retries; do NOT advance
+    # PUSH_STAMP because the bucket is not in sync with the pod.
+    log "WARN: transfer failed (cp_rc=$cp_rc rm_rc=$rm_rc) — re-queueing entries"
+    cat "$snap" >> "$WATCH_LOG" 2>/dev/null || true
+    rm -f "$snap" "$uploads" "$deletes" "$TRANSFER_LOCK"
+    return 0
   fi
 
   touch "$PUSH_STAMP"

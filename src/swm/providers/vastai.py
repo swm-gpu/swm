@@ -173,7 +173,7 @@ class VastAIProvider(CloudProvider):
             "disk": disk_gb,
             "label": config.name,
             "onstart": None,
-            "runtype": "ssh_direc",
+            "runtype": "ssh_direct",
             "env": dict(config.env),
         }
 

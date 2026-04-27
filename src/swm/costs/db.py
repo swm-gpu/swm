@@ -256,7 +256,6 @@ def spend_in_period(
     rows = db.execute(f"SELECT * FROM sessions {where}", params).fetchall()
 
     total = 0.0
-    now_str = now_dt.isoformat()
     for r in rows:
         if r["stopped_at"] is not None and r["estimated_cost"] is not None:
             total += r["estimated_cost"]

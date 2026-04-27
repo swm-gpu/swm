@@ -13,7 +13,7 @@ def set_budget(scope: str, limit_usd: float, period: str) -> int:
     return _db_set_budget(scope, limit_usd, period)
 
 
-def check_budget(provider: str, cost_per_hr: float | None = None) -> str | None:
+def check_budget(provider: str) -> str | None:
     """Check all applicable budgets and return a warning string, or None.
 
     Checks budgets matching ``global``, ``provider:<slug>``, and any

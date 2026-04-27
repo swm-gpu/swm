@@ -9,7 +9,6 @@ from pathlib import Path
 from swm import config as cfg
 from swm.remote.ssh import RemoteSession
 from swm.sync.paths import (
-    AUTO_LOCK,
     AUTO_LOG,
     AUTO_PID,
     AUTO_SCRIPT,
@@ -168,7 +167,7 @@ def stop_autosync(session: RemoteSession) -> None:
     """Stop the background auto-sync daemon if running."""
     session.exec(
         f"test -f {AUTO_PID} && kill $(cat {AUTO_PID}) 2>/dev/null; "
-        f"rm -f {AUTO_PID} {AUTO_LOCK}",
+        f"rm -f {AUTO_PID}",
         stream=False,
     )
 
