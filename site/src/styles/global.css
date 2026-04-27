@@ -133,32 +133,40 @@ starlight-menu-button + nav a[aria-current="page"],
 /* per-card accent colors via nth-child */
 .card-grid .card:nth-child(1) { border-left-color: #00ff88 !important; }
 .card-grid .card:nth-child(1):hover { box-shadow: 0 0 20px #00ff8822; }
-.card-grid .card:nth-child(1) .card-title svg { color: #00ff88; }
+.card-grid .card:nth-child(1) svg,
+.card-grid .card:nth-child(1) svg path { color: #00ff88 !important; fill: #00ff88 !important; }
 
 .card-grid .card:nth-child(2) { border-left-color: #00d4ff !important; }
 .card-grid .card:nth-child(2):hover { box-shadow: 0 0 20px #00d4ff22; }
-.card-grid .card:nth-child(2) .card-title svg { color: #00d4ff; }
+.card-grid .card:nth-child(2) svg,
+.card-grid .card:nth-child(2) svg path { color: #00d4ff !important; fill: #00d4ff !important; }
 
 .card-grid .card:nth-child(3) { border-left-color: #a78bfa !important; }
 .card-grid .card:nth-child(3):hover { box-shadow: 0 0 20px #a78bfa22; }
-.card-grid .card:nth-child(3) .card-title svg { color: #a78bfa; }
+.card-grid .card:nth-child(3) svg,
+.card-grid .card:nth-child(3) svg path { color: #a78bfa !important; fill: #a78bfa !important; }
 
 .card-grid .card:nth-child(4) { border-left-color: #f472b6 !important; }
 .card-grid .card:nth-child(4):hover { box-shadow: 0 0 20px #f472b622; }
-.card-grid .card:nth-child(4) .card-title svg { color: #f472b6; }
+.card-grid .card:nth-child(4) svg,
+.card-grid .card:nth-child(4) svg path { color: #f472b6 !important; fill: #f472b6 !important; }
 
 .card-grid .card:nth-child(5) { border-left-color: #fbbf24 !important; }
 .card-grid .card:nth-child(5):hover { box-shadow: 0 0 20px #fbbf2422; }
-.card-grid .card:nth-child(5) .card-title svg { color: #fbbf24; }
+.card-grid .card:nth-child(5) svg,
+.card-grid .card:nth-child(5) svg path { color: #fbbf24 !important; fill: #fbbf24 !important; }
 
 .card-grid .card:nth-child(6) { border-left-color: #34d399 !important; }
 .card-grid .card:nth-child(6):hover { box-shadow: 0 0 20px #34d39922; }
-.card-grid .card:nth-child(6) .card-title svg { color: #34d399; }
+.card-grid .card:nth-child(6) svg,
+.card-grid .card:nth-child(6) svg path { color: #34d399 !important; fill: #34d399 !important; }
 
 .card-grid .card:nth-child(7) { border-left-color: #f97316 !important; }
 .card-grid .card:nth-child(7):hover { box-shadow: 0 0 20px #f9731622; }
-.card-grid .card:nth-child(7) .card-title svg { color: #f97316; }
+.card-grid .card:nth-child(7) svg,
+.card-grid .card:nth-child(7) svg path { color: #f97316 !important; fill: #f97316 !important; }
 
 .card-grid .card:nth-child(8) { border-left-color: #38bdf8 !important; }
 .card-grid .card:nth-child(8):hover { box-shadow: 0 0 20px #38bdf822; }
-.card-grid .card:nth-child(8) .card-title svg { color: #38bdf8; }
+.card-grid .card:nth-child(8) svg,
+.card-grid .card:nth-child(8) svg path { color: #38bdf8 !important; fill: #38bdf8 !important; }
