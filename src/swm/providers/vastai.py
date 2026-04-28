@@ -103,7 +103,7 @@ class VastAIProvider(CloudProvider):
             "num_gpus": num_filter,
             "rentable": {"eq": True},
             "order": [["dph_total", "asc"]],
-            "limit": 500,
+            "limit": 3000,
         })
         seen: dict[tuple[str, int], GpuInfo] = {}
         for offer in data.get("offers", []):
