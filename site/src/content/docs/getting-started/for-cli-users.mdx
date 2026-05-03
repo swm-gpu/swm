@@ -35,17 +35,38 @@ swm config set b2.bucket my-swm-bucket
 
 ## Enable shell autocomplete
 
-swm has built-in tab completion for commands, options, and pod IDs. Add one line to your shell profile:
+swm has built-in tab completion for commands, options, and pod IDs.
+
+If you installed via Homebrew **and** use fish, or use zsh with Oh My Zsh / prezto (or have `compinit` already initialized), completion is wired up automatically by the formula — skip this section. Otherwise, generate the completion script once and source it from your shell profile.
+
+### bash
 
 ```bash
-# bash (~/.bashrc)
-eval "$(_SWM_COMPLETE=bash_source swm)"
+_SWM_COMPLETE=bash_source swm > ~/.swm-complete.bash
+echo '. ~/.swm-complete.bash' >> ~/.bashrc
+```
 
-# zsh (~/.zshrc)
-eval "$(_SWM_COMPLETE=zsh_source swm)"
+macOS users: the system bash (3.2) does not work with modern completions; install `bash-completion@2` from Homebrew first.
 
-# fish (~/.config/fish/config.fish)
-eval (env _SWM_COMPLETE=fish_source swm)
+### zsh
+
+```bash
+_SWM_COMPLETE=zsh_source swm > ~/.swm-complete.zsh
+echo '. ~/.swm-complete.zsh' >> ~/.zshrc
+```
+
+If you're on a vanilla zsh (no Oh My Zsh / prezto), zsh's completion system must be initialized before sourcing the file. Add this to `~/.zshrc` *before* the line above:
+
+```bash
+autoload -Uz compinit && compinit
+```
+
+### fish
+
+Drop the script into fish's autoload directory — fish picks it up on the next shell:
+
+```bash
+_SWM_COMPLETE=fish_source swm > ~/.config/fish/completions/swm.fish
 ```
 
 After reloading your shell, `swm <TAB>` completes commands and `swm pod stop <TAB>` completes pod IDs.

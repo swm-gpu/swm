@@ -1,6 +1,6 @@
 [project]
 name = "swm-gpu"
-version = "0.1.6"
+version = "0.1.7"
 description = "One CLI to search, provision, and manage cloud GPUs across 10 providers"
 readme = "README.md"
 requires-python = ">=3.11"
