@@ -179,6 +179,7 @@ jobs:
             def install
               binary = Dir["swm-*"].first || "swm"
               bin.install binary => "swm"
+              chmod 0555, bin/"swm"
               generate_completions_from_executable(bin/"swm", shells: [:bash, :zsh, :fish], shell_parameter_format: :click)
             end
 
