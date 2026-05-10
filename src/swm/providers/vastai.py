@@ -154,6 +154,7 @@ class VastAIProvider(CloudProvider):
             "gpu_name": {"eq": gpu_name},
             "num_gpus": {"gte": config.gpu_count},
             "rentable": {"eq": True},
+            "disk_space": {"gte": disk_gb},
             "order": [["dph_total", "asc"]],
             "limit": 10,
         }
