@@ -53,18 +53,21 @@ def _s3_env(storage_slug: str) -> str:
         ak = cfg.get("gcs.hmac_access") or ""
         sk = cfg.get("gcs.hmac_secret") or ""
     elif storage_slug == "s3":
-        endpoint = ""
+        endpoint = cfg.get("s3.endpoint_url") or ""
         ak = cfg.get("s3.access_key") or ""
         sk = cfg.get("s3.secret_key") or ""
     else:
         raise ValueError(f"Unknown storage slug: {storage_slug}")
 
+    region = str(cfg.get("aws.region") or "")
     parts = [
         f"AWS_ACCESS_KEY_ID='{ak}'",
         f"AWS_SECRET_ACCESS_KEY='{sk}'",
     ]
     if endpoint:
         parts.append(f"S3_ENDPOINT_URL='{endpoint}'")
+    if region:
+        parts.append(f"AWS_REGION='{region}'")
     return " ".join(parts)
 
 
