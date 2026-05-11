@@ -30,7 +30,8 @@ class S3Provider(S3CompatProvider):
             return False
 
     def _s3_endpoint_url(self) -> str | None:
-        return None
+        val = cfg.get("s3.endpoint_url")
+        return str(val) if val else None
 
     def _s3_credentials(self) -> tuple[str | None, str | None]:
         ak = cfg.get("s3.access_key")
@@ -47,7 +48,9 @@ class S3Provider(S3CompatProvider):
     ) -> BucketInfo:
         location = location or self._region()
         kw: dict = {"Bucket": name}
-        if location != "us-east-1":
+        # S3-compatible providers (R2, MinIO, etc.) typically reject
+        # LocationConstraint, so skip it when a custom endpoint is set.
+        if not self._s3_endpoint_url() and location != "us-east-1":
             kw["CreateBucketConfiguration"] = {"LocationConstraint": location}
         self.s3.create_bucket(**kw)
         cfg.set_value("s3.bucket", name)
