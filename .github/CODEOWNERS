@@ -1,0 +1,31 @@
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+#
+# Default owner for everything in the repo.
+*                                @itssutch
+
+# Release pipeline and repo automation.
+/.github/                        @itssutch
+/.github/workflows/              @itssutch
+/.github/dependabot.yml          @itssutch
+
+# Versioning, build, and packaging.
+/pyproject.toml                  @itssutch
+/src/swm/__init__.py             @itssutch
+/swm_main.py                     @itssutch
+/build.sh                        @itssutch
+/Formula/                        @itssutch
+
+# Security-sensitive areas: credential handling, SSH, remote execution.
+/src/swm/remote/                 @itssutch
+/src/swm/bootstrap.py            @itssutch
+/src/swm/bootstrap_ssh.py        @itssutch
+/src/swm/bootstrap_frameworks.py @itssutch
+/src/swm/config.py               @itssutch
+/src/swm/storage/                @itssutch
+/src/swm/providers/              @itssutch
+
+# Public-facing surface area — docs, site, security policy.
+/docs/                           @itssutch
+/site/                           @itssutch
+/README.md                       @itssutch
+/SECURITY.md                     @itssutch

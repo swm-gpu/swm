@@ -1,0 +1,35 @@
+version: 2
+updates:
+  # Python runtime + build dependencies (pyproject.toml).
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: deps
+    labels:
+      - dependencies
+      - python
+    groups:
+      # boto3 + botocore release in lockstep — group them so PRs don't fight.
+      aws-sdk:
+        patterns:
+          - boto3
+          - botocore
+          - s3transfer
+
+  # GitHub Actions in .github/workflows/. Tags (v4, v5, etc.) are tracked;
+  # major-version bumps get their own PRs and need manual review.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: ci
+    labels:
+      - dependencies
+      - github-actions
