@@ -14,7 +14,7 @@ _TORCH_CHECK = (
     "dm,dn=(int(m.group(1)),int(m.group(2))) if m else (0,0); "
     "tv=torch.version.cuda or \"\"; "
     "tm,tn=(int(tv.split(\".\")[0]),int(tv.split(\".\")[1])) if tv else (0,0); "
-    "sys.exit(0 if tm==dm and tn<=dn else 1)' 2>/dev/null"
+    "sys.exit(0 if (tm,tn) <= (dm,dn) else 1)' 2>/dev/null"
 )
 _PIP_REPAIR = (
     'echo "Repairing pip..."; '
