@@ -20,7 +20,18 @@ swm pod create -p runpod -g "RTX 4090" -n comfy \
 swm setup install comfyui <provider>:<pod-id>
 ```
 
-### 3. Add custom nodes (before starting)
+### 3. Install custom nodes
+
+Two paths — pick whichever fits the workflow.
+
+**Option A — ComfyUI-Manager (interactive).**
+ComfyUI-Manager is preinstalled at
+`/workspace/ComfyUI/custom_nodes/ComfyUI-Manager`. After starting ComfyUI
+(step 4), open the UI and use the **Manager** panel to search for and install
+nodes. Good for exploration and one-off pods.
+
+**Option B — Scripted install (reproducible, agent-friendly).**
+Install nodes before the first start so registration happens cleanly:
 
 ```bash
 swm run <provider>:<pod-id> \
@@ -28,6 +39,14 @@ swm run <provider>:<pod-id> \
    git clone --depth 1 https://github.com/example/my-node.git && \
    /workspace/ComfyUI/venv/bin/pip install -r my-node/requirements.txt"
 ```
+
+Pin a specific commit with `git checkout <sha>` if you want bit-for-bit
+reproducibility across pods. This is the recommended path for agent-driven
+setups and CI.
+
+`swm` does not bundle a curated extension list — the ComfyUI custom node
+ecosystem moves too quickly for that to stay useful, and Manager already
+solves discovery.
 
 ### 4. Start ComfyUI
 
