@@ -1,0 +1,16 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question / design discussion
+    url: https://github.com/swm-gpu/swm/discussions
+    about: |
+      For open-ended questions, help requests, and design discussions, please
+      use GitHub Discussions instead of opening an issue.
+  - name: Security vulnerability
+    url: https://github.com/swm-gpu/swm/security/advisories/new
+    about: |
+      Please report security issues privately, not as public issues. See
+      SECURITY.md for what to include.
+  - name: Documentation
+    url: https://swmgpu.com
+    about: |
+      Reference docs, command examples, and concepts.

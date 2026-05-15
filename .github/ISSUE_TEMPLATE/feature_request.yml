@@ -1,0 +1,62 @@
+name: Feature request
+description: Suggest a new capability for swm
+title: "[feat] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before opening a feature request, please check [CONTRIBUTING.md][c] to
+        see what's in scope, and search existing
+        [issues](https://github.com/swm-gpu/swm/issues?q=is%3Aissue) and
+        [discussions](https://github.com/swm-gpu/swm/discussions). Open-ended
+        questions and design discussions belong in Discussions.
+
+        [c]: https://github.com/swm-gpu/swm/blob/main/CONTRIBUTING.md
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: |
+        What are you trying to do that swm doesn't currently support? Concrete
+        example commands or workflows make this much easier to act on.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: |
+        How would you like swm to behave? CLI flags, config fields, output
+        shape — be as specific as you can.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: |
+        Workarounds you tried, other tools that solve this, or related
+        features in swm you already use.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      multiple: true
+      options:
+        - providers
+        - frameworks
+        - sync / workspace
+        - lifecycle guard
+        - costs / budgeting
+        - CLI ergonomics
+        - docs
+        - other
+    validations:
+      required: false

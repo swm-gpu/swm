@@ -1,0 +1,100 @@
+name: Bug report
+description: Something in swm isn't working as documented
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please fill out as much as
+        you can — the more concrete the reproduction, the faster we can fix
+        it. For security issues, please use [private vulnerability
+        reporting](https://github.com/swm-gpu/swm/security/advisories/new)
+        instead.
+
+  - type: input
+    id: version
+    attributes:
+      label: swm version
+      description: Output of `swm --version`
+      placeholder: "0.1.10"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install
+    attributes:
+      label: Install method
+      options:
+        - Homebrew (binary)
+        - pipx / pip (PyPI)
+        - From source (git clone)
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+        - Linux
+        - Other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: provider
+    attributes:
+      label: Provider involved
+      description: Leave blank if not provider-specific
+      multiple: true
+      options:
+        - runpod
+        - vastai
+        - lambda
+        - vultr
+        - tensordock
+        - fluidstack
+        - aws
+        - gcp
+        - azure
+        - coreweave
+        - (not provider-specific)
+    validations:
+      required: false
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe the bug. What did you expect, and what actually happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: |
+        Exact commands you ran, in order. Redact API keys and pod IDs.
+      render: shell
+      placeholder: |
+        $ swm gpus -g h200 --max-price 4
+        $ swm pod create runpod --gpu h200
+        ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output / logs
+      description: |
+        Relevant output, error messages, or stack traces. Run with `SWM_DEBUG=1`
+        if helpful.
+      render: shell
+    validations:
+      required: false

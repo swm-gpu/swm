@@ -204,6 +204,19 @@ Full docs at **[swmgpu.com](https://swmgpu.com/overview/)**.
 - SSH client (`ssh`, `scp`)
 - An account with at least one GPU provider
 
+## Contributing
+
+Bug reports, feature requests, and pull requests welcome. See
+[CONTRIBUTING.md](./CONTRIBUTING.md) for scope, code style, and the PR
+workflow. The community is governed by our
+[Code of Conduct](./CODE_OF_CONDUCT.md).
+
+Open-ended questions and design discussions belong in
+[GitHub Discussions](https://github.com/swm-gpu/swm/discussions).
+Security reports go through
+[private vulnerability reporting](https://github.com/swm-gpu/swm/security/advisories/new) —
+see [SECURITY.md](./SECURITY.md).
+
 ## License
 
 Licensed under the [Apache License, Version 2.0](LICENSE).
