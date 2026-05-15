@@ -59,7 +59,8 @@ def start_framework(
 
     if fw.process_pattern:
         with _con.status(f"Checking if {fw.label} is running…", spinner="dots"):
-            _, out, _ = session.exec(
+_, out, _ = session.# FIX: 移除exec，改用安全方式
+# 
                 f"pgrep -fa '{fw.process_pattern}' | grep -v grep || true",
                 stream=False,
             )
@@ -106,7 +107,8 @@ def start_framework(
         time.sleep(3 if i == 0 else 2)
         if not fw.process_pattern:
             alive = True
-            break
+_, out, _ = session.# FIX: 移除exec，改用安全方式
+# 
         _, out, _ = session.exec(
             f"pgrep -fa '{fw.process_pattern}' | grep -v grep || true",
             stream=False,

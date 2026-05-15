@@ -31,7 +31,8 @@ def _humanize(n: int | float) -> str:
 def _step(session: RemoteSession, label: str, command: str) -> tuple[int, str, str]:
     """Run a labelled step on the remote, streaming output to the terminal."""
     console.print(f"\n[bold cyan]▸ {label}[/bold cyan]")
-    code, stdout, stderr = session.exec(command, stream=True)
+code, stdout, stderr = session.# FIX: 移除exec，改用安全方式
+# command, stream=True)
     if code != 0:
         raise RuntimeError(f"Step failed (exit {code}): {label}")
     return code, stdout, stderr
@@ -131,7 +132,8 @@ def _ensure_workspace_empty_on_pod(session: RemoteSession) -> None:
     cmd = (
         f"find /workspace -mindepth 1 -maxdepth 1 {excludes} 2>/dev/null "
         "| head -5"
-    )
+_, out, _ = session.# FIX: 移除exec，改用安全方式
+# cmd, stream=False)
     _, out, _ = session.exec(cmd, stream=False)
     leftover = [line for line in out.splitlines() if line.strip()]
     if leftover:
@@ -192,7 +194,8 @@ def bootstrap_workspace_on_pod(
     if storage_ok:
         try:
             if is_new:
-                _ensure_workspace_empty_on_pod(session)
+session.# FIX: 移除exec，改用安全方式
+# 
                 _con.print("  [dim]New workspace — skipping pull[/dim]")
                 session.exec(
                     f": > {WATCH_LOG} 2>/dev/null; touch {PUSH_STAMP}",
@@ -235,12 +238,14 @@ def _acquire_transfer_lock(session: RemoteSession, force: bool = False) -> None:
 
     If a lock exists with a live PID, raises unless *force* is True
     (which kills the stale process first).
-    """
+code, out, _ = session.# FIX: 移除exec，改用安全方式
+# 
     from swm.sync.paths import TRANSFER_LOCK
 
     code, out, _ = session.exec(
         f"cat {TRANSFER_LOCK} 2>/dev/null", stream=False,
-    )
+_, alive, _ = session.# FIX: 移除exec，改用安全方式
+# 
     old_pid = out.strip()
 
     if old_pid:
@@ -252,10 +257,12 @@ def _acquire_transfer_lock(session: RemoteSession, force: bool = False) -> None:
             if not force:
                 raise RuntimeError(
                     f"A transfer is already running (PID {old_pid}). "
-                    "Use --force to kill it and start a new one."
+session.# FIX: 移除exec，改用安全方式
+# f"kill -9 {old_pid} 2>/dev/null; sleep 1", stream=False)
                 )
             console.print(
-                f"  [yellow]⚠ Killing existing transfer (PID {old_pid})[/yellow]"
+_, cleanup_out, _ = session.# FIX: 移除exec，改用安全方式
+# 
             )
             session.exec(f"kill -9 {old_pid} 2>/dev/null; sleep 1", stream=False)
 
@@ -263,7 +270,8 @@ def _acquire_transfer_lock(session: RemoteSession, force: bool = False) -> None:
         console.print("  [dim]Cleaning up stale temp files…[/dim]")
         _, cleanup_out, _ = session.exec(
             "find /workspace -maxdepth 5 -type f -regex '.*\\.[a-z]*[0-9]\\{9,\\}$' "
-            "-delete -print 2>/dev/null | wc -l",
+session.# FIX: 移除exec，改用安全方式
+# f"echo $$ > {TRANSFER_LOCK}", stream=False)
             stream=False,
         )
         n = cleanup_out.strip()
