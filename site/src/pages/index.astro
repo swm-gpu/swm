@@ -11,6 +11,7 @@ import FeatureCard from '../components/FeatureCard.astro';
 	<meta name="viewport" content="width=device-width, initial-scale=1" />
 	<title>swm — Your GPU stack, your terminal, any cloud</title>
 	<meta name="description" content="One CLI to search, provision, deploy, sync, and manage GPU pods across 10 clouds. Agent-native. Open source." />
+	<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
 	<link rel="preconnect" href="https://fonts.googleapis.com" />
 	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 	<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,600;0,700;1,400&display=swap" rel="stylesheet" />
@@ -34,26 +35,19 @@ import FeatureCard from '../components/FeatureCard.astro';
 			<p class="hero-sub">One CLI. Ten GPU clouds. Search, provision, deploy, sync, and manage — all over SSH.</p>
 		</div>
 
-		<Terminal title="swm">
-			<pre><span class="prompt">$</span> swm gpus -g h100 --max-price 3.00 --sort price
-<span class="output">  Provider   GPU              $/hr   VRAM   Avail
-  runpod     H100 SXM 80GB    2.49   80GB   12
-  vastai     H100 80GB        2.69   80GB   8
-  lambda     H100 SXM         3.00   80GB   4</span>
-
-<span class="prompt">$</span> swm pod create -p runpod -g "H100 SXM" -n my-project \
-    --lifecycle auto-down --idle-timeout 30 -y
-<span class="success">  ✓ Pod created: runpod:r1008si  ($2.49/hr)
-  ✓ SSH ready</span>
-
-<span class="prompt">$</span> swm setup install vllm runpod:r1008si
-<span class="success">  ✓ vLLM installed (TP=1, model: Qwen/Qwen3-8B)</span>
-
-<span class="prompt">$</span> swm pod down my-project
-<span class="success">  ✓ Workspace pushed to s3 (1,247 files, 12.4 GB)
-  ✓ Pod terminated
-  ✓ Resume: swm pod create -w my-project</span></pre>
-		</Terminal>
+		<div class="hero-video-wrap">
+			<video
+				id="hero-video"
+				class="hero-video"
+				src="/demo/hero.mp4"
+				poster="/demo/hero-poster.jpg"
+				autoplay
+				muted
+				playsinline
+				preload="metadata"
+				controls
+			></video>
+		</div>
 
 		<div class="hero-ctas">
 			<a href="/getting-started/for-cli-users/" class="btn primary">Get Started</a>
@@ -300,6 +294,19 @@ Tier 3: full parallel   → s5cmd 512 workers (first push)</span></pre>
 		</div>
 		<p class="footer-copy">swm — your GPU stack, your terminal, any cloud.</p>
 	</footer>
+
+	<script is:inline>
+		(function() {
+			const v = document.getElementById('hero-video');
+			if (!v) return;
+			// Loop with audio muted after the first playthrough.
+			v.addEventListener('ended', () => {
+				v.muted = true;
+				v.currentTime = 0;
+				v.play().catch(() => {});
+			});
+		})();
+	</script>
 </body>
 </html>
 
@@ -346,10 +353,14 @@ Tier 3: full parallel   → s5cmd 512 workers (first push)</span></pre>
 
 	/* ── Hero ── */
 	.hero {
-		max-width: 800px;
+		max-width: 1280px;
 		margin: 0 auto;
 		padding: 80px 24px 40px;
 		text-align: center;
+	}
+	.hero-text {
+		max-width: 800px;
+		margin: 0 auto;
 	}
 	.hero-text h1 {
 		font-size: clamp(1.8rem, 4vw, 2.8rem);
@@ -396,6 +407,26 @@ Tier 3: full parallel   → s5cmd 512 workers (first push)</span></pre>
 		color: #e0e0e0;
 		border-color: #555;
 		background: #222;
+	}
+
+	/* ── Hero video ── */
+	.hero-video-wrap {
+		margin: 0 auto 8px;
+		border: 1px solid #222;
+		border-radius: 10px;
+		overflow: hidden;
+		box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+		background: #0d0d0d;
+		transition: border-color 0.25s, box-shadow 0.25s;
+	}
+	.hero-video-wrap:hover {
+		border-color: #00ff8866;
+		box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5), 0 0 0 1px #00ff8833;
+	}
+	.hero-video {
+		display: block;
+		width: 100%;
+		height: auto;
 	}
 
 	/* ── Sections ── */
