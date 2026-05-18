@@ -668,7 +668,7 @@ def pod_down(instance_id: str, yes: bool, no_sync: bool, exclude: tuple[str, ...
         if inst and inst.ssh_host and inst.status == InstanceStatus.RUNNING:
             from swm.bootstrap import workspace_push
             from swm.remote.ssh import session_from_instance
-            from swm.sync import stop_autosync, stop_watcher
+            from swm.sync import stop_autosync
 
             slug, bucket = meta["storage"].split(":", 1)
             ws = meta["workspace"]
@@ -678,7 +678,6 @@ def pod_down(instance_id: str, yes: bool, no_sync: bool, exclude: tuple[str, ...
                 with session_from_instance(inst) as sess:
                     try:
                         stop_autosync(sess)
-                        stop_watcher(sess)
                     except Exception:
                         pass
                     workspace_push(
