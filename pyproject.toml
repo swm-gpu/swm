@@ -30,9 +30,8 @@ dependencies = [
 
 [project.optional-dependencies]
 coreweave = ["kubernetes>=29.0"]
-b2 = ["b2>=4.0"]
 dev = ["nuitka", "ordered-set", "zstandard"]
-all = ["kubernetes>=29.0", "b2>=4.0"]
+all = ["kubernetes>=29.0"]
 
 [project.urls]
 Homepage = "https://swmgpu.com"

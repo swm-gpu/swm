@@ -35,7 +35,8 @@ def _boto3():
         return boto3
     except ImportError:
         raise RuntimeError(
-            "boto3 required for AWS. Install with: pip install 'swm[aws]'"
+            "boto3 missing — reinstall swm-gpu "
+            "(`pip install --upgrade swm-gpu`)."
         )
 
 
