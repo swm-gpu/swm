@@ -8,7 +8,6 @@ from swm import config as cfg
 from swm.providers import (
     get_configured_providers,
     get_provider,
-    resolve_instance,
     PROVIDER_SLUGS,
 )
 from swm.providers.base import InstanceStatus
@@ -19,6 +18,7 @@ from swm.commands._helpers import (
     pod_arg_callback,
     clear_active_pod,
     set_active_pod,
+    safe_resolve_instance,
 )
 
 
@@ -475,8 +475,10 @@ def start(instance_id: str):
     """
     try:
         with console.status("Sending start request…", spinner="dots"):
-            provider, raw_id = resolve_instance(instance_id)
+            provider, raw_id = safe_resolve_instance(instance_id)
             provider.start_instance(raw_id)
+    except click.UsageError:
+        raise
     except Exception as e:
         raise click.ClickException(str(e))
 
@@ -527,8 +529,10 @@ def stop(instance_id: str):
     """Stop a running instance (preserves volume)."""
     try:
         with console.status("Stopping instance…", spinner="dots"):
-            provider, raw_id = resolve_instance(instance_id)
+            provider, raw_id = safe_resolve_instance(instance_id)
             inst = provider.stop_instance(raw_id)
+    except click.UsageError:
+        raise
     except Exception as e:
         raise click.ClickException(str(e))
 
@@ -547,7 +551,9 @@ def stop(instance_id: str):
 def terminate(instance_id: str, yes: bool):
     """Terminate an instance and delete its volume. This is irreversible."""
     try:
-        provider, raw_id = resolve_instance(instance_id)
+        provider, raw_id = safe_resolve_instance(instance_id)
+    except click.UsageError:
+        raise
     except Exception as e:
         raise click.ClickException(str(e))
 
@@ -584,9 +590,11 @@ def status(instance_id: str):
     """Show detailed status of one instance."""
     try:
         with console.status("Fetching status…", spinner="dots"):
-            provider, raw_id = resolve_instance(instance_id)
+            provider, raw_id = safe_resolve_instance(instance_id)
             instances = provider.list_instances()
         inst = next((i for i in instances if i.id == raw_id), None)
+    except click.UsageError:
+        raise
     except Exception as e:
         raise click.ClickException(str(e))
 
@@ -637,7 +645,9 @@ def pod_down(instance_id: str, yes: bool, no_sync: bool, exclude: tuple[str, ...
     Example: swm pod down runpod:abc123
     """
     try:
-        provider, raw_id = resolve_instance(instance_id)
+        provider, raw_id = safe_resolve_instance(instance_id)
+    except click.UsageError:
+        raise
     except Exception as e:
         raise click.ClickException(str(e))
 

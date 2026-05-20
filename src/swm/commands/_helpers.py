@@ -36,7 +36,7 @@ def clear_active_pod(if_matches: str | None = None) -> None:
     current = cfg.get(_ACTIVE_POD_KEY)
     if current is None:
         return
-    if if_matches is not None and current != if_matches:
+    if if_matches is not None and str(current) != str(if_matches):
         return
     cfg.delete(_ACTIVE_POD_KEY)
 
@@ -114,10 +114,29 @@ def split_pod_and_command(
     return resolve_active_pod(instance_id), command
 
 
+def safe_resolve_instance(instance_id: str):
+    """Resolve an instance id, converting ValueError into click.UsageError.
+
+    Auto-clears the active pod if it was the stale value that failed to
+    resolve, so subsequent commands don't hit the same wall.
+    """
+    try:
+        return resolve_instance(instance_id)
+    except ValueError as e:
+        cleared = ""
+        if get_active_pod() == instance_id:
+            clear_active_pod(if_matches=instance_id)
+            cleared = " Cleared stale active pod."
+        raise click.UsageError(
+            f"{e}{cleared} "
+            "Set a new active pod with `swm use <provider:id>`."
+        )
+
+
 def _instance_for(instance_id: str):
     """Resolve an ID and fetch the full Instance object."""
     with console.status("Resolving instance…", spinner="dots"):
-        provider, raw_id = resolve_instance(instance_id)
+        provider, raw_id = safe_resolve_instance(instance_id)
         instances = provider.list_instances()
     inst = next((i for i in instances if i.id == raw_id), None)
     if inst is None:

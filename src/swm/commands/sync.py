@@ -4,13 +4,13 @@ from __future__ import annotations
 import click
 
 from swm import config as cfg
-from swm.providers import resolve_instance
 from swm.commands._helpers import (
     console,
     _instance_for,
     _preflight_pull,
     complete_pod_id,
     pod_arg_callback,
+    safe_resolve_instance,
 )
 
 
@@ -49,7 +49,7 @@ def pull(instance_id: str, path: str, bucket: str | None, dest: str, exclude: tu
     from swm.bootstrap import workspace_pull
     from swm.remote.ssh import session_from_instance
 
-    _, raw_id = resolve_instance(instance_id)
+    _, raw_id = safe_resolve_instance(instance_id)
     meta = cfg.get(f"pods.{raw_id}")
 
     if bucket:
@@ -137,7 +137,7 @@ def push(instance_id: str, path: str, bucket: str | None, dest: str, exclude: tu
     from swm.bootstrap import workspace_push
     from swm.remote.ssh import session_from_instance
 
-    _, raw_id = resolve_instance(instance_id)
+    _, raw_id = safe_resolve_instance(instance_id)
     meta = cfg.get(f"pods.{raw_id}")
 
     if bucket:
@@ -262,7 +262,7 @@ def sync_auto(instance_id: str, stop: bool, show_status: bool, interval: int,
                 console.print(f"[dim]{tail.rstrip()}[/dim]")
             return
 
-        _, raw_id = resolve_instance(instance_id)
+        _, raw_id = safe_resolve_instance(instance_id)
         meta = cfg.get(f"pods.{raw_id}")
 
         if bucket:
@@ -316,7 +316,7 @@ def sync_status(instance_id: str):
     """
     from swm.remote.ssh import session_from_instance
 
-    _, raw_id = resolve_instance(instance_id)
+    _, raw_id = safe_resolve_instance(instance_id)
     meta = cfg.get(f"pods.{raw_id}")
     inst = _instance_for(instance_id)
 

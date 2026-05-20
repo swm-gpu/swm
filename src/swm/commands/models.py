@@ -74,12 +74,12 @@ def models_search(query: str, sort: str, limit: int, all_types: bool):
         return
 
     table = Table(title=f"HuggingFace Models — \"{query}\"", show_lines=True)
-    table.add_column("Model", style="bold cyan", min_width=30, no_wrap=True)
-    table.add_column("Size", justify="right")
-    table.add_column("Downloads", justify="right", style="green")
-    table.add_column("Likes", justify="right")
-    table.add_column("Access", justify="center")
-    table.add_column("Library", style="dim")
+    table.add_column("Model", style="bold cyan", min_width=35, overflow="fold")
+    table.add_column("Size", justify="right", min_width=8, no_wrap=True)
+    table.add_column("Downloads", justify="right", style="green", min_width=10, no_wrap=True)
+    table.add_column("Likes", justify="right", min_width=7, no_wrap=True)
+    table.add_column("Access", justify="center", min_width=8, no_wrap=True)
+    table.add_column("Library", style="dim", min_width=12, no_wrap=True)
 
     for r in results:
         if r.gated:

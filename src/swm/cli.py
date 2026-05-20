@@ -281,14 +281,3 @@ main.add_command(models_group)
 main.add_command(guard)
 main.add_command(use)
 main.add_command(images)
-
-
-@main.group()
-def security():
-    """Verify provider security posture."""
-
-
-@security.command()
-def audit():
-    """Run a security audit on current provider configuration."""
-    console.print("[dim]Coming soon — Phase 9[/dim]")
