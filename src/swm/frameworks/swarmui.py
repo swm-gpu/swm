@@ -6,6 +6,37 @@ _DOTNET_DIR = "/workspace/.dotnet"
 _NUGET_DIR = "/workspace/.nuget"
 _PIP_CACHE = "/workspace/.cache/pip"
 _COMFY_VENV = "/workspace/ComfyUI/venv"
+
+_BUNDLED_COMFY = "/workspace/SwarmUI/dlbackend/ComfyUI"
+_COMFY_MODEL_DIRS = [
+    "checkpoints", "loras", "vae", "controlnet", "embeddings",
+    "clip", "clip_vision", "upscale_models", "unet",
+    "diffusion_models", "text_encoders",
+]
+
+
+def _link_bundled_comfy() -> str:
+    parts = [
+        "mkdir -p /workspace/models/{" + ",".join(_COMFY_MODEL_DIRS) + "}",
+        f"mkdir -p {_BUNDLED_COMFY}/models",
+    ]
+    for d in _COMFY_MODEL_DIRS:
+        target = f"{_BUNDLED_COMFY}/models/{d}"
+        store = f"/workspace/models/{d}"
+        parts.append(
+            f"if [ -L {target} ]; then :; "
+            f"elif [ -d {target} ]; then "
+            f"  ( shopt -s dotglob nullglob; mv {target}/* {store}/ 2>/dev/null || true ); "
+            f"  rmdir {target} 2>/dev/null || rm -rf {target}; "
+            f"  ln -s {store} {target}; "
+            f"else "
+            f"  ln -s {store} {target}; "
+            f"fi"
+        )
+    return " && ".join(parts)
+
+
+_LINK_SWARMUI = _link_bundled_comfy()
 _ENV = (
     f"export PATH={_DOTNET_DIR}:$PATH "
     f"DOTNET_ROOT={_DOTNET_DIR} "
@@ -78,6 +109,11 @@ FRAMEWORK = Framework(
             command="git fetch origin main && git reset --hard origin/main",
             workdir="/workspace/SwarmUI/dlbackend/ComfyUI/custom_nodes/ComfyUI-Manager",
         ),
+        Step(
+            label="Linking model directories to unified store",
+            command=_LINK_SWARMUI,
+            check=f"[ -L {_BUNDLED_COMFY}/models/checkpoints ]",
+        ),
     ],
     pre_start=[
         Step(
@@ -119,6 +155,11 @@ FRAMEWORK = Framework(
                 "&& ln -sfn /workspace/ComfyUI /workspace/SwarmUI/dlbackend/comfyui"
             ),
             check="[ -d /workspace/SwarmUI/dlbackend/ComfyUI ] || [ -L /workspace/SwarmUI/dlbackend/comfyui ]",
+        ),
+        Step(
+            label="Ensuring model directory symlinks",
+            command=_LINK_SWARMUI,
+            check=f"[ -L {_BUNDLED_COMFY}/models/checkpoints ]",
         ),
     ],
 )

@@ -8,8 +8,23 @@ install, pull models with ``ollama pull <model>`` over SSH.
 from swm.frameworks import Framework, Step
 
 _OLLAMA_HOME = "/workspace/ollama"
+_OLLAMA_MODELS_DIR = f"{_OLLAMA_HOME}/models"
+_UNIFIED_OLLAMA = "/workspace/models/ollama"
 _OLLAMA_BIN = "/usr/local/bin/ollama"
 _DEFAULT_MODEL = "llama3.2:3b"
+
+_LINK_OLLAMA_STORE = (
+    f"mkdir -p {_OLLAMA_HOME} {_UNIFIED_OLLAMA} && "
+    f"if [ -L {_OLLAMA_MODELS_DIR} ]; then :; "
+    f"elif [ -d {_OLLAMA_MODELS_DIR} ]; then "
+    f"  ( shopt -s dotglob nullglob; "
+    f"    mv {_OLLAMA_MODELS_DIR}/* {_UNIFIED_OLLAMA}/ 2>/dev/null || true ); "
+    f"  rmdir {_OLLAMA_MODELS_DIR} 2>/dev/null || rm -rf {_OLLAMA_MODELS_DIR}; "
+    f"  ln -s {_UNIFIED_OLLAMA} {_OLLAMA_MODELS_DIR}; "
+    f"else "
+    f"  ln -s {_UNIFIED_OLLAMA} {_OLLAMA_MODELS_DIR}; "
+    f"fi"
+)
 
 FRAMEWORK = Framework(
     name="ollama",
@@ -35,9 +50,9 @@ FRAMEWORK = Framework(
             workdir="/tmp",
         ),
         Step(
-            label="Creating model storage directory",
-            command=f"mkdir -p {_OLLAMA_HOME}/models",
-            check=f"[ -d {_OLLAMA_HOME}/models ]",
+            label="Linking Ollama store to unified model store",
+            command=_LINK_OLLAMA_STORE,
+            check=f"[ -L {_OLLAMA_MODELS_DIR} ]",
             workdir="/workspace",
         ),
         Step(
@@ -76,9 +91,9 @@ FRAMEWORK = Framework(
             workdir="/tmp",
         ),
         Step(
-            label="Ensuring model directory exists",
-            command=f"mkdir -p {_OLLAMA_HOME}/models",
-            check=f"[ -d {_OLLAMA_HOME}/models ]",
+            label="Ensuring Ollama store symlink",
+            command=_LINK_OLLAMA_STORE,
+            check=f"[ -L {_OLLAMA_MODELS_DIR} ]",
             workdir="/workspace",
         ),
     ],

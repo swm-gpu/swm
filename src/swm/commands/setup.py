@@ -278,14 +278,22 @@ def setup_install(framework_name: str, instance_id: str):
 @click.argument("framework_name")
 @click.argument("instance_id", required=False, shell_complete=complete_pod_id, callback=pod_arg_callback)
 @click.option("--port", "-p", type=int, default=None, help="Override the default listen port")
-def setup_start(framework_name: str, instance_id: str, port: int | None):
+@click.option(
+    "--model",
+    default=None,
+    help="vLLM only: HuggingFace model id to serve (writes /workspace/vllm/model.txt before launch)",
+)
+def setup_start(framework_name: str, instance_id: str, port: int | None, model: str | None):
     """Start a framework on a running instance.
 
     \b
     Examples:
       swm setup start comfyui runpod:abc123
       swm setup start swarmui runpod:abc123 --port 8888
+      swm setup start vllm runpod:abc123 --model Qwen/Qwen3-8B
     """
+    import shlex
+
     from swm.bootstrap import start_framework
     from swm.frameworks import get_framework
     from swm.remote.ssh import session_from_instance
@@ -294,9 +302,23 @@ def setup_start(framework_name: str, instance_id: str, port: int | None):
         fw = get_framework(framework_name)
     except KeyError as e:
         raise click.ClickException(str(e))
+
+    if model is not None and framework_name != "vllm":
+        raise click.UsageError(
+            "--model is only supported for `vllm` "
+            "(other engines pick their model at request or workflow time)"
+        )
+
     inst = _instance_for(instance_id)
 
     with session_from_instance(inst) as sess:
+        if model is not None:
+            sess.exec(
+                f"mkdir -p /workspace/vllm && "
+                f"echo {shlex.quote(model)} > /workspace/vllm/model.txt",
+                stream=False,
+            )
+            console.print(f"  Set active vLLM model: [cyan]{model}[/cyan]")
         try:
             start_framework(
                 sess,
@@ -394,17 +416,18 @@ def setup_list():
 
 @setup.command(hidden=True)
 @click.argument("instance_id", required=False, shell_complete=complete_pod_id, callback=pod_arg_callback)
-@click.option("--link-models", is_flag=True, default=True, help="Symlink /workspace/models into ComfyUI")
-def comfyui(instance_id: str, link_models: bool):
-    """Install ComfyUI (alias for 'swm setup install comfyui')."""
-    from swm.bootstrap import install_framework, link_models_to_comfyui
+def comfyui(instance_id: str):
+    """Install ComfyUI (alias for 'swm setup install comfyui').
+
+    Symlinks under ``/workspace/ComfyUI/models/<type>`` are wired up
+    automatically by the framework's post_install step.
+    """
+    from swm.bootstrap import install_framework
     from swm.remote.ssh import session_from_instance
 
     inst = _instance_for(instance_id)
     with session_from_instance(inst) as sess:
         install_framework(sess, "comfyui")
-        if link_models:
-            link_models_to_comfyui(sess)
     console.print("\n[green]✓ ComfyUI installed[/green]")
 
 

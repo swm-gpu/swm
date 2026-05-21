@@ -2,6 +2,42 @@
 
 from swm.frameworks import Framework, Step, nvidia_ld_exports
 
+_COMFY_MODEL_DIRS = [
+    "checkpoints", "loras", "vae", "controlnet", "embeddings",
+    "clip", "clip_vision", "upscale_models", "unet",
+    "diffusion_models", "text_encoders",
+]
+
+
+def _link_script() -> str:
+    """Build the bash that points ComfyUI's per-type dirs at the unified store.
+
+    Preserves anything already sitting under ``/workspace/ComfyUI/models/<type>``
+    by moving it into ``/workspace/models/<type>`` before replacing with a
+    symlink.  Idempotent: re-running is a no-op once the symlinks exist.
+    """
+    parts = [
+        "mkdir -p /workspace/models/{" + ",".join(_COMFY_MODEL_DIRS) + "}",
+        "mkdir -p /workspace/ComfyUI/models",
+    ]
+    for d in _COMFY_MODEL_DIRS:
+        target = f"/workspace/ComfyUI/models/{d}"
+        store = f"/workspace/models/{d}"
+        parts.append(
+            f"if [ -L {target} ]; then :; "
+            f"elif [ -d {target} ]; then "
+            f"  ( shopt -s dotglob nullglob; mv {target}/* {store}/ 2>/dev/null || true ); "
+            f"  rmdir {target} 2>/dev/null || rm -rf {target}; "
+            f"  ln -s {store} {target}; "
+            f"else "
+            f"  ln -s {store} {target}; "
+            f"fi"
+        )
+    return " && ".join(parts)
+
+
+_LINK_COMFYUI = _link_script()
+
 _VENV = "/workspace/ComfyUI/venv"
 _PIP = f"{_VENV}/bin/pip"
 _PYTHON = f"{_VENV}/bin/python"
@@ -87,12 +123,9 @@ FRAMEWORK = Framework(
             workdir="/workspace/ComfyUI/custom_nodes",
         ),
         Step(
-            label="Creating model directories",
-            command=(
-                "mkdir -p /workspace/ComfyUI/models/"
-                "{checkpoints,loras,vae,controlnet,clip,upscale_models,unet,"
-                "diffusion_models,text_encoders,clip_vision}"
-            ),
+            label="Linking model directories to unified store",
+            command=_LINK_COMFYUI,
+            check="[ -L /workspace/ComfyUI/models/checkpoints ]",
         ),
     ],
     pre_start=[
@@ -123,6 +156,11 @@ FRAMEWORK = Framework(
         Step(
             label="Updating dependencies",
             command=f"{_PIP} install -r requirements.txt",
+        ),
+        Step(
+            label="Ensuring model directory symlinks",
+            command=_LINK_COMFYUI,
+            check="[ -L /workspace/ComfyUI/models/checkpoints ]",
         ),
     ],
 )

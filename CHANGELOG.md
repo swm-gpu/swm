@@ -6,6 +6,89 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-04-03
+
+### Added
+- Unified on-pod model store at `/workspace/models/` with per-asset-type
+  buckets (`checkpoints/`, `loras/`, `vae/`, `controlnet/`, `embeddings/`,
+  `clip/`, `clip_vision/`, `upscale_models/`, `unet/`, `diffusion_models/`,
+  `text_encoders/`, `hf/`, `ollama/`, `files/`). Framework installs wire
+  their expected paths into this store via bucket-style symlinks, so models
+  are visible to all frameworks (vLLM, Ollama, ComfyUI, SwarmUI) without
+  per-file linking.
+- `swm models pull` now supports HuggingFace, Ollama, Civitai, and direct
+  URL sources. The reference shape auto-detects the source; pass
+  `--source hf|ollama|civitai|url` to override. Ambiguous single-segment
+  refs trigger a parallel HF + Ollama registry lookup with a prompt on
+  dual hits.
+- `swm models pull --as <type>` files the download into the right bucket.
+  Defaults are inferred from HF metadata (pipeline, library) or Civitai's
+  asset type field.
+- `swm models link <pod> <path> --as <type>`: register an existing on-pod
+  file under the unified store. Moves the file into the right bucket and
+  adds a manifest entry so `swm models list` knows about it.
+- `swm models list --all`: surface untracked files under `/workspace/models/`
+  so they can be `swm models link`'d.
+- Civitai support: `swm config set civitai.api_key <token>`,
+  `swm models info civitai:<id>`, `swm models pull <pod>
+  civitai:<id>[:<version>]`. NSFW and gated content honor your API key.
+- HuggingFace API key now follows the GPU-provider pattern:
+  `swm config set hf.api_key <token>`. The legacy `hf_token` config key
+  is still read but emits a deprecation warning.
+- `swm setup start vllm <pod> --model <ref>` writes `/workspace/vllm/model.txt`
+  before launching, replacing the `swm models set` workflow.
+- Best-effort engine fallbacks: pulling an Ollama-shape reference on a pod
+  without the Ollama binary now searches HuggingFace for a `bartowski/*-GGUF`
+  mirror and pulls that as a single-file download, with a friendly install
+  reminder. HF pulls succeed even when vLLM isn't installed yet.
+- Persistent manifest of every download at `/workspace/models/.manifest.json`
+  drives reconciliation in `swm models list` (tracked vs missing vs orphan).
+
+### Changed
+- ComfyUI install now wires the bucket-style symlinks during `post_install`
+  instead of relying on the hidden `swm setup comfyui` alias. Anyone who
+  previously ran `swm setup install comfyui` and noticed missing model
+  visibility from `swm models pull` gets it for free on the next install
+  or `swm setup start`.
+- vLLM's `/workspace/vllm/hf_cache` and Ollama's `/workspace/ollama/models`
+  are now symlinks into the unified store. Existing content is migrated
+  in place — no data loss for upgrading pods.
+
+### Removed
+- `swm models set`. A deprecation shim still routes the command but errors
+  out with the new equivalent. Will be deleted in v0.3.
+
+## [0.1.13] - 2026-05-20
+
+### Changed
+- Pruned dead code (`build.sh`, the unused `b2` Python SDK extra) and
+  regenerated `docs/` (`cli-reference.md`, `configuration.md`,
+  `architecture.md`, `storage.md`) to match the v0.1.12 CLI surface.
+
+## [0.1.12] - 2026-05-20
+
+### Added
+- `safe_resolve_instance` helper centralizes instance lookups. Stale
+  active-pod entries now produce a friendly `click.UsageError` plus an
+  auto-clear, instead of a raw `ValueError` traceback.
+
+### Fixed
+- `swm models search` column truncation on narrow terminals.
+- `clear_active_pod` no longer silently fails on type mismatch between
+  config (int) and lookup (str).
+
+### Removed
+- `swm security` command stub ("Coming soon — Phase 9").
+
+## [0.1.11] - 2026-05-20
+
+### Fixed
+- `swm pod down` no longer kills the `inotify` watcher mid-flow, so the
+  pre-terminate `workspace_push` stays on the Tier 1 fast path.
+
+### Added
+- SWM wordmark favicon + homepage demo video on swmgpu.com.
+
 ## [0.1.10] - 2026-05-11
 
 ### Added

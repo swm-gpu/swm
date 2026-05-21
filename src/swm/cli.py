@@ -21,7 +21,7 @@ Workflow:
   setup start/stop  Start or stop installed frameworks
   models search     Find models on HuggingFace Hub
   models pull       Download a model to the pod
-  models set        Activate a model for vLLM
+  models link       Register a file under the unified model store
   sync pull/push    Sync workspace with cloud storage
   costs live        Show running cost of active pods
   costs summary     Spending breakdown by provider/GPU

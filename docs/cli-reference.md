@@ -436,10 +436,30 @@ swm guard run --once
 
 ## `swm models`
 
-Search HuggingFace Hub, download models to pods, and hot-swap the active vLLM model. Auto-detects engine from model name:
+Search HuggingFace Hub and Civitai, download models into a pod's unified model store, and manage them. Every pull lands under `/workspace/models/` in a per-asset-type bucket (`checkpoints/`, `loras/`, `vae/`, `hf/`, `ollama/`, …). Framework installs (vLLM, Ollama, ComfyUI, SwarmUI) symlink their expected paths into this store so downloads are visible immediately.
 
-- `org/model-name` → HuggingFace download (for vLLM)
-- `model:tag` → Ollama pull
+The reference passed to `pull` is auto-detected by shape:
+
+| Reference shape | Source | Asset type default |
+|---|---|---|
+| `org/name` | HuggingFace | `llm` (text-generation), `checkpoint` (diffusers), else `llm` |
+| `name:tag` | Ollama | `ollama` |
+| `civitai:<id>` or `civitai:<id>:<version>` | Civitai | derived from Civitai `type` |
+| `https://...` | Direct URL | `file` (override with `--as`) |
+| single segment (e.g. `qwen3-8b`) | parallel HF + Ollama registry lookup | derived from match |
+
+Override the detection with `--source` and the asset type with `--as`.
+
+### API keys
+
+Configured with `swm config set`, mirroring the GPU-provider pattern:
+
+```bash
+swm config set hf.api_key hf_xxx          # HuggingFace (gated repos, higher rate limits)
+swm config set civitai.api_key civ_xxx    # Civitai (restricted models, faster downloads)
+```
+
+The legacy key `hf_token` is still read for back-compat but emits a deprecation warning. Either `--token` or the `HF_TOKEN` / `CIVITAI_API_KEY` env vars override config.
 
 ### `swm models search <query>`
 
@@ -455,47 +475,79 @@ swm models search "llama 4" --sort likes
 swm models search "stable diffusion" --all-types
 ```
 
-### `swm models info <model>`
+### `swm models info <ref>`
 
-Detailed metadata for a single HuggingFace model.
-
-| Option | Description |
-|--------|-------------|
-| `--token TEXT` | HuggingFace token for gated models |
-
-### `swm models pull [id] <model>`
-
-Download a model to the pod's `/workspace/models` directory (HF) or to ollama's store.
+Detailed metadata for a single HuggingFace or Civitai model.
 
 | Option | Description |
 |--------|-------------|
-| `--token TEXT` | HuggingFace token (overrides `swm config set hf_token`) |
+| `--token TEXT` | API token override (HF or Civitai) |
 
 ```bash
-swm models pull runpod:abc123 Qwen/Qwen3-8B
-swm models pull runpod:abc123 deepseek-r1:14b
-swm models pull runpod:abc123 meta-llama/Llama-4-Scout --token hf_xxx
+swm models info Qwen/Qwen3-8B
+swm models info civitai:101055
+swm models info https://civitai.com/models/101055
 ```
 
-### `swm models set [id] <model>`
+### `swm models pull [id] <ref>`
 
-Activate a HuggingFace model for vLLM. Writes the launch config and restarts vLLM by default.
+Download a model into the pod's unified store. If the engine that needs the model isn't installed, the pull still proceeds where possible and prints a `swm setup install <engine>` reminder at the start and end.
 
 | Option | Description |
 |--------|-------------|
-| `--restart` / `--no-restart` | Restart vLLM after setting (default: yes) |
+| `--as TYPE` | Override asset type (`checkpoint`, `lora`, `vae`, `controlnet`, `embedding`, `clip`, `clip-vision`, `upscaler`, `unet`, `diffusion`, `text-encoder`, `llm`, `llm-gguf`, `ollama`, `file`) |
+| `--source SOURCE` | Override source (`hf`, `ollama`, `civitai`, `url`) |
+| `--token TEXT` | API token override |
+| `--filename NAME` | When pulling a single file (Civitai/URL/GGUF), force the saved filename |
+
+```bash
+swm models pull pod:abc Qwen/Qwen3-8B
+swm models pull pod:abc deepseek-r1:14b
+swm models pull pod:abc civitai:101055 --as checkpoint
+swm models pull pod:abc https://example.com/lora.safetensors --as lora --filename mystyle.safetensors
+```
 
 ### `swm models list [id]`
 
-List models already downloaded on the pod (both vLLM and Ollama).
+Lists models registered in the pod's manifest with their on-disk status. Pass `--all` to also surface untracked files under `/workspace/models/` so you can `swm models link` them.
 
-### `swm models remove [id] <model>`
+```bash
+swm models list pod:abc
+swm models list pod:abc --all
+```
 
-Delete a downloaded model from the pod.
+### `swm models link [id] <source_path>`
+
+Register an existing on-pod file under the unified model store. Moves the file into the right bucket (so the consuming framework discovers it through the directory symlinks) and adds a manifest entry. Use this for files uploaded via `scp`, files pulled to the wrong bucket, or to re-categorize.
+
+| Option | Description |
+|--------|-------------|
+| `--as TYPE` | (required) bucket to file the model under |
+| `--name TEXT` | Display name to record in the manifest |
+
+```bash
+swm models link pod:abc /workspace/sdxl.safetensors --as checkpoint
+swm models link pod:abc /workspace/models/files/style.safetensors --as lora --name "my-style"
+```
+
+### `swm models remove [id] <ref>`
+
+Delete a tracked model from the pod's store and clear its manifest entry. `<ref>` matches against display name, key, or the original reference.
 
 | Option | Description |
 |--------|-------------|
 | `-y, --yes` | Skip confirmation |
+
+### Removed in v0.2: `swm models set`
+
+The active-model concept lives under `swm setup` now. To switch the vLLM model:
+
+```bash
+swm setup stop vllm pod:abc
+swm setup start vllm pod:abc --model Qwen/Qwen3-8B
+```
+
+The old command prints an error pointing at this replacement.
 
 ## `swm storage`
 

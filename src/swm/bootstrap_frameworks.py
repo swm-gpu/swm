@@ -154,14 +154,45 @@ def stop_framework(
 # ── symlinks ────────────────────────────────────────────────────────
 
 
-def link_models_to_comfyui(session: RemoteSession) -> None:
-    """Symlink /workspace/models into ComfyUI's model directory."""
-    dirs = ["checkpoints", "loras", "vae", "controlnet", "clip", "upscale_models", "unet"]
-    cmds = ["mkdir -p /workspace/models/{" + ",".join(dirs) + "}"]
-    for d in dirs:
-        cmds.append(
-            f"[ -L /workspace/ComfyUI/models/{d} ] || "
-            f"(rm -rf /workspace/ComfyUI/models/{d} "
-            f"&& ln -s /workspace/models/{d} /workspace/ComfyUI/models/{d})"
+COMFYUI_MODEL_DIRS = [
+    "checkpoints", "loras", "vae", "controlnet", "embeddings",
+    "clip", "clip_vision", "upscale_models", "unet",
+    "diffusion_models", "text_encoders",
+]
+
+
+def _comfyui_link_script() -> str:
+    """Bash that symlinks ComfyUI's per-type model dirs to /workspace/models/.
+
+    Preserves any existing content under ``/workspace/ComfyUI/models/<type>`` by
+    moving it into ``/workspace/models/<type>`` before replacing with a symlink.
+    Idempotent — re-running is a no-op once the symlinks exist.
+    """
+    parts = [
+        "mkdir -p /workspace/models/{" + ",".join(COMFYUI_MODEL_DIRS) + "}",
+        "mkdir -p /workspace/ComfyUI/models",
+    ]
+    for d in COMFYUI_MODEL_DIRS:
+        target = f"/workspace/ComfyUI/models/{d}"
+        store = f"/workspace/models/{d}"
+        parts.append(
+            f"if [ -L {target} ]; then :; "
+            f"elif [ -d {target} ]; then "
+            f"  ( shopt -s dotglob nullglob; mv {target}/* {store}/ 2>/dev/null || true ); "
+            f"  rmdir {target} 2>/dev/null || rm -rf {target}; "
+            f"  ln -s {store} {target}; "
+            f"else "
+            f"  ln -s {store} {target}; "
+            f"fi"
         )
-    _step(session, "Symlinking models → ComfyUI", " && ".join(cmds))
+    return " && ".join(parts)
+
+
+def link_models_to_comfyui(session: RemoteSession) -> None:
+    """Symlink /workspace/models/<type> into ComfyUI's model directory.
+
+    Handles every per-type bucket ComfyUI knows about, and safely migrates any
+    files already sitting in ``/workspace/ComfyUI/models/<type>`` so existing
+    pods aren't disturbed.
+    """
+    _step(session, "Symlinking models → ComfyUI", _comfyui_link_script())
