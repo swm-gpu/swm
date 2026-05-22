@@ -53,10 +53,16 @@ _TORCH_CHECK = (
     "sys.exit(0 if (tm,tn) <= (dm,dn) else 1)' 2>/dev/null"
 )
 _PIP_REPAIR = (
-    'echo "Repairing pip..."; '
-    "curl -fsSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py && "
-    f"{_PYTHON} /tmp/get-pip.py --force-reinstall --no-warn-script-location "
-    "pip setuptools wheel >/dev/null"
+    # Only bootstrap pip if it's actually missing.  `--force-reinstall` plus a
+    # silenced stderr could leave the venv with no pip at all if the install
+    # was interrupted mid-flight; the older code path exhibited exactly that
+    # failure.  This variant is a no-op when pip is already healthy.
+    f"if ! {_PIP} --version > /dev/null 2>&1; then "
+    '  echo "Bootstrapping pip..."; '
+    "  curl -fsSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py && "
+    f"  {_PYTHON} /tmp/get-pip.py --no-warn-script-location "
+    "  pip setuptools wheel; "
+    "fi"
 )
 _TORCH_INSTALL = (
     f"if ! {_TORCH_CHECK}; then "
@@ -141,9 +147,19 @@ FRAMEWORK = Framework(
         ),
         Step(
             label="Ensuring Python venv exists",
+            # Non-destructive: only repair pip if it's broken; never rm -rf the
+            # venv (that would also wipe torch and every other installed
+            # dependency).  If the venv itself is missing the user should
+            # re-run `swm setup install comfyui` for a clean rebuild.
             command=(
+                f"if [ ! -x {_PYTHON} ]; then "
+                f"  echo 'venv missing - re-run: swm setup install comfyui' "
+                f"  && exit 1; "
+                f"fi; "
                 f"if ! {_PIP} --version > /dev/null 2>&1; then "
-                f"rm -rf {_VENV} && python3 -m venv {_VENV}; "
+                f"  curl -fsSL https://bootstrap.pypa.io/get-pip.py "
+                f"  -o /tmp/get-pip.py "
+                f"  && {_PYTHON} /tmp/get-pip.py --no-warn-script-location; "
                 f"fi"
             ),
             check=f"{_PIP} --version > /dev/null 2>&1",
