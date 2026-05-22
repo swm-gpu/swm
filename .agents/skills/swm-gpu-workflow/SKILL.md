@@ -160,6 +160,9 @@ swm sync watch <pod-id>          # auto-push on file changes (inotify)
 ```
 
 Three-tier smart sync: inotify watcher → incremental s5cmd → tar mode for 600k+ small files.
+Push cycles reconcile inotify events with a `find -newer` scan so fast file bursts
+(e.g. `pip install`) are not missed. Pull re-runs framework link repair steps after
+restore so ComfyUI/vLLM/Ollama symlinks into `/workspace/models/` stay wired.
 
 ### Lifecycle Guard
 
@@ -184,12 +187,29 @@ swm costs budget set 100         # $100/month alert
 
 ### Model Management
 
+Unified store at `/workspace/models/` with per-type buckets. Framework installs
+wire their paths into this store via symlinks.
+
 ```bash
-swm models search <query>        # search HuggingFace Hub
-swm models pull <pod-id> <model> # download model to pod
-swm models set <pod-id> <model>  # hot-swap vLLM model
-swm models set <pod-id> <model> --restart  # restart vLLM with new model
+swm config set hf.api_key <token>              # HuggingFace (also reads legacy hf_token)
+swm config set civitai.api_key <token>         # Civitai gated/NSFW content
+
+swm models search <query>                      # search HuggingFace Hub
+swm models info <ref>                          # inspect HF / Civitai / Ollama ref
+swm models pull <pod-id> <ref>                 # HF, Ollama, Civitai, or URL
+swm models pull <pod-id> <ref> --as lora       # file into the right bucket
+swm models pull <pod-id> civitai:12345         # Civitai model by id
+swm models link <pod-id> /path/to/file --as vae # register an existing on-pod file
+swm models list <pod-id>                       # tracked models from manifest
+swm models list <pod-id> --all                 # include untracked files
+swm models remove <pod-id> <name>              # delete from store + manifest
+
+swm setup start vllm <pod-id> --model Qwen/Qwen3-8B   # vLLM model (replaces models set)
+swm setup start comfyui <pod-id> --extra-args "--use-sage-attention"
 ```
+
+Reference shapes auto-detect source: `org/repo`, `ollama:llama3`, `civitai:12345`,
+or `https://...`. Use `--source hf|ollama|civitai|url` to override.
 
 ### Remote Access
 
