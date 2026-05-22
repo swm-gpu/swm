@@ -254,7 +254,7 @@ class RemoteSession:
         if recursive:
             cmd.append("-r")
         cmd.extend([local_path, f"{self.user}@{self.host}:{remote_path}"])
-        proc = subprocess.run(cmd)
+        proc = subprocess.run(cmd, stdin=subprocess.DEVNULL)
         if proc.returncode != 0:
             raise RuntimeError(f"scp upload failed (exit {proc.returncode})")
 
@@ -273,7 +273,7 @@ class RemoteSession:
         """Download a file from the remote via scp with compression."""
         cmd = self._scp_base() + ["-C"]
         cmd.extend([f"{self.user}@{self.host}:{remote_path}", local_path])
-        proc = subprocess.run(cmd)
+        proc = subprocess.run(cmd, stdin=subprocess.DEVNULL)
         if proc.returncode != 0:
             raise RuntimeError(f"scp download failed (exit {proc.returncode})")
 
