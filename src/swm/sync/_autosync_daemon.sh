@@ -75,8 +75,6 @@ ensure_watcher_healthy() {
 }
 
 sync_once() {
-  [ -s "$WATCH_LOG" ] || return 0
-
   # Defense in depth: refuse to sync if the push stamp has disappeared.
   # Without it we cannot assume the pod and bucket are in sync, and
   # propagating deletions could wipe data on storage.
@@ -93,13 +91,26 @@ sync_once() {
   # Copy-and-truncate rotation: preserves the inode that inotifywait has
   # open, so new events keep flowing into WATCH_LOG.  A plain `mv` would
   # orphan the inode and silently drop every subsequent event.
+  #
+  # The cycle marker is the upper bound for the reconciliation scan below.
+  # On success PUSH_STAMP is advanced to this marker, not to "now", so files
+  # written while this cycle is scanning/uploading stay eligible next time.
+  local cycle_mark="/tmp/.swm_autosync_cycle_mark"
+  : > "$cycle_mark"
+
   local snap="/tmp/.swm_autosync_snap.log"
-  cp "$WATCH_LOG" "$snap" 2>/dev/null || return 0
+  cp "$WATCH_LOG" "$snap" 2>/dev/null || : > "$snap"
   : > "$WATCH_LOG"
 
   local uploads="/tmp/.swm_autosync_uploads"
   local deletes="/tmp/.swm_autosync_deletes"
-  sort -u "$snap" | while IFS= read -r f; do [ -f "$f" ] && echo "$f"; done > "$uploads"
+  local found="/tmp/.swm_autosync_found"
+  find "$SRC" -newer "$PUSH_STAMP" ! -newer "$cycle_mark" -type f 2>/dev/null \
+    | grep -Ev "$EXPECTED_EXCLUDES" > "$found" || true
+  {
+    sort -u "$snap" | while IFS= read -r f; do [ -f "$f" ] && echo "$f"; done
+    cat "$found"
+  } | sort -u > "$uploads"
   sort -u "$snap" | while IFS= read -r f; do [ ! -e "$f" ] && echo "$f"; done > "$deletes"
 
   local n_up n_del
@@ -143,12 +154,12 @@ sync_once() {
     # PUSH_STAMP because the bucket is not in sync with the pod.
     log "WARN: transfer failed (cp_rc=$cp_rc rm_rc=$rm_rc) — re-queueing entries"
     cat "$snap" >> "$WATCH_LOG" 2>/dev/null || true
-    rm -f "$snap" "$uploads" "$deletes" "$TRANSFER_LOCK"
+    rm -f "$cycle_mark" "$snap" "$uploads" "$deletes" "$found" "$TRANSFER_LOCK"
     return 0
   fi
 
-  touch "$PUSH_STAMP"
-  rm -f "$snap" "$uploads" "$deletes" "$TRANSFER_LOCK"
+  touch -r "$cycle_mark" "$PUSH_STAMP"
+  rm -f "$cycle_mark" "$snap" "$uploads" "$deletes" "$found" "$TRANSFER_LOCK"
   log "cycle complete: $n_up uploaded, $n_del deleted"
 }
 

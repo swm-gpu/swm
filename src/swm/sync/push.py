@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shlex
+
 from swm.bootstrap import _s3_env, _s5cmd_transfer, console
 from swm.remote.ssh import RemoteSession
 from swm.sync._common import ensure_pigz, stage_hardlinks
@@ -10,11 +12,49 @@ from swm.sync.paths import (
     PUSH_STAMP,
     STAGING,
     TAR_PATH,
+    WATCH_EXCLUDES,
     WATCH_LOG,
 )
 from swm.sync.watcher import is_watcher_alive, start_watcher
 
 _FILELIST = "/tmp/.swm_push_files"
+_FINDLIST = "/tmp/.swm_push_find_files"
+_WATCH_SNAP = "/tmp/.swm_push_watch_snap"
+_CYCLE_MARK = "/tmp/.swm_push_cycle_mark"
+
+
+def _touch_cycle_mark(session: RemoteSession) -> None:
+    """Create a high-watermark timestamp for this push cycle."""
+    session.exec(f": > {_CYCLE_MARK}", stream=False)
+
+
+def _stamp_to_cycle_mark(session: RemoteSession) -> None:
+    """Advance the sync stamp only to the cycle's high-watermark time."""
+    session.exec(f"touch -r {_CYCLE_MARK} {PUSH_STAMP}", stream=False)
+
+
+def _cleanup_incremental_files(session: RemoteSession) -> None:
+    session.exec(
+        f"rm -f {_FILELIST} {_FINDLIST} {_WATCH_SNAP} {_CYCLE_MARK}",
+        stream=False,
+    )
+
+
+def _find_changed_command(
+    src: str,
+    upper_mark: str,
+    extra_excludes: list[str] | None = None,
+) -> str:
+    """Shell command that finds changed files between PUSH_STAMP and upper_mark."""
+    cmd = (
+        f"find {shlex.quote(src)} -newer {PUSH_STAMP} "
+        f"! -newer {upper_mark} -type f"
+    )
+    for pat in (extra_excludes or []):
+        path_pat = pat if pat.startswith("/") else f"{src.rstrip('/')}/{pat}"
+        cmd += f" ! -path {shlex.quote(path_pat)}"
+    exclude_re = shlex.quote("(" + "|".join(WATCH_EXCLUDES) + ")")
+    return f"( {cmd} 2>/dev/null | grep -Ev {exclude_re} || true )"
 
 
 def _tar_push(
@@ -126,22 +166,31 @@ def _push_watcher_tier(
     bucket: str,
     workspace: str,
     src: str,
+    extra_excludes: list[str] | None,
     force: bool,
     delete: bool,
 ) -> None:
     """Tier 1: watcher is alive, read change log for incremental push."""
     env = _s3_env(storage_slug)
-    console.print("  [dim]Watcher active — reading change log[/dim]")
+    console.print("  [dim]Watcher active — reconciling change log with filesystem scan[/dim]")
 
+    _touch_cycle_mark(session)
     session.exec(
-        f"sort -u {WATCH_LOG} 2>/dev/null"
-        f" | while IFS= read -r f; do [ -f \"$f\" ] && echo \"$f\"; done"
-        f" > {_FILELIST}",
+        f"cp {WATCH_LOG} {_WATCH_SNAP} 2>/dev/null || : > {_WATCH_SNAP}; "
+        f": > {WATCH_LOG}",
+        stream=False,
+    )
+    find_cmd = _find_changed_command(src, _CYCLE_MARK, extra_excludes)
+    session.exec(f"{find_cmd} > {_FINDLIST}", stream=False)
+    session.exec(
+        f"{{ sort -u {_WATCH_SNAP}"
+        f" | while IFS= read -r f; do [ -f \"$f\" ] && echo \"$f\"; done; "
+        f"cat {_FINDLIST}; }} | sort -u > {_FILELIST}",
         stream=False,
     )
     if delete:
         session.exec(
-            f"sort -u {WATCH_LOG} 2>/dev/null"
+            f"sort -u {_WATCH_SNAP} 2>/dev/null"
             f" | while IFS= read -r f; do [ ! -e \"$f\" ] && echo \"$f\"; done"
             f" > {DELETED_LIST}",
             stream=False,
@@ -165,7 +214,8 @@ def _push_watcher_tier(
 
     if changed == 0 and deleted_count == 0:
         console.print("\n[green]✓ Nothing to push — workspace is up to date[/green]")
-        session.exec(f": > {WATCH_LOG} && touch {PUSH_STAMP}", stream=False)
+        _stamp_to_cycle_mark(session)
+        _cleanup_incremental_files(session)
         return
 
     rc = 0
@@ -184,7 +234,11 @@ def _push_watcher_tier(
         _sync_deletions(session, storage_slug, bucket, workspace, src)
 
     if rc == 0:
-        session.exec(f": > {WATCH_LOG} && touch {PUSH_STAMP}", stream=False)
+        _stamp_to_cycle_mark(session)
+    else:
+        session.exec(f"cat {_WATCH_SNAP} >> {WATCH_LOG} 2>/dev/null || true", stream=False)
+
+    _cleanup_incremental_files(session)
 
 
 def _push_find_tier(
@@ -208,9 +262,8 @@ def _push_find_tier(
         )
     console.print("  [dim]Watcher not running — scanning with find[/dim]")
 
-    find_cmd = f"find '{src}' -newer {PUSH_STAMP} -type f"
-    for pat in (extra_excludes or []):
-        find_cmd += f" ! -path '{src}/{pat}'"
+    _touch_cycle_mark(session)
+    find_cmd = _find_changed_command(src, _CYCLE_MARK, extra_excludes)
 
     with console.status("Scanning for changes…", spinner="dots"):
         session.exec(f"{find_cmd} > {_FILELIST}", stream=False)
@@ -221,7 +274,8 @@ def _push_find_tier(
 
     if changed == 0:
         console.print("\n[green]✓ Nothing to push — workspace is up to date[/green]")
-        session.exec(f"touch {PUSH_STAMP}", stream=False)
+        _stamp_to_cycle_mark(session)
+        _cleanup_incremental_files(session)
         return
 
     stage_hardlinks(session, _FILELIST, src)
@@ -234,7 +288,8 @@ def _push_find_tier(
     )
     session.exec(f"rm -rf {STAGING}", stream=False)
     if rc == 0:
-        session.exec(f"touch {PUSH_STAMP}", stream=False)
+        _stamp_to_cycle_mark(session)
+    _cleanup_incremental_files(session)
 
     if start_watcher(session, src):
         console.print("  [dim]Watcher restarted for next push[/dim]")
@@ -259,6 +314,7 @@ def _push_first_tier(
     size = du_out.strip() or "?"
     console.print(f"  [dim]First push — {size} to upload[/dim]")
 
+    _touch_cycle_mark(session)
     rc = _s5cmd_transfer(
         session,
         f"Pushing {src}/ → {workspace}/",
@@ -267,9 +323,10 @@ def _push_first_tier(
         force=force,
     )
     if rc == 0:
-        session.exec(f"touch {PUSH_STAMP}", stream=False)
+        _stamp_to_cycle_mark(session)
         if start_watcher(session, src):
             console.print("  [dim]Watcher started for future pushes[/dim]")
+    _cleanup_incremental_files(session)
 
 
 def workspace_push(
@@ -312,7 +369,8 @@ def workspace_push(
 
     if has_stamp and is_watcher_alive(session):
         _push_watcher_tier(
-            session, storage_slug, bucket, workspace, src, force, delete,
+            session, storage_slug, bucket, workspace, src,
+            extra_excludes, force, delete,
         )
     elif has_stamp:
         _push_find_tier(

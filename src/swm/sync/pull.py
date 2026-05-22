@@ -2,11 +2,67 @@
 
 from __future__ import annotations
 
+import shlex
+
 from swm.bootstrap import _s3_env, _s5cmd_transfer, console
 from swm.remote.ssh import RemoteSession
 from swm.sync._common import ensure_pigz, restore_permissions
 from swm.sync.paths import PUSH_STAMP, TAR_PATH, WATCH_LOG
 from swm.sync.watcher import start_watcher
+
+
+def _is_link_repair_step(label: str) -> bool:
+    lowered = label.lower()
+    return "link" in lowered or "symlink" in lowered
+
+
+def _repair_framework_links(session: RemoteSession, dest: str) -> None:
+    """Re-run idempotent framework link repair steps after a workspace pull."""
+    if dest.rstrip("/") != "/workspace":
+        return
+
+    from swm.frameworks import list_frameworks
+
+    repaired = 0
+    for fw in list_frameworks():
+        if not fw.pre_start:
+            continue
+
+        _, installed, _ = session.exec(
+            f"test -d {shlex.quote(fw.install_dir)} && echo yes || echo no",
+            stream=False,
+        )
+        if installed.strip() != "yes":
+            continue
+
+        env_prefix = f"{fw.env_setup} && " if fw.env_setup else ""
+        ran_repair = False
+        for step in fw.pre_start:
+            if not _is_link_repair_step(step.label):
+                continue
+
+            ran_repair = True
+            workdir = shlex.quote(step.workdir or fw.install_dir)
+            if step.check:
+                cmd = (
+                    f"{step.check} && echo '{step.label}: already done' "
+                    f"|| ({env_prefix}cd {workdir} && {step.command})"
+                )
+            else:
+                cmd = f"{env_prefix}cd {workdir} && {step.command}"
+
+            code, _, _ = session.exec(cmd, stream=False)
+            if code != 0:
+                console.print(
+                    f"  [yellow]⚠ Framework repair step failed: "
+                    f"{fw.name} - {step.label}[/yellow]"
+                )
+
+        if ran_repair:
+            repaired += 1
+
+    if repaired:
+        console.print(f"  [dim]Framework repair checked {repaired} install(s)[/dim]")
 
 
 def workspace_pull(
@@ -49,6 +105,7 @@ def workspace_pull(
     )
 
     restore_permissions(session, dest)
+    _repair_framework_links(session, dest)
 
     session.exec(f": > {WATCH_LOG} 2>/dev/null; touch {PUSH_STAMP}", stream=False)
     if start_watcher(session, dest):
@@ -104,6 +161,7 @@ def tar_pull(
     session.exec(f"rm -f {TAR_PATH}", stream=False)
 
     restore_permissions(session, dest)
+    _repair_framework_links(session, dest)
 
     session.exec(
         f": > {WATCH_LOG} 2>/dev/null; touch {PUSH_STAMP}", stream=False,
