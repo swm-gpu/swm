@@ -285,7 +285,10 @@ _SOURCE_CHOICES = click.Choice(
 @click.option(
     "--filename",
     default=None,
-    help="When pulling a URL or Civitai file, override the saved filename",
+    help=(
+        "HF: exact repo file to download. "
+        "URL/Civitai: override the saved filename."
+    ),
 )
 def models_pull(
     instance_id: str,
@@ -471,7 +474,11 @@ def _hf_repo_download_cmd(ref: str, cache_dir: str, token: str | None) -> str:
 
 
 def _pick_hf_files(resolved, filename_override: str | None) -> list[tuple[str, str]]:
-    """Return a list of ``(remote_path, save_as)`` pairs to download from HF."""
+    """Return ``[(remote_path, save_as)]`` to download from the HF repo.
+
+    For HF, ``--filename`` means "download this exact file from the repo"; the
+    local name is the basename of that remote path.
+    """
     info = (resolved.extra or {}).get("hf_info", {})
     siblings = info.get("siblings", []) or []
     candidates = [s.get("rfilename") for s in siblings if isinstance(s, dict)]
@@ -493,7 +500,7 @@ def _pick_hf_files(resolved, filename_override: str | None) -> list[tuple[str, s
     matches = [c for c in candidates if c.lower().endswith(ext_priority)]
     if not matches:
         return []
-    # Prefer the smallest indexable file; otherwise pick the largest.
+    # Prefer files at the repo root over nested ones; tie-break by name length.
     matches.sort(key=lambda c: (c.count("/"), len(c)))
     chosen = matches[0]
     return [(chosen, chosen.rsplit("/", 1)[-1])]
@@ -505,9 +512,10 @@ def _hf_file_url(repo: str, path: str) -> str:
 
 def _curl_to_file(url: str, dest: str, token: str | None) -> str:
     auth = f"-H 'Authorization: Bearer {token}' " if token else ""
+    qd = shlex.quote(dest)
     return (
-        f"curl -fL --retry 3 --retry-delay 2 {auth}-o {dest} {shlex.quote(url)} && "
-        f"[ -s {dest} ]"
+        f"curl -fL --retry 3 --retry-delay 2 {auth}-o {qd} {shlex.quote(url)} && "
+        f"[ -s {qd} ]"
     )
 
 
@@ -576,13 +584,21 @@ def _pull_civitai(sess, resolved, civitai_token: str | None, filename_override: 
 
     bucket = r.target_dir_for(resolved.asset_type)
     bucket_path = f"{_MODELS_ROOT}/{bucket}"
-    save_as = filename_override or primary.name
+    raw_save_as = filename_override or primary.name
+    # Civitai filenames frequently contain spaces, '$', '[]', and parens that
+    # break unquoted bash. Sanitize to a shell-safe form when the caller didn't
+    # supply an explicit override.
+    if filename_override:
+        save_as = filename_override
+    else:
+        save_as = re.sub(r"[^A-Za-z0-9._-]", "_", raw_save_as) or "download.safetensors"
     dest = f"{bucket_path}/{save_as}"
 
-    sess.exec(f"mkdir -p {bucket_path}", stream=False)
+    sess.exec(f"mkdir -p {shlex.quote(bucket_path)}", stream=False)
     cmd = (
-        f"curl -fL --retry 3 --retry-delay 2 -o {dest} {shlex.quote(url)} && "
-        f"[ -s {dest} ]"
+        f"curl -fL --retry 3 --retry-delay 2 -o {shlex.quote(dest)} "
+        f"{shlex.quote(url)} && "
+        f"[ -s {shlex.quote(dest)} ]"
     )
     exit_code, _, _ = sess.exec(cmd)
     if exit_code != 0:
@@ -602,20 +618,25 @@ def _pull_civitai(sess, resolved, civitai_token: str | None, filename_override: 
 
 
 def _pull_url(sess, resolved, filename_override: str | None):
-    """Direct-URL download to /workspace/models/files/."""
+    """Direct-URL download into the asset-type bucket (defaults to ``files/``)."""
+    from swm.models import resolver as r
     from swm.models.manifest import ModelEntry, make_key
 
-    bucket_path = f"{_MODELS_ROOT}/files"
+    # Respect ``--as`` so e.g. ``--as text-encoder`` lands in
+    # /workspace/models/text_encoders/ rather than the generic files/ dir.
+    bucket = r.target_dir_for(resolved.asset_type) if resolved.asset_type else "files"
+    bucket_path = f"{_MODELS_ROOT}/{bucket}"
     save_as = filename_override or resolved.display_name
     save_as = re.sub(r"[^A-Za-z0-9._-]", "_", save_as)
     if not save_as:
         save_as = "download.bin"
     dest = f"{bucket_path}/{save_as}"
 
-    sess.exec(f"mkdir -p {bucket_path}", stream=False)
+    sess.exec(f"mkdir -p {shlex.quote(bucket_path)}", stream=False)
     cmd = (
-        f"curl -fL --retry 3 --retry-delay 2 -o {dest} {shlex.quote(resolved.ref)} && "
-        f"[ -s {dest} ]"
+        f"curl -fL --retry 3 --retry-delay 2 -o {shlex.quote(dest)} "
+        f"{shlex.quote(resolved.ref)} && "
+        f"[ -s {shlex.quote(dest)} ]"
     )
     exit_code, _, _ = sess.exec(cmd)
     if exit_code != 0:
