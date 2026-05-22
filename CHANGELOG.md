@@ -6,6 +6,30 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-05-22
+
+### Added
+- `swm setup start --extra-args` appends extra launch flags to any framework
+  (e.g. ComfyUI `--use-sage-attention`).
+
+### Fixed
+- Workspace sync push/autosync now reconciles inotify events with a
+  high-watermark `find -newer` scan so fast file bursts are not missed.
+- `swm sync pull` re-runs idempotent framework link/symlink repair steps
+  after restore so ComfyUI/vLLM/Ollama paths into `/workspace/models/`
+  stay wired.
+- `swm models pull` quotes Civitai/URL destination paths and sanitizes
+  Civitai filenames with shell-special characters.
+- `swm models pull` with a URL respects `--as` for bucket routing.
+- ComfyUI pre-start no longer deletes the venv or force-reinstalls pip;
+  missing venv now errors with a clear re-install hint.
+- `scp` upload/download no longer consumes stdin (fixes hangs in piped
+  agent contexts).
+
+### Changed
+- Documentation and agent skill updated for the unified model store and
+  removal of `swm models set`.
+
 ## [0.2.0] - 2026-04-03
 
 ### Added
