@@ -3,28 +3,172 @@ title: swm models
 description: Search, download, and manage AI models on pods.
 ---
 
+`swm models` manages a unified model store on each pod:
+
+```text
+/workspace/models/
+  checkpoints/        # ComfyUI / SwarmUI checkpoints
+  loras/              # LoRAs
+  vae/                # VAEs
+  diffusion_models/   # Flux / diffusion model weights
+  text_encoders/      # CLIP, Qwen, T5, etc.
+  hf/                 # HuggingFace cache for vLLM / transformers
+  ollama/             # Ollama model store
+  files/              # generic single-file downloads
+  .manifest.json      # tracked pulls and linked files
+```
+
+Framework installs wire their expected paths into this store. A LoRA pulled
+with `swm models pull --as lora` becomes visible to ComfyUI and SwarmUI without
+manual copying; vLLM and Ollama use the same store for their model caches.
+
 ## Subcommands
 
 | Command | Description |
 |---------|------------|
 | `models search <query>` | Search HuggingFace Hub |
-| `models info <model>` | Detailed model info |
-| `models pull <id> <model>` | Download model to pod |
-| `models set <id> <model>` | Activate model for vLLM |
-| `models list <id>` | List downloaded models |
-| `models remove <id> <model>` | Remove a model |
+| `models info <ref>` | Inspect HuggingFace or Civitai metadata |
+| `models pull [id] <ref>` | Download a model or file into `/workspace/models/` |
+| `models list [id]` | List tracked models and their on-disk status |
+| `models link [id] <path>` | Register an existing on-pod file in the model store |
+| `models remove [id] <ref>` | Remove a tracked model from disk and the manifest |
+
+## Supported references
+
+| Ref shape | Source | Default asset type |
+|-----------|--------|--------------------|
+| `org/model-name` | HuggingFace | inferred from repo metadata |
+| `name:tag` | Ollama | `ollama` |
+| `civitai:<model-id>` | Civitai | inferred from Civitai model type |
+| `civitai:<model-id>:<version-id>` | Civitai version | inferred from Civitai model type |
+| `https://...` | Direct URL | `file` unless `--as` is passed |
+
+Single-segment names are ambiguous. swm checks HuggingFace and Ollama; if both
+match, pass `--source hf` or `--source ollama`.
+
+## API keys
+
+Store API keys with the same config pattern used for GPU providers:
+
+```bash
+swm config set hf.api_key hf_xxx
+swm config set civitai.api_key civ_xxx
+```
+
+Use `--token` on `models info` or `models pull` to override config for one
+command. HuggingFace environment variables (`HF_TOKEN`,
+`HUGGING_FACE_HUB_TOKEN`) are also used when no config key is set.
+
+## Asset types
+
+Use `--as` when auto-detection is wrong or a direct URL needs to land in a
+framework bucket:
+
+| Type | Directory |
+|------|-----------|
+| `llm` | `hf/` |
+| `llm-gguf` | `files/` |
+| `ollama` | `ollama/` |
+| `checkpoint` | `checkpoints/` |
+| `lora` | `loras/` |
+| `vae` | `vae/` |
+| `controlnet` | `controlnet/` |
+| `embedding` | `embeddings/` |
+| `clip` | `clip/` |
+| `clip-vision` | `clip_vision/` |
+| `upscaler` | `upscale_models/` |
+| `unet` | `unet/` |
+| `diffusion` | `diffusion_models/` |
+| `text-encoder` | `text_encoders/` |
+| `file` | `files/` |
 
 ## Examples
 
 ```bash
+# Search and inspect
 swm models search "qwen3 coder" --sort downloads
+swm models search "stable diffusion" --all-types
 swm models info Qwen/Qwen3-235B-A22B
+swm models info civitai:101055
+
+# Pull from HuggingFace, Ollama, Civitai, and direct URLs
 swm models pull runpod:abc123 Qwen/Qwen3-8B
-swm models set runpod:abc123 Qwen/Qwen3-8B --restart
+swm models pull runpod:abc123 deepseek-r1:14b
+swm models pull runpod:abc123 civitai:101055 --as checkpoint
+swm models pull runpod:abc123 \
+  https://example.com/style.safetensors \
+  --as lora --filename style.safetensors
+
+# Inventory and reconcile
 swm models list runpod:abc123
+swm models list runpod:abc123 --all
+swm models link runpod:abc123 /workspace/downloads/my-lora.safetensors --as lora
+swm models remove runpod:abc123 civitai:101055:128713 -y
 ```
 
-## Dual-engine support
+## Command details
 
-- `org/model-name` (contains `/`) → HuggingFace download for vLLM
-- `model:tag` (no `/`) → Ollama pull
+### `swm models search <query>`
+
+Searches HuggingFace Hub.
+
+| Option | Description |
+|--------|-------------|
+| `--sort downloads\|likes\|trending` | Sort order |
+| `-n`, `--limit INTEGER` | Number of results |
+| `--all-types` | Include non-LLM models |
+
+### `swm models info <ref>`
+
+Shows metadata for HuggingFace and Civitai refs. Supports `--source` and
+`--token` for explicit routing/auth.
+
+```bash
+swm models info Qwen/Qwen3-8B
+swm models info civitai:101055
+swm models info https://civitai.com/models/101055
+```
+
+### `swm models pull [id] <ref>`
+
+Downloads into the unified model store and records the result in
+`/workspace/models/.manifest.json`.
+
+| Option | Description |
+|--------|-------------|
+| `--as TYPE` | Override asset type / destination bucket |
+| `--source hf\|ollama\|civitai\|url` | Override source detection |
+| `--token TEXT` | API token for this pull |
+| `--filename TEXT` | Save a URL/Civitai/HF file with a specific filename |
+
+### `swm models list [id]`
+
+Lists tracked manifest entries and whether their paths still exist. Add `--all`
+to show untracked files under `/workspace/models/`, useful after manual
+downloads or uploads.
+
+### `swm models link [id] <source_path>`
+
+Moves an existing file into the right model bucket and adds it to the manifest.
+
+```bash
+swm models link runpod:abc123 /workspace/sdxl.safetensors --as checkpoint
+swm models link runpod:abc123 /workspace/models/files/style.safetensors \
+  --as lora --name "style"
+```
+
+### `swm models remove [id] <ref>`
+
+Deletes the tracked file(s) and removes the manifest entry. Other model files
+are left untouched.
+
+## vLLM model selection
+
+`swm models set` has been replaced. Start vLLM with a model directly:
+
+```bash
+swm setup start vllm runpod:abc123 --model Qwen/Qwen3-8B
+```
+
+This writes `/workspace/vllm/model.txt` before launching, so the selected model
+persists with the workspace.

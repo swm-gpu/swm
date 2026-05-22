@@ -46,7 +46,7 @@ description: >
 2. Create pod: `swm pod create -p <provider> -g <gpu> -n <model-name> -y`
 3. Install vLLM: `swm setup install vllm <pod-id>`
 4. Pull model: `swm models pull <pod-id> <model-path>`
-5. Set as active: `swm models set <pod-id> <model-path> --restart`
+5. Start vLLM with the model: `swm setup start vllm <pod-id> --model <model-path>`
 6. Verify: `swm run <pod-id> "curl -s localhost:8000/v1/models"`
 7. Enable guard: `swm guard enable <pod-id> --policy auto-down --idle 30m`
 8. Report URL and pod ID to user

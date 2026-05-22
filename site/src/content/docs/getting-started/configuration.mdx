@@ -32,6 +32,24 @@ swm config set runpod.api_key sk-xxxxxxxxxxxx
 | AWS S3 | `s3.access_key`, `s3.secret_key`, `s3.bucket` |
 | Google GCS | `gcs.hmac_access`, `gcs.hmac_secret` |
 
+## Model provider API keys
+
+`swm models` uses the same config file for model registry credentials:
+
+| Provider | Config keys | Used for |
+|----------|-------------|----------|
+| HuggingFace | `hf.api_key` | gated/private repos, higher API limits |
+| Civitai | `civitai.api_key` | gated/restricted models and authenticated downloads |
+
+```bash
+swm config set hf.api_key hf_xxxxxxxxxxxx
+swm config set civitai.api_key civ_xxxxxxxxxxxx
+```
+
+You can also pass `--token` to `swm models info` or `swm models pull` for a
+single command. HuggingFace environment variables (`HF_TOKEN`,
+`HUGGING_FACE_HUB_TOKEN`) are used when no `hf.api_key` is configured.
+
 ## SSH keys
 
 ```bash

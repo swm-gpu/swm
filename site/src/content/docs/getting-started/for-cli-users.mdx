@@ -88,7 +88,18 @@ swm pod create -p runpod -g "H100 SXM" -n my-first-pod \
 
 ```bash
 swm setup install vllm runpod:YOUR_POD_ID
-swm setup start vllm runpod:YOUR_POD_ID
+swm models pull runpod:YOUR_POD_ID Qwen/Qwen3-8B
+swm setup start vllm runpod:YOUR_POD_ID --model Qwen/Qwen3-8B
+```
+
+For image-generation workflows, pull assets into the unified model store and
+start ComfyUI:
+
+```bash
+swm setup install comfyui runpod:YOUR_POD_ID
+swm models pull runpod:YOUR_POD_ID civitai:101055 --as checkpoint
+swm models pull runpod:YOUR_POD_ID https://example.com/style.safetensors --as lora
+swm setup start comfyui runpod:YOUR_POD_ID
 ```
 
 ## Push your workspace and terminate

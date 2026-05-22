@@ -29,7 +29,7 @@ Credentials are never written to pods — they're injected as transient environm
 
 ## Continuous auto-sync
 
-`swm pod create` doesn't just pull your workspace — it leaves the pod with a running auto-sync daemon. The daemon tails the inotify watcher log every 60 seconds and pushes new/changed files (and removes deleted ones) without you running anything. Inspect or change it with:
+`swm pod create` doesn't just pull your workspace — it leaves the pod with a running auto-sync daemon. The daemon wakes every 60 seconds, reconciles the inotify watcher log with a bounded filesystem scan, and pushes new/changed files (and removes deleted ones) without you running anything. Inspect or change it with:
 
 ```bash
 swm sync auto runpod:abc123 --status     # daemon state + recent log
@@ -41,6 +41,8 @@ swm sync auto runpod:abc123              # restart (default 60s)
 **Safety check.** The daemon refuses to start unless a prior `sync pull` or `sync push` succeeded for this pod (marked by a push stamp on disk). Without that signal, a stray local deletion would propagate to storage and erase your remote copy. `--force` overrides — use only when the pod is definitively the authoritative copy.
 
 **Self-healing.** The watcher's exclude regex is fingerprinted on the pod. When swm is upgraded with new excludes (for example, ignoring a new log file), long-lived watchers detect the drift on the next auto-sync cycle and restart with the latest configuration. No manual `swm sync watch --stop && swm sync watch` needed.
+
+**Reconciliation scan.** inotify can miss files created inside brand-new directories during very fast bursts such as `pip install` or `git clone`. Auto-sync therefore combines watcher events with a high-watermark `find -newer` scan before advancing the push stamp. Files written while a sync cycle is running remain eligible for the next cycle.
 
 ## Deletion semantics
 

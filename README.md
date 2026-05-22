@@ -159,9 +159,30 @@ swm costs budget set 100            # $100/month alert
 ### Model Management
 
 ```bash
-swm models search qwen3             # search HuggingFace Hub
-swm models pull runpod:<id> Qwen/Qwen3-235B
-swm models set runpod:<id> Qwen/Qwen3-235B  # hot-swap vLLM model
+swm models search qwen3                         # search HuggingFace Hub
+swm models info civitai:101055                  # inspect HF / Civitai refs
+swm models pull runpod:<id> Qwen/Qwen3-8B       # HuggingFace repo
+swm models pull runpod:<id> deepseek-r1:14b     # Ollama ref
+swm models pull runpod:<id> civitai:101055 --as checkpoint
+swm models pull runpod:<id> https://example.com/style.safetensors --as lora
+swm models list runpod:<id> --all               # tracked + untracked files
+swm models link runpod:<id> /workspace/foo.safetensors --as lora
+swm setup start vllm runpod:<id> --model Qwen/Qwen3-8B
+```
+
+Downloads land in a unified on-pod model store at `/workspace/models/`.
+Framework installs wire their expected paths into that store: ComfyUI and
+SwarmUI get bucket-style directories (`checkpoints/`, `loras/`, `vae/`,
+`diffusion_models/`, `text_encoders/`, ...), vLLM uses the shared HF cache,
+and Ollama uses the shared Ollama store. Every pull/link is recorded in
+`/workspace/models/.manifest.json`, so `swm models list` can show tracked,
+missing, and unmanaged files.
+
+For gated repos or restricted Civitai models:
+
+```bash
+swm config set hf.api_key <huggingface-token>
+swm config set civitai.api_key <civitai-token>
 ```
 
 ## How It Works

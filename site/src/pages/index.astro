@@ -88,7 +88,8 @@ import FeatureCard from '../components/FeatureCard.astro';
 <span class="prompt">$</span> swm models pull runpod:r1008si \
     Qwen/Qwen3-235B-A22B
 <span class="prompt">$</span> swm setup install open-webui runpod:r1008si
-<span class="prompt">$</span> swm setup start vllm runpod:r1008si
+<span class="prompt">$</span> swm setup start vllm runpod:r1008si \
+    --model Qwen/Qwen3-235B-A22B
 <span class="prompt">$</span> swm setup start open-webui runpod:r1008si</pre>
 				</Terminal>
 			</div>
@@ -196,10 +197,11 @@ Tier 3: full parallel   → s5cmd 512 workers (first push)</span></pre>
 				<pre><span class="prompt">$</span> swm models search "qwen3 coder"
 <span class="prompt">$</span> swm models pull runpod:r1008si \
     Qwen/Qwen3-235B-A22B
-<span class="prompt">$</span> swm models set runpod:r1008si \
-    Qwen/Qwen3-235B-A22B --restart
-<span class="success">  ✓ Model activated, vLLM restarted (TP=4)</span></pre>
-				<p>Search HuggingFace Hub, pull to any pod, hot-swap vLLM models. Supports both HuggingFace and Ollama.</p>
+<span class="prompt">$</span> swm models pull runpod:r1008si \
+    civitai:101055 --as checkpoint
+<span class="prompt">$</span> swm models list runpod:r1008si --all
+<span class="success">  ✓ Models tracked in /workspace/models/.manifest.json</span></pre>
+				<p>Search HuggingFace Hub, pull HF/Ollama/Civitai/URL assets, and share them across vLLM, Ollama, ComfyUI, and SwarmUI through one unified model store.</p>
 			</FeatureCard>
 		</div>
 	</section>

@@ -32,6 +32,26 @@ swm setup stop vllm runpod:abc123       # stop
 - **SSH tunnels**: If a port isn't externally mapped, swm opens a background SSH tunnel
 - **Health probing**: After starting, swm probes the health endpoint with retries
 
+## Shared model store
+
+Frameworks use a unified on-pod model store at `/workspace/models/`.
+
+- **ComfyUI / SwarmUI**: model buckets such as `checkpoints/`, `loras/`,
+  `vae/`, `diffusion_models/`, and `text_encoders/` are symlinked into each
+  framework's expected `models/` directory.
+- **vLLM**: HuggingFace downloads use the shared HF cache under
+  `/workspace/models/hf/`.
+- **Ollama**: the Ollama model directory points at `/workspace/models/ollama/`.
+
+That means `swm models pull` can download once and make the asset visible to
+the right framework without manual copying.
+
+```bash
+swm models pull runpod:abc123 civitai:101055 --as checkpoint
+swm models pull runpod:abc123 Qwen/Qwen3-8B
+swm setup start vllm runpod:abc123 --model Qwen/Qwen3-8B
+```
+
 ## Custom frameworks
 
 For tools not in the built-in list, use `swm run` to install and manage manually:
