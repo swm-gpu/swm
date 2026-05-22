@@ -283,7 +283,18 @@ def setup_install(framework_name: str, instance_id: str):
     default=None,
     help="vLLM only: HuggingFace model id to serve (writes /workspace/vllm/model.txt before launch)",
 )
-def setup_start(framework_name: str, instance_id: str, port: int | None, model: str | None):
+@click.option(
+    "--extra-args",
+    default=None,
+    help="Additional arguments appended to the framework launch command",
+)
+def setup_start(
+    framework_name: str,
+    instance_id: str,
+    port: int | None,
+    model: str | None,
+    extra_args: str | None,
+):
     """Start a framework on a running instance.
 
     \b
@@ -291,6 +302,7 @@ def setup_start(framework_name: str, instance_id: str, port: int | None, model: 
       swm setup start comfyui runpod:abc123
       swm setup start swarmui runpod:abc123 --port 8888
       swm setup start vllm runpod:abc123 --model Qwen/Qwen3-8B
+      swm setup start comfyui runpod:abc123 --extra-args "--use-sage-attention"
     """
     import shlex
 
@@ -308,6 +320,11 @@ def setup_start(framework_name: str, instance_id: str, port: int | None, model: 
             "--model is only supported for `vllm` "
             "(other engines pick their model at request or workflow time)"
         )
+    if extra_args is not None:
+        try:
+            shlex.split(extra_args)
+        except ValueError as exc:
+            raise click.UsageError(f"invalid --extra-args: {exc}") from exc
 
     inst = _instance_for(instance_id)
 
@@ -324,6 +341,7 @@ def setup_start(framework_name: str, instance_id: str, port: int | None, model: 
                 sess,
                 framework_name,
                 port=port,
+                extra_args=extra_args,
                 console=console,
                 qualified_id=inst.qualified_id,
             )

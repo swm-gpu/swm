@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 import time
 
 from rich.console import Console
@@ -48,6 +49,7 @@ def start_framework(
     session: RemoteSession,
     name: str,
     port: int | None = None,
+    extra_args: str | None = None,
     console: Console | None = None,
     qualified_id: str | None = None,
 ) -> str | None:
@@ -89,6 +91,8 @@ def start_framework(
     if port and fw.ports:
         default_port = str(next(iter(fw.ports)))
         launch = launch.replace(default_port, str(port))
+    if extra_args:
+        launch = f"{launch} {' '.join(shlex.quote(arg) for arg in shlex.split(extra_args))}"
 
     logfile = f"/tmp/{fw.name}.log"
 
