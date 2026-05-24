@@ -1,0 +1,24 @@
+{
+  "name": "swm-demo-video",
+  "version": "0.1.0",
+  "description": "Remotion video assets for swm CLI demos (hero, vertical, square)",
+  "private": true,
+  "scripts": {
+    "studio": "remotion studio src/Root.tsx",
+    "render:hero": "remotion render src/Root.tsx Hero16x9 out/hero-1920x1080-60fps.mp4 --concurrency=4",
+    "render:vertical": "remotion render src/Root.tsx Vertical9x16 out/vertical-1080x1920-60fps.mp4 --concurrency=4",
+    "render:square": "remotion render src/Root.tsx Square1x1 out/square-1080x1080-60fps.mp4 --concurrency=4",
+    "render:all": "npm run render:hero && npm run render:vertical && npm run render:square"
+  },
+  "dependencies": {
+    "@remotion/cli": "^4.0.0",
+    "@remotion/google-fonts": "^4.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "remotion": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.0",
+    "typescript": "^5.4.0"
+  }
+}

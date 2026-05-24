@@ -17,11 +17,15 @@ they persist across B2 syncs and are visible to other frameworks.
 Connect Open WebUI to vLLM by pointing it at ``http://127.0.0.1:8000/v1``.
 """
 
+from swm.bootstrap import (
+    PYTHON_DEFAULT_MINOR,
+    UV_ENV_EXPORTS,
+    WORKSPACE_UV,
+)
 from swm.frameworks import Framework, Step, nvidia_ld_exports
 
 _INSTALL_DIR = "/workspace/vllm"
 _VENV = f"{_INSTALL_DIR}/venv"
-_PIP = f"{_VENV}/bin/pip"
 _PYTHON = f"{_VENV}/bin/python"
 _PIP_CACHE = "/workspace/.cache/pip"
 _HF_CACHE = f"{_INSTALL_DIR}/hf_cache"
@@ -29,6 +33,7 @@ _UNIFIED_HF = "/workspace/models/hf"
 _MODEL_FILE = f"{_INSTALL_DIR}/model.txt"
 _DEFAULT_MODEL = "Qwen/Qwen3-8B"
 _LAUNCHER = f"{_INSTALL_DIR}/start.sh"
+_UV_PIP = f"{WORKSPACE_UV} pip install --python {_PYTHON}"
 
 # Migrate ``_HF_CACHE`` to a symlink pointing at the unified store at
 # ``/workspace/models/hf`` so ``swm models`` writes show up here automatically.
@@ -45,6 +50,7 @@ _LINK_HF_CACHE = (
 )
 
 _ENV = (
+    f"{UV_ENV_EXPORTS} && "
     f"export PIP_CACHE_DIR={_PIP_CACHE} "
     f"HF_HOME={_HF_CACHE} "
     f"VLLM_WORKER_MULTIPROC_METHOD=spawn && "
@@ -75,6 +81,7 @@ FRAMEWORK = Framework(
     label="vLLM",
     repo="https://github.com/vllm-project/vllm",
     install_dir=_INSTALL_DIR,
+    venv=_VENV,
     description="Fast multi-GPU inference — tensor parallelism, tools, thinking",
     launch_cmd=f"bash {_LAUNCHER}",
     ports={8000: "http"},
@@ -96,16 +103,12 @@ FRAMEWORK = Framework(
         ),
         Step(
             label="Creating virtual environment",
-            command=f"python3 -m venv {_VENV}",
+            command=f"{WORKSPACE_UV} venv --python {PYTHON_DEFAULT_MINOR} --seed {_VENV}",
             check=f"[ -x {_PYTHON} ]",
         ),
         Step(
             label="Installing vLLM",
-            command=(
-                f"export PIP_CACHE_DIR={_PIP_CACHE} && "
-                f"{_PIP} install --upgrade pip && "
-                f"{_PIP} install vllm"
-            ),
+            command=f"{_UV_PIP} vllm",
         ),
         Step(
             label=f"Setting default model ({_DEFAULT_MODEL})",
@@ -149,12 +152,12 @@ FRAMEWORK = Framework(
         ),
         Step(
             label="Ensuring virtual environment exists",
-            command=f"python3 -m venv {_VENV}",
+            command=f"{WORKSPACE_UV} venv --python {PYTHON_DEFAULT_MINOR} --seed {_VENV}",
             check=f"[ -x {_PYTHON} ]",
         ),
         Step(
             label="Ensuring vLLM is installed",
-            command=f"export PIP_CACHE_DIR={_PIP_CACHE} && {_PIP} install vllm",
+            command=f"{_UV_PIP} vllm",
             check=f"[ -x {_VENV}/bin/vllm ]",
         ),
         Step(

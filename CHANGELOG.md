@@ -6,6 +6,26 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-05-24
+
+### Added
+- Workspace-owned Python toolchain under `/workspace/`: pinned `uv` binary,
+  managed CPython via python-build-standalone, and `repair_venv` to rebind
+  pulled venvs when the host image changes (preserves site-packages within
+  the same minor).
+- `Framework.venv` field so install/start automatically ensure uv + Python
+  and repair stale venvs before framework steps run.
+- Remotion demo video project (`video/`) with Hero 16×9, vertical 9×16, and
+  square 1×1 compositions; scrubbed terminal script and brand tokens from the
+  site palette.
+- Site hero demo assets (`site/public/demo/hero.mp4`, `hero-poster.jpg`).
+
+### Changed
+- ComfyUI, vLLM, Open WebUI, Axolotl, and H2O LLM Studio now create venvs
+  with `uv venv --python 3.11` and install packages via `uv pip` instead of
+  host `python3 -m venv` / bundled pip (drops ComfyUI get-pip repair path).
+- Open WebUI no longer installs uv via host `pip3`; uses workspace-local uv.
+
 ## [0.2.1] - 2026-05-22
 
 ### Added

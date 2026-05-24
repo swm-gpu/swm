@@ -35,6 +35,12 @@ class Framework:
     category: str = "inference"
     description: str = ""
 
+    # Absolute path to the Python venv this framework owns, or None for
+    # frameworks that don't need a venv (e.g. Go binaries like Ollama).
+    # When set, swm will ensure workspace-owned Python + uv exist and
+    # repair the venv on host changes before any install/start step.
+    venv: str | None = None
+
     @property
     def launch_workdir(self) -> str:
         return self.install_dir

@@ -19,12 +19,26 @@ def install_framework(
     console: Console | None = None,
 ) -> None:
     """Install a framework by name using its declarative step list."""
+    from swm.bootstrap import ensure_workspace_python, repair_venv
     from swm.frameworks import Framework, get_framework
 
     _con = console or globals()["console"]
 
     fw: Framework = get_framework(name)
     _con.print(f"\n[bold]Installing {fw.label}[/bold]")
+
+    if fw.venv:
+        # Make sure /workspace/.uv/ and /workspace/.python/ are populated so
+        # the framework's venv-creation step can use ``uv venv --python``
+        # against a hermetic, workspace-owned interpreter.
+        ensure_workspace_python(session)
+        # Backward-compat: if a venv already exists at fw.venv (e.g. from
+        # a pulled workspace built on a different host), rebind it to the
+        # workspace-owned Python before any step touches the venv.  This
+        # turns a stale venv into a runnable one without losing any
+        # installed packages.
+        repair_venv(session, fw.venv)
+
     env_prefix = f"{fw.env_setup} && " if fw.env_setup else ""
 
     total = len(fw.steps) + len(fw.post_install)
@@ -54,10 +68,19 @@ def start_framework(
     qualified_id: str | None = None,
 ) -> str | None:
     """Launch a framework in the background. Returns proxy URL if applicable."""
+    from swm.bootstrap import ensure_workspace_python, repair_venv
     from swm.frameworks import get_framework
 
     _con = console or globals()["console"]
     fw = get_framework(name)
+
+    if fw.venv:
+        # Pulled-workspace path: a venv built on a previous pod may be
+        # unrunnable on this host until rebind.  Make sure uv + managed
+        # Python are present, then repair the venv if needed.  Both
+        # calls are idempotent and cheap on healthy pods.
+        ensure_workspace_python(session)
+        repair_venv(session, fw.venv)
 
     if fw.process_pattern:
         with _con.status(f"Checking if {fw.label} is running…", spinner="dots"):

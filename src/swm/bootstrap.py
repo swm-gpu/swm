@@ -18,6 +18,42 @@ S5CMD_URL = (
 
 SAFETY_MARGIN = 0.90
 
+# ── workspace-owned Python toolchain ─────────────────────────────────
+#
+# Everything under /workspace/ so a pulled workspace is fully runnable
+# on any pod image — no apt install, no host python dependency.
+
+UV_VERSION = "0.11.16"
+UV_LINUX_X86_64_SHA256 = (
+    "74947fe2c03315cf07e82ab3acc703eddef01aba4d5232a98e4c6825ec116131"
+)
+UV_LINUX_X86_64_URL = (
+    f"https://github.com/astral-sh/uv/releases/download/{UV_VERSION}/"
+    "uv-x86_64-unknown-linux-gnu.tar.gz"
+)
+
+WORKSPACE_UV_ROOT = "/workspace/.uv"
+WORKSPACE_UV = f"{WORKSPACE_UV_ROOT}/uv"
+WORKSPACE_UV_CACHE = "/workspace/.uv-cache"
+WORKSPACE_PY_ROOT = "/workspace/.python"
+
+# The minor we install by default.  uv resolves the latest matching patch
+# release from python-build-standalone.  Frameworks should pass a fully
+# pinned spec (``3.11``) — we deliberately do not pin patch versions so
+# uv keeps Python current within a minor without swm releases.
+PYTHON_DEFAULT_MINOR = "3.11"
+
+# Shell exports that every uv invocation (and every venv whose Python is
+# uv-managed) needs to see so it finds the workspace-local uv cache and
+# python install dir.  Used inside framework ``env_setup`` and the
+# bootstrap helpers below.
+UV_ENV_EXPORTS = (
+    f"export UV_CACHE_DIR={WORKSPACE_UV_CACHE} && "
+    f"export UV_PYTHON_INSTALL_DIR={WORKSPACE_PY_ROOT} && "
+    f"export UV_NO_MANAGED_PYTHON_DOWNLOAD=0 && "
+    f"export PATH={WORKSPACE_UV_ROOT}:$PATH"
+)
+
 
 def _humanize(n: int | float) -> str:
     v = float(n)
@@ -80,6 +116,159 @@ def install_s5cmd(session: RemoteSession) -> None:
         f"(curl -sL '{S5CMD_URL}' | tar xz -C /usr/local/bin s5cmd "
         f"&& chmod +x /usr/local/bin/s5cmd && s5cmd version)",
     )
+
+
+# ── workspace-owned Python (uv + python-build-standalone) ──────────
+
+
+def ensure_uv(session: RemoteSession) -> None:
+    """Install or verify the workspace-local uv binary.
+
+    Idempotent.  Pinned by version + sha256 so a compromised release
+    cannot silently land on the pod.  Extracts the single binary to
+    ``/workspace/.uv/uv`` and leaves uv's own ``~/.local/bin`` install
+    path untouched.
+    """
+    cmd = (
+        f"set -e; "
+        f"mkdir -p {WORKSPACE_UV_ROOT} {WORKSPACE_UV_CACHE} {WORKSPACE_PY_ROOT}; "
+        f"if [ -x {WORKSPACE_UV} ]; then "
+        f"  current=$({WORKSPACE_UV} --version 2>/dev/null | head -1 | awk '{{print $2}}'); "
+        f"  if [ \"$current\" = \"{UV_VERSION}\" ]; then "
+        f"    echo \"uv {UV_VERSION} already installed\"; "
+        f"    exit 0; "
+        f"  fi; "
+        f"  echo \"uv $current present — replacing with {UV_VERSION}\"; "
+        f"fi; "
+        f"tmp=$(mktemp -d); "
+        f"trap 'rm -rf \"$tmp\"' EXIT; "
+        f"echo \"Downloading uv {UV_VERSION}...\"; "
+        f"curl -fsSL \"{UV_LINUX_X86_64_URL}\" -o \"$tmp/uv.tar.gz\"; "
+        f"echo \"{UV_LINUX_X86_64_SHA256}  $tmp/uv.tar.gz\" | sha256sum -c -; "
+        f"tar -xzf \"$tmp/uv.tar.gz\" -C \"$tmp\"; "
+        f"install -m 0755 \"$tmp\"/uv-*/uv {WORKSPACE_UV}; "
+        f"{WORKSPACE_UV} --version"
+    )
+    _step(session, f"Installing uv {UV_VERSION}", cmd)
+
+
+def ensure_python(
+    session: RemoteSession,
+    minor: str = PYTHON_DEFAULT_MINOR,
+) -> None:
+    """Install/verify a workspace-managed CPython via uv.
+
+    Delegates to ``uv python install``, which fetches the matching
+    python-build-standalone tarball into ``/workspace/.python/``.
+    Idempotent — uv reports the install as already-present on reruns.
+    """
+    cmd = (
+        f"{UV_ENV_EXPORTS} && "
+        f"{WORKSPACE_UV} python install {minor} && "
+        f"{WORKSPACE_UV} python find {minor}"
+    )
+    _step(session, f"Installing Python {minor} (workspace-owned)", cmd)
+
+
+def ensure_workspace_python(
+    session: RemoteSession,
+    minor: str = PYTHON_DEFAULT_MINOR,
+) -> None:
+    """Ensure uv + a managed CPython are both present under /workspace/.
+
+    Call this once per pod before any framework venv-creation step.
+    After this returns, ``uv venv --python <minor> <path>`` will create
+    a venv whose interpreter lives entirely inside ``/workspace/`` and
+    survives a workspace pull onto a different pod image.
+    """
+    ensure_uv(session)
+    ensure_python(session, minor=minor)
+
+
+def repair_venv(
+    session: RemoteSession,
+    venv_path: str,
+    minor: str = PYTHON_DEFAULT_MINOR,
+) -> None:
+    """Rebind an existing venv to workspace-owned Python if it can't run here.
+
+    This is the backward-compat path for venvs that were created against
+    the host's system Python on a previous pod (e.g. pulled from B2 onto a
+    new image that no longer has the matching ``/usr/lib/pythonX.Y/``).
+    Such a venv fails with ``ModuleNotFoundError: No module named 'encodings'``
+    because Python looks for stdlib at the absent host prefix.
+
+    The repair rewrites ``pyvenv.cfg`` to point at the uv-managed CPython
+    under ``/workspace/.python`` and replaces ``bin/python*`` with the new
+    interpreter binary.  Site-packages are preserved — CPython keeps a
+    stable ABI across same-minor patch releases, so wheels installed under
+    3.11.10 continue to import under 3.11.15.
+
+    Idempotent: no-op when the venv already runs.  Raises if the existing
+    venv is a different minor than the workspace-owned one — that's a
+    full rebuild case (``swm setup install <framework>``).
+    """
+    script = f"""
+set -e
+{UV_ENV_EXPORTS}
+
+VENV="{venv_path}"
+WANTED_MINOR="{minor}"
+
+if [ ! -d "$VENV" ]; then
+    echo "  no venv at $VENV — nothing to repair"
+    exit 0
+fi
+if [ -x "$VENV/bin/python" ] \\
+   && "$VENV/bin/python" -c "import encodings, sys" >/dev/null 2>&1; then
+    echo "  venv $VENV already runs (Python $("$VENV/bin/python" --version 2>&1 | awk '{{print $2}}'))"
+    exit 0
+fi
+
+echo "  venv at $VENV not runnable here — rebinding to workspace-owned Python $WANTED_MINOR"
+
+UV_PY=$({WORKSPACE_UV} python find "$WANTED_MINOR")
+UV_HOME=$(dirname "$UV_PY")
+UV_VER=$("$UV_PY" --version 2>&1 | awk '{{print $2}}')
+UV_MINOR=$(echo "$UV_VER" | cut -d. -f1,2)
+
+EXISTING_MINOR=""
+if [ -f "$VENV/pyvenv.cfg" ]; then
+    EXISTING_VER=$(awk -F'= *' '/^version *=/{{print $2; exit}}' "$VENV/pyvenv.cfg" | tr -d ' ')
+    if [ -n "$EXISTING_VER" ]; then
+        EXISTING_MINOR=$(echo "$EXISTING_VER" | cut -d. -f1,2)
+    fi
+fi
+
+if [ -n "$EXISTING_MINOR" ] && [ "$UV_MINOR" != "$EXISTING_MINOR" ]; then
+    echo "  ERROR: existing venv is Python $EXISTING_MINOR but workspace-owned Python is $UV_MINOR."
+    echo "         C-extension ABI does not match across Python minors."
+    echo "         Rebuild from scratch with:  swm setup install <framework>"
+    exit 1
+fi
+
+echo "  Rewriting $VENV/pyvenv.cfg  (home → $UV_HOME, version → $UV_VER)"
+cat > "$VENV/pyvenv.cfg" <<PYVENV
+home = $UV_HOME
+include-system-site-packages = false
+version = $UV_VER
+executable = $UV_PY
+command = swm repair_venv ($VENV)
+PYVENV
+
+PY_MINOR_BIN="python$WANTED_MINOR"
+rm -f "$VENV/bin/python" "$VENV/bin/python3" "$VENV/bin/$PY_MINOR_BIN"
+# python-build-standalone resolves its stdlib via realpath(argv[0]),
+# so the binary must remain at its uv-managed install path. Symlink,
+# never copy, otherwise Python falls back to its baked-in /install
+# prefix and fails with "No module named 'encodings'".
+ln -s "$UV_PY" "$VENV/bin/$PY_MINOR_BIN"
+ln -s "$PY_MINOR_BIN" "$VENV/bin/python3"
+ln -s "$PY_MINOR_BIN" "$VENV/bin/python"
+
+"$VENV/bin/python" -c "import encodings, sys; print('  repaired:', sys.executable, '→ Python', sys.version.split()[0])"
+"""
+    _step(session, f"Checking venv {venv_path}", script)
 
 
 def _install_inotify(session: RemoteSession) -> None:

@@ -1,5 +1,10 @@
 """ComfyUI framework definition."""
 
+from swm.bootstrap import (
+    PYTHON_DEFAULT_MINOR,
+    UV_ENV_EXPORTS,
+    WORKSPACE_UV,
+)
 from swm.frameworks import Framework, Step, nvidia_ld_exports
 
 _COMFY_MODEL_DIRS = [
@@ -39,9 +44,13 @@ def _link_script() -> str:
 _LINK_COMFYUI = _link_script()
 
 _VENV = "/workspace/ComfyUI/venv"
-_PIP = f"{_VENV}/bin/pip"
 _PYTHON = f"{_VENV}/bin/python"
 _PIP_CACHE = "/workspace/.cache/pip"
+
+# All package operations go through uv against the venv's Python.  We
+# never use the venv's bundled pip directly — uv resolves + installs
+# 10-100x faster and avoids any get-pip bootstrap dance.
+_UV_PIP = f"{WORKSPACE_UV} pip install --python {_PYTHON}"
 
 _TORCH_CHECK = (
     f"{_PYTHON} -c 'import torch,sys,subprocess,re; "
@@ -52,21 +61,8 @@ _TORCH_CHECK = (
     "tm,tn=(int(tv.split(\".\")[0]),int(tv.split(\".\")[1])) if tv else (0,0); "
     "sys.exit(0 if (tm,tn) <= (dm,dn) else 1)' 2>/dev/null"
 )
-_PIP_REPAIR = (
-    # Only bootstrap pip if it's actually missing.  `--force-reinstall` plus a
-    # silenced stderr could leave the venv with no pip at all if the install
-    # was interrupted mid-flight; the older code path exhibited exactly that
-    # failure.  This variant is a no-op when pip is already healthy.
-    f"if ! {_PIP} --version > /dev/null 2>&1; then "
-    '  echo "Bootstrapping pip..."; '
-    "  curl -fsSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py && "
-    f"  {_PYTHON} /tmp/get-pip.py --no-warn-script-location "
-    "  pip setuptools wheel; "
-    "fi"
-)
 _TORCH_INSTALL = (
     f"if ! {_TORCH_CHECK}; then "
-    f"{_PIP_REPAIR} && "
     'CUDA_VER=$(nvidia-smi 2>/dev/null | grep -oE "CUDA Version: [0-9]+\\.[0-9]+" '
     '| head -1 | grep -oE "[0-9]+\\.[0-9]+"); '
     'case "$CUDA_VER" in '
@@ -78,7 +74,7 @@ _TORCH_INSTALL = (
     "*) IDX=cu124 ;; "
     "esac; "
     'echo "Installing PyTorch for CUDA $CUDA_VER ($IDX) (force-reinstall)"; '
-    f"{_PIP} install --force-reinstall "
+    f"{_UV_PIP} --force-reinstall "
     "--index-url https://download.pytorch.org/whl/$IDX "
     "torch torchvision torchaudio; "
     "fi"
@@ -89,12 +85,14 @@ FRAMEWORK = Framework(
     label="ComfyUI",
     repo="https://github.com/comfyanonymous/ComfyUI.git",
     install_dir="/workspace/ComfyUI",
+    venv=_VENV,
     launch_cmd=f"{_PYTHON} main.py --listen 0.0.0.0 --port 8188",
     ports={8188: "http"},
     category="inference",
     stop_cmd="pkill -f 'python main.py.*--port 8188'",
     process_pattern="python main.py.*--listen",
     env_setup=(
+        f"{UV_ENV_EXPORTS} && "
         f"export PIP_CACHE_DIR={_PIP_CACHE} && "
         f"{{ [ -f {_VENV}/bin/activate ] && source {_VENV}/bin/activate || true; }} && "
         f"{nvidia_ld_exports(_VENV)}"
@@ -108,7 +106,7 @@ FRAMEWORK = Framework(
         ),
         Step(
             label="Creating virtual environment",
-            command=f"python3 -m venv {_VENV}",
+            command=f"{WORKSPACE_UV} venv --python {PYTHON_DEFAULT_MINOR} --seed {_VENV}",
             check=f"[ -x {_PYTHON} ]",
         ),
         Step(
@@ -118,7 +116,7 @@ FRAMEWORK = Framework(
         ),
         Step(
             label="Installing Python requirements",
-            command=f"{_PIP} install -r requirements.txt",
+            command=f"{_UV_PIP} -r requirements.txt",
         ),
     ],
     post_install=[
@@ -147,22 +145,17 @@ FRAMEWORK = Framework(
         ),
         Step(
             label="Ensuring Python venv exists",
-            # Non-destructive: only repair pip if it's broken; never rm -rf the
-            # venv (that would also wipe torch and every other installed
-            # dependency).  If the venv itself is missing the user should
-            # re-run `swm setup install comfyui` for a clean rebuild.
+            # uv-managed venvs don't need a get-pip dance — uv handles
+            # everything externally.  If the venv is missing the user
+            # should re-run `swm setup install comfyui` for a clean
+            # rebuild against workspace-owned Python.
             command=(
                 f"if [ ! -x {_PYTHON} ]; then "
                 f"  echo 'venv missing - re-run: swm setup install comfyui' "
                 f"  && exit 1; "
-                f"fi; "
-                f"if ! {_PIP} --version > /dev/null 2>&1; then "
-                f"  curl -fsSL https://bootstrap.pypa.io/get-pip.py "
-                f"  -o /tmp/get-pip.py "
-                f"  && {_PYTHON} /tmp/get-pip.py --no-warn-script-location; "
                 f"fi"
             ),
-            check=f"{_PIP} --version > /dev/null 2>&1",
+            check=f"[ -x {_PYTHON} ]",
         ),
         Step(
             label="Ensuring PyTorch matches GPU driver",
@@ -171,7 +164,7 @@ FRAMEWORK = Framework(
         ),
         Step(
             label="Updating dependencies",
-            command=f"{_PIP} install -r requirements.txt",
+            command=f"{_UV_PIP} -r requirements.txt",
         ),
         Step(
             label="Ensuring model directory symlinks",
