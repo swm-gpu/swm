@@ -6,6 +6,8 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-05-24
+
 ### Fixed
 - `swm sync pull --tar` no longer reports success when download/extract fails.
 - `swm models pull` tracks each HF file under a unique manifest key; multi-file
