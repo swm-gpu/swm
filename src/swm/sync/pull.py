@@ -18,7 +18,8 @@ def _is_link_repair_step(label: str) -> bool:
 
 def _repair_framework_links(session: RemoteSession, dest: str) -> None:
     """Re-run idempotent framework link repair steps after a workspace pull."""
-    if dest.rstrip("/") != "/workspace":
+    normalized = dest.rstrip("/")
+    if normalized != "/workspace" and not normalized.startswith("/workspace/"):
         return
 
     from swm.frameworks import list_frameworks
@@ -142,8 +143,7 @@ def tar_pull(
         force=force,
     )
     if rc != 0:
-        console.print("  [red]✗ Tarball download failed[/red]")
-        return
+        raise RuntimeError("Tarball download failed")
 
     _, tar_size, _ = session.exec(
         f"ls -lh {TAR_PATH} 2>/dev/null | awk '{{print $5}}'",
@@ -151,12 +151,14 @@ def tar_pull(
     )
     console.print(f"  [dim]Tarball: {tar_size.strip() or '?'} — extracting[/dim]")
 
-    _s5cmd_transfer(
+    extract_rc = _s5cmd_transfer(
         session,
         f"Extracting → {dest}/",
         f"{decompressor} < {TAR_PATH} | tar -xf - -C '{dest}'",
         force=False,
     )
+    if extract_rc != 0:
+        raise RuntimeError("Tarball extraction failed")
 
     session.exec(f"rm -f {TAR_PATH}", stream=False)
 

@@ -257,10 +257,15 @@ def set_policy(
     idle_timeout_minutes: int | None = None,
     poll_interval_seconds: int | None = None,
 ) -> GuardPolicy:
+    existing = get_policy(instance_id)
     policy = GuardPolicy(
         mode=_normalize_mode(mode),
-        idle_timeout_minutes=idle_timeout_minutes or get_policy(instance_id).idle_timeout_minutes,
-        poll_interval_seconds=poll_interval_seconds or get_policy(instance_id).poll_interval_seconds,
+        idle_timeout_minutes=_coalesce_int(
+            idle_timeout_minutes, existing.idle_timeout_minutes, default=60,
+        ),
+        poll_interval_seconds=_coalesce_int(
+            poll_interval_seconds, existing.poll_interval_seconds, default=60,
+        ),
     )
     cfg.set_value(f"pods.{instance_id}.guard.mode", policy.mode)
     cfg.set_value(f"pods.{instance_id}.guard.idle_timeout_minutes", str(policy.idle_timeout_minutes))
@@ -268,8 +273,11 @@ def set_policy(
     return policy
 
 
-def disable_policy(instance_id: str) -> None:
-    cfg.delete(f"pods.{instance_id}.guard")
+def disable_policy(instance_id: str, *, force_manual: bool = False) -> None:
+    if force_manual:
+        set_policy(instance_id, mode="manual", idle_timeout_minutes=0, poll_interval_seconds=60)
+    else:
+        cfg.delete(f"pods.{instance_id}.guard")
 
 
 def _format_idle(seconds: float | int) -> str:

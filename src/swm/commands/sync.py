@@ -77,7 +77,10 @@ def pull(instance_id: str, path: str, bucket: str | None, dest: str, exclude: tu
         from swm.sync import tar_pull
 
         with session_from_instance(inst) as sess:
-            tar_pull(sess, remote, bucket_name, ws, dest=dest, force=force)
+            try:
+                tar_pull(sess, remote, bucket_name, ws, dest=dest, force=force)
+            except RuntimeError as exc:
+                raise click.ClickException(str(exc)) from exc
 
         console.print("\n[green]✓ Pull complete[/green]")
         return
@@ -312,9 +315,14 @@ def sync_auto(instance_id: str, stop: bool, show_status: bool, interval: int,
 def sync_status(instance_id: str):
     """Show storage sync status on an instance.
 
+    Reports s5cmd availability, tracked workspace, last push stamp, watcher
+    and auto-sync daemon state, and pending change-log entries.
+
     Example: swm sync status runpod:abc123
     """
     from swm.remote.ssh import session_from_instance
+    from swm.sync.paths import AUTO_LOG, PUSH_STAMP, WATCH_LOG
+    from swm.sync import is_autosync_alive, is_watcher_alive
 
     _, raw_id = safe_resolve_instance(instance_id)
     meta = cfg.get(f"pods.{raw_id}")
@@ -323,13 +331,28 @@ def sync_status(instance_id: str):
     console.print(f"\n[bold]Storage status for {inst.name or inst.id}[/bold]")
 
     with session_from_instance(inst) as sess, \
-         console.status("Checking storage tools…", spinner="dots"):
-        code, stdout, _ = sess.exec(
+         console.status("Checking sync state…", spinner="dots"):
+        _, stdout, _ = sess.exec(
             "command -v s5cmd >/dev/null 2>&1 "
             "&& echo 's5cmd:' && s5cmd version "
             "|| echo '(s5cmd not installed)'",
             stream=False,
         )
+        _, stamp_out, _ = sess.exec(
+            f"if [ -f {PUSH_STAMP} ]; then "
+            f"  stat -c '%y' {PUSH_STAMP} 2>/dev/null || stat -f '%Sm' {PUSH_STAMP}; "
+            f"else echo '(never pushed)'; fi",
+            stream=False,
+        )
+        _, pending_out, _ = sess.exec(
+            f"if [ -s {WATCH_LOG} ]; then "
+            f"  wc -l < {WATCH_LOG}; "
+            f"else echo 0; fi",
+            stream=False,
+        )
+        watcher = is_watcher_alive(sess)
+        autosync = is_autosync_alive(sess)
+
     if stdout.strip():
         console.print(f"  {stdout.strip()}")
 
@@ -338,3 +361,26 @@ def sync_status(instance_id: str):
         console.print(f"  Storage:   [cyan]{meta['storage']}[/cyan]")
     else:
         console.print("  [dim]No workspace tracked for this pod[/dim]")
+
+    stamp = stamp_out.strip() or "(never pushed)"
+    console.print(f"  Last push: [cyan]{stamp}[/cyan]")
+
+    pending = pending_out.strip() or "0"
+    try:
+        pending_n = int(pending)
+    except ValueError:
+        pending_n = 0
+    watcher_state = "[green]running[/green]" if watcher else "[red]stopped[/red]"
+    console.print(f"  Watcher:   {watcher_state}  [dim]({pending_n} pending log entries)[/dim]")
+
+    autosync_state = "[green]running[/green]" if autosync else "[red]stopped[/red]"
+    console.print(f"  Auto-sync: {autosync_state}")
+    if autosync:
+        console.print(
+            f"  [dim]Log: {AUTO_LOG}  —  "
+            f"`swm sync auto {inst.qualified_id} --status`[/dim]"
+        )
+    elif pending_n and not watcher:
+        console.print(
+            f"  [dim]Start watcher: swm sync watch {inst.qualified_id}[/dim]"
+        )

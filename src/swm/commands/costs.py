@@ -43,7 +43,8 @@ def summary(period: str, provider: str | None):
     since: str | None = None
     label = period
     if period == "today":
-        since = (now - timedelta(days=1)).isoformat()
+        since = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+        label = "today (UTC)"
     elif period == "week":
         since = (now - timedelta(weeks=1)).isoformat()
     elif period == "month":
@@ -398,11 +399,8 @@ def reconcile(provider: str | None):
     """Show card charges, usage costs, and compare with local tracking.
 
     \b
-    Queries provider billing APIs for:
-      - Card / payment charges (Stripe auto-reload, crypto, etc.)
-      - GPU compute and storage usage costs
-      - Account balance and spend rate
-    Then compares provider-reported usage against swm's local records.
+    Currently supported billing APIs: RunPod and Vast.ai only.
+    Other providers show local cost tracking via ``swm costs summary``.
     """
     from swm.costs.reconcile import reconcile_runpod, reconcile_vastai
 

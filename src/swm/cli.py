@@ -32,7 +32,11 @@ Workflow:
 @click.group(epilog=_WORKFLOW_EPILOG)
 @click.version_option(__version__, prog_name="swm")
 def main():
-    """swm — Cloud GPU workflow manager for ComfyUI / SwarmUI."""
+    """swm — Cloud GPU workflow manager across 10 providers.
+
+    Search GPUs, provision pods, install frameworks (ComfyUI, vLLM, Ollama, …),
+    sync workspaces, manage models, and automate lifecycle with guard policies.
+    """
 
 
 # ── GPU search (top-level, kept here for brevity) ──────────────────
@@ -103,7 +107,10 @@ def gpus(gpu: str | None, gpu_count: int | None, max_price: float | None,
         try:
             sources = [get_provider(provider)]
         except ValueError:
-            sources = []
+            known = ", ".join(sorted(_SLUG_TO_NAME))
+            raise click.UsageError(
+                f"Unknown provider {provider!r}. Known slugs: {known}"
+            ) from None
     else:
         configured = get_configured_providers()
         unconfigured_slugs = (

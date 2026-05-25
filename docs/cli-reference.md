@@ -1,6 +1,6 @@
 # CLI Reference
 
-Complete reference for every `swm` command. Generated against v0.1.12.
+Complete reference for every `swm` command. Generated against v0.2.2.
 
 For tutorials and concept docs see [swmgpu.com](https://swmgpu.com/overview/).
 
@@ -263,9 +263,9 @@ swm sync auto runpod:abc123 --stop         # stop the daemon
 
 ### `swm sync status <id>`
 
-Show storage sync status (last push timestamp, watcher state, pending changes).
+Show storage sync status: s5cmd availability, tracked workspace, last push stamp (`/workspace/.swm_last_push`), filesystem watcher state, pending change-log entries, and auto-sync daemon state.
 
-## `swm setup`
+### `swm setup`
 
 Install, start, and stop frameworks on running instances.
 
@@ -292,6 +292,8 @@ Start a framework in the background.
 | Option | Description |
 |--------|-------------|
 | `-p, --port INTEGER` | Override the default listen port |
+| `--model TEXT` | vLLM only: HuggingFace model id (writes `/workspace/vllm/model.txt` before launch) |
+| `--extra-args TEXT` | Additional launch flags appended to the framework command (shell-quoted) |
 
 ### `swm setup stop <framework> [id]`
 
@@ -408,7 +410,11 @@ Configure the policy for a single pod.
 
 ### `swm guard disable [id]`
 
-Remove the per-pod policy. The pod falls back to defaults if defaults are enabled, otherwise the guard is fully off.
+Remove the per-pod policy. The pod falls back to `guard.defaults` if enabled. Use `--force-manual` to write an explicit manual override so defaults no longer apply.
+
+| Option | Description |
+|--------|-------------|
+| `--force-manual` | Pin this pod to manual mode regardless of defaults |
 
 ### `swm guard list`
 
@@ -547,7 +553,7 @@ swm setup stop vllm pod:abc
 swm setup start vllm pod:abc --model Qwen/Qwen3-8B
 ```
 
-The old command prints an error pointing at this replacement.
+The command was removed in v0.3.
 
 ## `swm storage`
 

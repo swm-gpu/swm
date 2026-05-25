@@ -313,6 +313,11 @@ def create(
         console.print("[dim]Cancelled.[/dim]")
         return
 
+    if volume <= 0:
+        raise click.UsageError("--volume must be at least 1 GB")
+    if provider == "runpod" and volume < 1:
+        raise click.UsageError("RunPod requires --volume >= 1 GB for /workspace")
+
     try:
         with console.status(
             f"Creating {p.name} instance…", spinner="dots"
@@ -335,8 +340,8 @@ def create(
         if warning:
             for line in warning.splitlines():
                 console.print(f"  [yellow]⚠ {line}[/yellow]")
-    except Exception:
-        pass
+    except Exception as exc:
+        console.print(f"  [dim]⚠ Cost tracking (start) failed: {exc}[/dim]")
 
     from swm.bootstrap import wait_for_ssh
     ssh_ok = False
@@ -351,7 +356,7 @@ def create(
     cfg.set_value(f"pods.{inst.id}.name", name)
     set_active_pod(inst.id)
     policy = None
-    if lifecycle_mode:
+    if lifecycle_mode and lifecycle_mode != "manual":
         from swm.guard import set_policy
 
         policy = set_policy(
@@ -519,8 +524,8 @@ def start(instance_id: str):
         if warning:
             for line in warning.splitlines():
                 console.print(f"  [yellow]⚠ {line}[/yellow]")
-    except Exception:
-        pass
+    except Exception as exc:
+        console.print(f"  [dim]⚠ Cost tracking (start) failed: {exc}[/dim]")
 
 
 @pod.command()
@@ -541,8 +546,8 @@ def stop(instance_id: str):
     try:
         from swm.costs.tracker import record_stop
         record_stop(raw_id, provider.slug)
-    except Exception:
-        pass
+    except Exception as exc:
+        console.print(f"  [dim]⚠ Cost tracking (stop) failed: {exc}[/dim]")
 
 
 @pod.command()
@@ -577,8 +582,8 @@ def terminate(instance_id: str, yes: bool):
     try:
         from swm.costs.tracker import record_stop
         record_stop(raw_id, provider.slug)
-    except Exception:
-        pass
+    except Exception as exc:
+        console.print(f"  [dim]⚠ Cost tracking (stop) failed: {exc}[/dim]")
 
     cfg.delete(f"pods.{raw_id}")
     clear_active_pod(if_matches=raw_id)
@@ -716,8 +721,8 @@ def pod_down(instance_id: str, yes: bool, no_sync: bool, exclude: tuple[str, ...
     try:
         from swm.costs.tracker import record_stop
         record_stop(raw_id, provider.slug)
-    except Exception:
-        pass
+    except Exception as exc:
+        console.print(f"  [dim]⚠ Cost tracking (stop) failed: {exc}[/dim]")
 
     cfg.delete(f"pods.{raw_id}")
     clear_active_pod(if_matches=raw_id)
@@ -732,14 +737,3 @@ def pod_down(instance_id: str, yes: bool, no_sync: bool, exclude: tuple[str, ...
             f"  Restore later: [bold]swm pod create -p {provider.slug} "
             f"-g <gpu> -n <name> -w {meta['workspace']}[/bold]"
         )
-
-
-@pod.command(name="gpus", hidden=True, deprecated=True)
-@click.option("--provider", "-p", default=None, help="Filter to one provider")
-@click.option("--gpu", "-g", default=None, help="Filter by GPU type")
-@click.pass_context
-def pod_gpus_alias(ctx: click.Context, provider: str | None, gpu: str | None):
-    """Alias for 'swm gpus'. Use 'swm gpus' instead."""
-    console.print("[dim]Hint: use 'swm gpus' directly for more filters.[/dim]\n")
-    from swm.cli import gpus
-    ctx.invoke(gpus, gpu=gpu, provider=provider)

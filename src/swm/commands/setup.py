@@ -431,32 +431,3 @@ def setup_list():
         border_style="blue",
     ))
 
-
-@setup.command(hidden=True)
-@click.argument("instance_id", required=False, shell_complete=complete_pod_id, callback=pod_arg_callback)
-def comfyui(instance_id: str):
-    """Install ComfyUI (alias for 'swm setup install comfyui').
-
-    Symlinks under ``/workspace/ComfyUI/models/<type>`` are wired up
-    automatically by the framework's post_install step.
-    """
-    from swm.bootstrap import install_framework
-    from swm.remote.ssh import session_from_instance
-
-    inst = _instance_for(instance_id)
-    with session_from_instance(inst) as sess:
-        install_framework(sess, "comfyui")
-    console.print("\n[green]✓ ComfyUI installed[/green]")
-
-
-@setup.command(hidden=True)
-@click.argument("instance_id", required=False, shell_complete=complete_pod_id, callback=pod_arg_callback)
-def swarmui(instance_id: str):
-    """Install SwarmUI (alias for 'swm setup install swarmui')."""
-    from swm.bootstrap import install_framework
-    from swm.remote.ssh import session_from_instance
-
-    inst = _instance_for(instance_id)
-    with session_from_instance(inst) as sess:
-        install_framework(sess, "swarmui")
-    console.print("\n[green]✓ SwarmUI installed[/green]")

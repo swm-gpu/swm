@@ -82,11 +82,11 @@ FRAMEWORK = Framework(
         Step(
             label="Installing ComfyUI backend",
             command=(
-                "mkdir -p /workspace/SwarmUI/dlbackend "
-                "&& git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git"
+                "mkdir -p dlbackend "
+                "&& git clone --depth 1 https://github.com/comfyanonymous/ComfyUI.git ComfyUI"
             ),
             check="[ -d /workspace/SwarmUI/dlbackend/ComfyUI ] || [ -L /workspace/SwarmUI/dlbackend/comfyui ]",
-            workdir="/workspace/SwarmUI/dlbackend",
+            workdir="/workspace/SwarmUI",
         ),
         Step(
             label="Updating ComfyUI to latest",
@@ -100,9 +100,12 @@ FRAMEWORK = Framework(
         ),
         Step(
             label="Installing ComfyUI Manager",
-            command="git clone --depth 1 https://github.com/ltdrdata/ComfyUI-Manager.git",
+            command=(
+                "mkdir -p custom_nodes "
+                "&& git clone --depth 1 https://github.com/ltdrdata/ComfyUI-Manager.git ComfyUI-Manager"
+            ),
             check="[ -d /workspace/SwarmUI/dlbackend/ComfyUI/custom_nodes/ComfyUI-Manager ]",
-            workdir="/workspace/SwarmUI/dlbackend/ComfyUI/custom_nodes",
+            workdir="/workspace/SwarmUI/dlbackend/ComfyUI",
         ),
         Step(
             label="Updating ComfyUI Manager to latest",

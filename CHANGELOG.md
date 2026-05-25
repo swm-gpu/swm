@@ -6,6 +6,30 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+- `swm sync pull --tar` no longer reports success when download/extract fails.
+- `swm models pull` tracks each HF file under a unique manifest key; multi-file
+  repos (e.g. high/low LoRA pairs) no longer overwrite each other.
+- HF pull 404s suggest nested repo paths; `--filename` resolves basenames when unique.
+- `swm guard set` honors `--idle-timeout 0` / `--poll-interval 0` and starts the
+  local guard daemon for auto-stop/auto-down policies.
+- `swm sync status` reports push stamp, watcher, pending changes, and auto-sync.
+- `swm use` validates the pod exists before setting the active pod.
+- SwarmUI install creates `dlbackend` before cloning ComfyUI (fixes #9).
+- `swm gpus -p badslug` errors instead of returning empty results.
+- `swm costs summary --period today` uses UTC calendar day, not rolling 24h.
+- Cost tracking failures on pod lifecycle commands emit dim warnings.
+
+### Changed
+- Removed deprecated shims: `swm models set`, `swm pod gpus`, hidden `setup comfyui` /
+  `setup swarmui`.
+- `swm guard disable --force-manual` pins a pod to manual mode.
+- `swm pricing` supports H100, A100, RTX 4090, and L40S reference data.
+- Shell completion suggests `provider:id` pod references.
+- Config masking uses suffix-based sensitive key detection.
+- Azure optional dependencies in `pyproject.toml` (`pip install swm-gpu[azure]`).
+- Regenerated repo docs (`docs/cli-reference.md`, `docs/configuration.md`).
+
 ## [0.2.2] - 2026-05-24
 
 ### Added

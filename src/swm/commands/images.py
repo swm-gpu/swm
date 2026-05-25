@@ -19,7 +19,7 @@ def images():
     "--provider", "-p",
     type=click.Choice(list(PROVIDER_SLUGS), case_sensitive=False),
     default="runpod",
-    help="Cloud provider (default: runpod).",
+    help="Cloud provider (default: runpod). Image catalog is RunPod-only today.",
 )
 @click.option(
     "--cuda", "cuda_filter", default=None,

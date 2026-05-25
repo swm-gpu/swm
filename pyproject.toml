@@ -30,8 +30,14 @@ dependencies = [
 
 [project.optional-dependencies]
 coreweave = ["kubernetes>=29.0"]
+azure = [
+    "azure-identity>=1.15",
+    "azure-mgmt-compute>=30.0",
+    "azure-mgmt-network>=25.0",
+    "azure-mgmt-resource>=23.0",
+]
 dev = ["nuitka", "ordered-set", "zstandard"]
-all = ["kubernetes>=29.0"]
+all = ["kubernetes>=29.0", "azure-identity>=1.15", "azure-mgmt-compute>=30.0", "azure-mgmt-network>=25.0", "azure-mgmt-resource>=23.0"]
 
 [project.urls]
 Homepage = "https://swmgpu.com"

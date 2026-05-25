@@ -286,7 +286,8 @@ _SOURCE_CHOICES = click.Choice(
     "--filename",
     default=None,
     help=(
-        "HF: exact repo file to download. "
+        "HF: repo file path to download (supports nested paths like "
+        "split_files/loras/foo.safetensors). "
         "URL/Civitai: override the saved filename."
     ),
 )
@@ -340,10 +341,12 @@ def models_pull(
         f"[dim](source={resolved.source}, type={resolved.asset_type})[/dim]"
     )
 
+    engine_missing = False
     with session_from_instance(inst) as sess:
         sess.exec(_ensure_models_root_cmd(), stream=False)
 
         if resolved.needs_engine and not _engine_installed(sess, resolved.needs_engine):
+            engine_missing = True
             console.print(
                 f"\n[yellow]\u26a0 {resolved.needs_engine} is not installed on this pod.[/yellow]\n"
                 f"[yellow]  The model will be staged but cannot be used until you run:[/yellow]\n"
@@ -351,34 +354,39 @@ def models_pull(
             )
 
         if resolved.source == "hf":
-            entry = _pull_hf(sess, resolved, hf_token, filename)
+            entries = _pull_hf(sess, resolved, hf_token, filename)
         elif resolved.source == "ollama":
-            entry = _pull_ollama(sess, resolved, hf_token=hf_token)
+            entries = [_pull_ollama(sess, resolved, hf_token=hf_token)]
         elif resolved.source == "civitai":
-            entry = _pull_civitai(sess, resolved, civitai_token, filename)
+            entries = [_pull_civitai(sess, resolved, civitai_token, filename)]
         elif resolved.source == "url":
-            entry = _pull_url(sess, resolved, filename)
+            entries = [_pull_url(sess, resolved, filename)]
         else:
             raise click.ClickException(f"Unhandled source {resolved.source!r}")
 
-        RemoteManifest(sess).upsert(entry)
+        rm = RemoteManifest(sess)
+        for entry in entries:
+            rm.upsert(entry)
 
-    console.print(f"\n[green]\u2713[/green] [bold]{resolved.display_name}[/bold] staged at [dim]{entry.path}[/dim]")
+    if len(entries) == 1:
+        console.print(
+            f"\n[green]\u2713[/green] [bold]{resolved.display_name}[/bold] staged at "
+            f"[dim]{entries[0].path}[/dim]"
+        )
+    else:
+        console.print(f"\n[green]\u2713[/green] [bold]{resolved.display_name}[/bold] staged:")
+        for entry in entries:
+            console.print(f"  [dim]{entry.path}[/dim]")
 
-    if resolved.needs_engine and not _engine_installed_cached:
-        # Reminder at end, same as start.
+    if engine_missing:
         console.print(
             f"\n[yellow]\u26a0 Remember to install the engine before using it:[/yellow]\n"
             f"[bold]     swm setup install {resolved.needs_engine} {inst.qualified_id}[/bold]\n"
         )
 
 
-_engine_installed_cached = False
-
-
 def _engine_installed(sess, framework_name: str) -> bool:
     """Quick check: is the binary or install dir for *framework_name* present?"""
-    global _engine_installed_cached
     probes = {
         "vllm": "[ -x /workspace/vllm/venv/bin/vllm ]",
         "ollama": "[ -x /usr/local/bin/ollama ]",
@@ -391,12 +399,10 @@ def _engine_installed(sess, framework_name: str) -> bool:
     if not probe:
         return True
     exit_code, _, _ = sess.exec(f"{probe} && echo yes || echo no", stream=False)
-    installed = exit_code == 0
-    _engine_installed_cached = installed
-    return installed
+    return exit_code == 0
 
 
-def _pull_hf(sess, resolved, hf_token: str | None, filename_override: str | None):
+def _pull_hf(sess, resolved, hf_token: str | None, filename_override: str | None) -> list:
     """Download an HF repo to /workspace/models/hf, or single-file GGUFs to /files."""
     from swm.models import resolver as r
     from swm.models.manifest import ModelEntry, make_key
@@ -413,7 +419,7 @@ def _pull_hf(sess, resolved, hf_token: str | None, filename_override: str | None
             raise click.ClickException(f"Failed to download {resolved.ref}")
         cache_dir = f"{bucket_path}/hub/models--{resolved.ref.replace('/', '--')}"
         size = _disk_usage(sess, cache_dir)
-        return ModelEntry(
+        return [ModelEntry(
             key=make_key("hf", resolved.ref),
             source="hf",
             ref=resolved.ref,
@@ -422,39 +428,40 @@ def _pull_hf(sess, resolved, hf_token: str | None, filename_override: str | None
             size_bytes=size,
             display_name=resolved.display_name,
             extra={"hf_info": _slim_hf_info(resolved.extra)},
-        )
+        )]
 
     # Single-file modes: gguf, checkpoint, lora, vae, etc. on HF.
     files = _pick_hf_files(resolved, filename_override)
     if not files:
         raise click.ClickException(
             f"Could not find a downloadable file in {resolved.ref}. "
-            "Pass --filename to target a specific asset."
+            "Pass --filename with the repo path (e.g. split_files/loras/foo.safetensors)."
         )
 
-    target_paths: list[str] = []
     sess.exec(f"mkdir -p {bucket_path}", stream=False)
+    entries: list = []
     for remote_filename, save_as in files:
         url = _hf_file_url(resolved.ref, remote_filename)
         dest = f"{bucket_path}/{save_as}"
-        target_paths.append(dest)
         cmd = _curl_to_file(url, dest, hf_token)
         exit_code, _, _ = sess.exec(cmd)
         if exit_code != 0:
-            raise click.ClickException(f"Failed to fetch {remote_filename} from {resolved.ref}")
-
-    total_size = sum(_disk_usage(sess, p) for p in target_paths)
-    primary_path = target_paths[0] if len(target_paths) == 1 else bucket_path
-    return ModelEntry(
-        key=make_key("hf", resolved.ref),
-        source="hf",
-        ref=resolved.ref,
-        asset_type=resolved.asset_type,
-        path=primary_path,
-        size_bytes=total_size,
-        display_name=resolved.display_name,
-        extra={"files": [p.rsplit("/", 1)[-1] for p in target_paths]},
-    )
+            hint = _hf_fetch_hint(resolved, remote_filename, filename_override)
+            raise click.ClickException(
+                f"Failed to fetch {remote_filename} from {resolved.ref}.{hint}"
+            )
+        size = _disk_usage(sess, dest)
+        entries.append(ModelEntry(
+            key=make_key("hf", resolved.ref, file_id=remote_filename),
+            source="hf",
+            ref=resolved.ref,
+            asset_type=resolved.asset_type,
+            path=dest,
+            size_bytes=size,
+            display_name=resolved.display_name,
+            extra={"remote_path": remote_filename, "save_as": save_as},
+        ))
+    return entries
 
 
 def _hf_repo_download_cmd(ref: str, cache_dir: str, token: str | None) -> str:
@@ -485,7 +492,16 @@ def _pick_hf_files(resolved, filename_override: str | None) -> list[tuple[str, s
     candidates = [c for c in candidates if c]
 
     if filename_override:
-        return [(filename_override, filename_override.rsplit("/", 1)[-1])]
+        if filename_override in candidates:
+            remote = filename_override
+        else:
+            base = filename_override.rsplit("/", 1)[-1]
+            basename_matches = [c for c in candidates if c.rsplit("/", 1)[-1] == base]
+            if len(basename_matches) == 1:
+                remote = basename_matches[0]
+            else:
+                remote = filename_override
+        return [(remote, remote.rsplit("/", 1)[-1])]
 
     ext_priority = {
         "llm-gguf": (".gguf",),
@@ -508,6 +524,27 @@ def _pick_hf_files(resolved, filename_override: str | None) -> list[tuple[str, s
 
 def _hf_file_url(repo: str, path: str) -> str:
     return f"https://huggingface.co/{repo}/resolve/main/{path}"
+
+
+def _hf_fetch_hint(resolved, remote_filename: str, filename_override: str | None) -> str:
+    """Suggest nested repo paths when a bare basename 404s."""
+    info = (resolved.extra or {}).get("hf_info", {})
+    siblings = info.get("siblings", []) or []
+    candidates = [
+        s.get("rfilename") for s in siblings if isinstance(s, dict) and s.get("rfilename")
+    ]
+    if not candidates:
+        return " Run `swm models info` on the repo to inspect available files."
+
+    needle = (filename_override or remote_filename).rsplit("/", 1)[-1]
+    matches = [c for c in candidates if c.endswith(needle) or c.rsplit("/", 1)[-1] == needle]
+    if not matches:
+        return " Run `swm models info` on the repo to inspect available files."
+    if len(matches) == 1:
+        return f" Did you mean --filename {matches[0]!r}?"
+    preview = ", ".join(matches[:3])
+    suffix = f" (+{len(matches) - 3} more)" if len(matches) > 3 else ""
+    return f" Matching repo paths: {preview}{suffix}."
 
 
 def _curl_to_file(url: str, dest: str, token: str | None) -> str:
@@ -570,7 +607,7 @@ def _pull_ollama(sess, resolved, hf_token: str | None):
         display_name=mirror,
         extra={"hf_info": info},
     )
-    return _pull_hf(sess, fallback, hf_token, None)
+    return _pull_hf(sess, fallback, hf_token, None)[0]
 
 
 def _pull_civitai(sess, resolved, civitai_token: str | None, filename_override: str | None):
@@ -926,21 +963,3 @@ def models_remove(instance_id: str, ref: str, yes: bool):
         rm.remove(target.key)
 
     console.print(f"\n[green]\u2713[/green] Removed [bold]{target.display_name}[/bold]\n")
-
-
-# ── set (removed; deprecation shim) ──────────────────────────────────
-
-
-@models_group.command(name="set", hidden=True)
-@click.argument("instance_id", required=False)
-@click.argument("model", required=False)
-def models_set(instance_id: str | None, model: str | None):
-    """[removed] Use `swm setup start vllm <pod> --model <ref>` instead."""
-    pod = instance_id or "<pod>"
-    target = model or "<model>"
-    raise click.UsageError(
-        "`swm models set` was removed in v0.2.\n"
-        f"  Start vLLM with an explicit model instead:\n"
-        f"    swm setup stop vllm {pod}\n"
-        f"    swm setup start vllm {pod} --model {target}"
-    )

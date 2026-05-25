@@ -83,6 +83,14 @@ def guard_set(instance_id: str, mode: str, idle_timeout: int | None, poll_interv
     )
     if policy.enabled and inst.status.value == "running":
         ensure_remote_guard(inst, policy)
+        if policy.mode in ("auto-stop", "auto-down"):
+            from swm.guard import ensure_local_daemon
+
+            if not ensure_local_daemon():
+                console.print(
+                    "[yellow]⚠ Could not start local guard daemon. "
+                    "Run `swm guard run` in the background for auto-stop/auto-down.[/yellow]"
+                )
     console.print(
         f"[green]✓[/green] Guard for {inst.qualified_id}: {policy.mode} "
         f"after {policy.idle_timeout_minutes}m idle"
@@ -91,7 +99,12 @@ def guard_set(instance_id: str, mode: str, idle_timeout: int | None, poll_interv
 
 @guard.command(name="disable")
 @click.argument("instance_id", required=False, shell_complete=complete_pod_id, callback=pod_arg_callback)
-def guard_disable(instance_id: str):
+@click.option(
+    "--force-manual",
+    is_flag=True,
+    help="Write an explicit manual override so guard.defaults no longer applies.",
+)
+def guard_disable(instance_id: str, force_manual: bool):
     """Disable lifecycle automation for a pod."""
     from swm.commands._helpers import _instance_for
     from swm.remote.ssh import session_from_instance
@@ -100,8 +113,18 @@ def guard_disable(instance_id: str):
     if inst.status.value == "running":
         with session_from_instance(inst) as sess:
             stop_remote_guard(sess)
-    disable_policy(inst.id)
-    console.print(f"[green]✓[/green] Guard disabled for {inst.qualified_id}")
+    disable_policy(inst.id, force_manual=force_manual)
+    if force_manual:
+        console.print(
+            f"[green]✓[/green] Guard disabled for {inst.qualified_id} "
+            f"(explicit manual override)"
+        )
+    else:
+        console.print(f"[green]✓[/green] Guard disabled for {inst.qualified_id}")
+        console.print(
+            "[dim]Per-pod override removed — guard.defaults may still apply. "
+            "Use --force-manual to pin this pod to manual.[/dim]"
+        )
 
 
 @guard.command(name="list")

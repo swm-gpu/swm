@@ -8,6 +8,8 @@ from swm.pricing.providers import OFFERINGS, GPU_SPECS
 from swm.pricing.calculator import estimate_workload
 from swm.commands._helpers import console
 
+_GPU_CHOICES = click.Choice(sorted(GPU_SPECS.keys()), case_sensitive=False)
+
 
 @click.group()
 def pricing():
@@ -15,7 +17,7 @@ def pricing():
 
 
 @pricing.command()
-@click.option("--gpu", type=click.Choice(["h200", "b200"], case_sensitive=False), help="Filter by GPU type")
+@click.option("--gpu", type=_GPU_CHOICES, help="Filter by GPU type")
 @click.option("--single-gpu", is_flag=True, help="Only show single-GPU providers")
 def compare(gpu: str | None, single_gpu: bool):
     """Compare per-GPU/hr pricing across all providers."""
@@ -66,7 +68,7 @@ def compare(gpu: str | None, single_gpu: bool):
 
 
 @pricing.command()
-@click.option("--gpu", default="h200", type=click.Choice(["h200", "b200"], case_sensitive=False), help="GPU type")
+@click.option("--gpu", default="h200", type=_GPU_CHOICES, help="GPU type")
 @click.option("--hours", default=3.0, type=float, help="Hours per week")
 @click.option("--storage", default=100.0, type=float, help="Model storage in GB")
 @click.option("--provider", default=None, help="Filter to one provider")
@@ -138,7 +140,7 @@ def estimate(gpu: str, hours: float, storage: float, provider: str | None, singl
 
 
 @pricing.command()
-@click.option("--gpu", type=click.Choice(["h200", "b200"], case_sensitive=False), help="Filter by GPU type")
+@click.option("--gpu", type=_GPU_CHOICES, help="Filter by GPU type")
 def specs(gpu: str | None):
     """Show GPU hardware specs side-by-side."""
     table = Table(title="GPU Specifications", title_style="bold", show_lines=True)

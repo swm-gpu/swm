@@ -107,9 +107,14 @@ class Manifest:
         return cls(version=version, models=models)
 
 
-def make_key(source: str, ref: str) -> str:
-    """Canonical manifest key for a (source, ref) pair."""
-    return f"{source}:{ref}"
+def make_key(source: str, ref: str, *, file_id: str | None = None) -> str:
+    """Canonical manifest key for a (source, ref[, file]) tuple.
+
+    *file_id* disambiguates multiple files pulled from the same HF repo
+    (e.g. high/low LoRA pairs).
+    """
+    base = f"{source}:{ref}"
+    return f"{base}:{file_id}" if file_id else base
 
 
 class RemoteManifest:

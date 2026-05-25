@@ -18,7 +18,8 @@ Keys use dot notation (`runpod.api_key`, `b2.bucket`, `aws.region`, …) and are
 |----------|---------|
 | `SWM_POD` | Override the active pod id for one invocation (`SWM_POD=runpod:abc123 swm ssh`) |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | Picked up by boto3 if `s3.access_key` / `s3.secret_key` aren't set |
-| `HF_TOKEN` / `HUGGING_FACE_HUB_TOKEN` | Used by `swm models pull` when neither `--token` nor `swm config set hf_token` is set |
+| `HF_TOKEN` / `HUGGING_FACE_HUB_TOKEN` | Used by `swm models pull` when neither `--token` nor `swm config set hf.api_key` is set |
+| `CIVITAI_API_KEY` | Used by `swm models pull` / `swm models info` for Civitai when `civitai.api_key` is not set |
 
 ## GPU provider credentials
 

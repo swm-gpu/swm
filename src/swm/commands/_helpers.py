@@ -63,16 +63,29 @@ def resolve_active_pod(instance_id: str | None) -> str:
 
 
 def _iter_configured_pod_ids() -> list[str]:
-    """Return pod ids known to swm's config (`pods.<provider:id>`)."""
+    """Return qualified pod ids known to swm's config (`provider:id`)."""
     pods = cfg.get("pods") or {}
     if not isinstance(pods, dict):
         return []
-    return sorted(pods.keys())
+    out: list[str] = []
+    for pid, meta in pods.items():
+        prov = (meta or {}).get("provider", "")
+        out.append(f"{prov}:{pid}" if prov else pid)
+    return sorted(out)
 
 
 def complete_pod_id(ctx, param, incomplete: str):
     """Click shell completion callback for pod id arguments."""
-    return [pid for pid in _iter_configured_pod_ids() if pid.startswith(incomplete)]
+    pods = cfg.get("pods") or {}
+    if not isinstance(pods, dict):
+        return []
+    candidates: set[str] = set()
+    for pid, meta in pods.items():
+        prov = (meta or {}).get("provider", "")
+        qid = f"{prov}:{pid}" if prov else pid
+        candidates.add(qid)
+        candidates.add(pid)
+    return sorted(c for c in candidates if c.startswith(incomplete))
 
 
 def pod_arg_callback(ctx, param, value):
@@ -94,7 +107,8 @@ def looks_like_pod_id(value: str) -> bool:
         return False
     if any(value.startswith(p) for p in _PROVIDER_PREFIXES):
         return True
-    return value in _iter_configured_pod_ids()
+    pods = cfg.get("pods") or {}
+    return isinstance(pods, dict) and value in pods
 
 
 def split_pod_and_command(

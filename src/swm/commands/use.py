@@ -6,6 +6,7 @@ import click
 from swm import config as cfg
 from swm.commands._helpers import (
     _ACTIVE_POD_ENV,
+    _instance_for,
     clear_active_pod,
     complete_pod_id,
     console,
@@ -75,5 +76,10 @@ def use(instance_id: str | None, do_clear: bool, do_show: bool) -> None:
                 console.print("\nSet one with: [bold]swm use <pod_id>[/bold]")
         return
 
-    set_active_pod(instance_id)
-    console.print(f"[green]✓[/green] Active pod: [bold]{instance_id}[/bold]")
+    try:
+        inst = _instance_for(instance_id)
+    except (click.UsageError, click.ClickException) as exc:
+        raise click.UsageError(str(exc)) from exc
+
+    set_active_pod(inst.qualified_id)
+    console.print(f"[green]✓[/green] Active pod: [bold]{inst.qualified_id}[/bold]")
