@@ -1,276 +1,317 @@
 ---
 name: swm-gpu-workflow
 description: >
-  Use this skill whenever the user wants to search for cloud GPUs, provision
-  GPU pods, install AI frameworks (vLLM, Open WebUI, Ollama, ComfyUI, SwarmUI,
-  Axolotl, H2O LLM Studio), sync workspaces, manage lifecycle guards, track
-  costs, or work with the swm CLI across any of 10 GPU cloud providers.
-  Do NOT use for general Docker, Kubernetes, or non-GPU cloud tasks.
+  Use when the user wants to search cloud GPUs across providers, provision a
+  GPU pod, install AI frameworks (ComfyUI, SwarmUI, vLLM, Ollama, Open WebUI,
+  Axolotl, H2O LLM Studio), pull models from HuggingFace / Civitai / URLs to a
+  unified store, sync workspaces to S3, manage idle-pod lifecycle, or track
+  GPU spend — all via the swm CLI. Do NOT use for general Docker, Kubernetes,
+  or non-GPU cloud tasks.
 license: Apache-2.0
 compatibility: "macOS or Linux, Python 3.11+, SSH client"
 metadata:
   author: swm-gpu
-  version: "0.1.0"
+  version: "0.2.3"
   docs-url: https://swmgpu.com
   repository: https://github.com/swm-gpu/swm
 ---
 
 # swm — Cloud GPU Workflow Manager
 
-One CLI to search, provision, and manage cloud GPUs across 10 providers.
+One CLI to search, provision, install, sync, and tear down GPU pods across 10 cloud providers. Why swm over ad-hoc SSH scripts:
+
+- **Cross-provider search** — `swm gpus` hits 10 providers with live pricing and stock in one call.
+- **Declarative frameworks** — `swm setup install <name>` brings up ComfyUI / SwarmUI / vLLM / Ollama / Open WebUI / Axolotl / llm-studio idempotently; venv, custom nodes, and multi-GPU tensor parallelism handled.
+- **Unified model store** — `swm models pull` auto-detects HF / Civitai / Ollama / URL refs, lands files under `/workspace/models/<bucket>/`, symlinks them into each framework's expected path.
+- **Workspace persistence** — three-tier S3 sync (inotify → s5cmd → tar) survives auto-down. `pod create -w <name>` restores the last session.
+- **Lifecycle guard** — `auto-down` / `auto-stop` / `remind` policies stop idle bills.
+
+> **Stop condition.** Don't hand off until **Phase 5** passes. A pod that's "almost up" still bills.
 
 ## Prerequisites
 
-Before using any swm command, ensure:
-1. **swm is installed**: `swm --version` should print a version number.
-   - Install via `pipx install swm-gpu` or `brew tap swm-gpu/swm && brew install swm`
-2. **SSH client available**: `ssh` and `scp` must be on PATH.
-3. **At least one provider API key configured**: `swm config list` shows configured keys.
-   - Example: `swm config set runpod.api_key <key>`
-4. **Storage configured** (optional, for workspace sync): `swm config set b2.key_id <key>` etc.
+- `swm --version` works (`pipx install swm-gpu` or `brew tap swm-gpu/swm && brew install swm`).
+- `ssh` and `scp` on PATH.
+- At least one provider key: `swm config set runpod.api_key <key>` (or `vastai`, `lambda`, …).
+- Optional `/workspace` persistence: `swm config set b2.key_id …` + `swm config set storage.default b2:<bucket>`.
 
-If swm is not installed, install it first:
+## Phase 0 — State check
+
 ```bash
-pipx install swm-gpu
+swm pod list && swm use --show
 ```
 
-## When To Use This Skill
+If a matching pod is `RUNNING`, set it active (`swm use <name>`) and skip to Phase 5. Otherwise continue.
 
-Activate when the user's task involves:
-- Searching for GPU availability or pricing across cloud providers
-- Provisioning, starting, stopping, or terminating GPU pods
-- Installing AI frameworks on remote GPU instances
-- Syncing workspaces between cloud storage and pods
-- Transferring files to/from GPU pods
-- Monitoring GPU costs or setting budgets
-- Managing lifecycle guards (auto-stop, auto-terminate on idle)
-- Searching or deploying HuggingFace models
-- Configuring swm providers or storage
+## Phase 1 — Clarify
 
-## Core Workflow (6 Phases)
+Use `AskQuestion`:
 
-Follow this sequence for every GPU task:
+| Question | Options |
+|---|---|
+| **VRAM floor**? | `≤16 GB` / `16–24 GB` / `24–48 GB` / `48–80 GB` / `>80 GB` |
+| **Provider**? | `runpod` / `vastai` / `lambda` / `tensordock` / `vultr` / `auto (cheapest)` |
+| **Lifecycle**? | `auto-down` (default) / `auto-stop` / `remind` / `manual` |
+| **Idle timeout**? | `10` / `20` / `30` / `60` / `120` min |
+| Persist `/workspace`? | `yes` (default) / `no — one-shot, --no-storage` |
 
-### Phase 0: State Check
+| VRAM floor | GPU class to search |
+|---|---|
+| ≤16 GB | `RTX 4090`, `A4000`, `RTX 6000 Ada` |
+| 16–24 GB | `RTX 4090`, `RTX 6000 Ada`, `L40S` |
+| 24–48 GB | `A100 40GB`, `A100 80GB`, `L40S` |
+| 48–80 GB | `H100`, `H100 SXM`, `A100 80GB` |
+| >80 GB | `H200`, `B200`, multi-GPU `H100 SXM` |
+
+For unsupported frameworks, read the README for: install method (`pip` vs `uv sync` vs custom), ComfyUI custom node vs standalone server, default ports, model cache location, UI mode toggles.
+
+## Phase 2 — Pick GPU
+
 ```bash
-swm pod list
-```
-Check for existing pods before creating new ones.
-
-### Phase 1: Clarify
-Ask the user:
-- What VRAM is needed? (determines GPU class)
-- Provider preference? (or let swm find cheapest)
-- Lifecycle policy? (`auto-down`, `auto-stop`, `remind`, `manual`)
-- Idle timeout? (default: 30m)
-- Persist workspace to S3? (yes/no)
-
-### Phase 2: Pick GPU
-```bash
-swm gpus -g <gpu-name> --sort price
-swm gpus -g h200 -c 4 --max-price 4 --secure
-```
-Select the cheapest in-stock option that meets VRAM requirements.
-
-### Phase 3: Provision
-```bash
-swm pod create -p <provider> -g <gpu> -n <name> -y
-```
-Always pass `-y` to skip confirmation prompts in agent context.
-
-### Phase 4: Install
-```bash
-swm setup install <framework> <pod-id>
-```
-Or for custom tools:
-```bash
-swm run <pod-id> "apt-get install -y <package>"
-swm run <pod-id> "pip install <package>"
+swm gpus -g <class> --sort price --secure | head -20
 ```
 
-### Phase 5: Verify
-```bash
-swm run <pod-id> "nvidia-smi"
-swm run <pod-id> "curl -s localhost:8000/v1/models"
-swm run <pod-id> "df -h /workspace"
-```
-Check GPU memory, HTTP endpoints, and disk space before handing off.
+Pick the cheapest in-stock SKU meeting the VRAM floor. **Capture the exact display name** (e.g. `"NVIDIA H100 80GB HBM3"`) — that's what `-g` on `pod create` wants. Quote it; spaces break shells.
 
-### Phase 6: Hand Off
-Report to the user:
-- Pod ID and SSH command
-- Service URL (if applicable)
-- Lifecycle policy in effect
-- How to terminate: `swm pod down <pod-id>`
-
-## Key Commands
-
-### GPU Search (always start here)
+## Phase 3 — Provision
 
 ```bash
-swm gpus                          # all GPUs, all providers
-swm gpus -g h200                  # filter by GPU name (free text)
-swm gpus -g h200 -c 4            # 4×H200 configs
-swm gpus -g h200 --secure        # secure cloud only (SOC 2 / HIPAA)
-swm gpus --max-price 4           # under $4/hr on-demand
-swm gpus -p vastai               # single provider
-swm gpus -n 50                   # show 50 results (default: 20)
-swm gpus --all                   # show everything
-swm gpus --sort price            # sort by price ascending
+swm pod create -p <provider> -g "<gpu-display-name>" \
+  -n <name> --lifecycle <policy> --idle-timeout <min> -y
 ```
 
-### Pod Management
+- `-y` is **mandatory** in agent shells — the `Proceed?` prompt has no fallback.
+- Container disk wipes on stop; only `/workspace` persists. `--volume N` sizes it (RunPod requires `>= 1`).
+- `-w <name>` restores the last workspace pushed under that name.
+- After this the new pod is the active pod; subsequent `swm run` / `swm setup` can omit the id.
+
+## Phase 4 — Install
+
+### 4a. Prefer built-in frameworks
+
+| Framework | Use when |
+|---|---|
+| `comfyui` | Image/video gen, custom-node ecosystems |
+| `swarmui` | Higher-level wrapper around ComfyUI |
+| `vllm` | Multi-GPU LLM serving (OpenAI-compatible) |
+| `ollama` | Single-GPU LLM chat |
+| `open-webui` | ChatGPT-style frontend for Ollama / vLLM |
+| `axolotl` | LLM fine-tuning |
+| `llm-studio` | H2O no-code fine-tuning |
 
 ```bash
-swm pod create -p runpod -g h200 -n my-session -y
+swm setup list
+swm setup install <name>                                         # idempotent
+swm setup start   <name>                                         # background, prints proxy URL, probes health
+swm setup start   vllm    --model Qwen/Qwen3-8B                  # vLLM model selection
+swm setup start   comfyui --port 8288 --extra-args "--use-sage-attention"
+swm setup stop    <name>
+```
+
+vLLM auto-detects GPU count for tensor parallelism. swm opens SSH tunnels for unexposed ports and probes `/health` before reporting ready.
+
+### 4b. Custom tools — chain `swm run`
+
+Each `swm run` is its own SSH session. Use absolute paths, `&&`-chain idempotent commands, install into `/workspace`:
+
+```bash
+swm run "pip install -q uv && mkdir -p /workspace/.cache/uv \
+  && cd /workspace && [ -d <repo> ] || git clone --depth 1 <git-url> \
+  && cd <repo> && UV_CACHE_DIR=/workspace/.cache/uv uv sync"
+```
+
+Use `uv sync` over `pip install -e .` when `pyproject.toml` has `[tool.uv.sources]` — pip silently ignores those overrides.
+
+### 4c. ComfyUI custom nodes
+
+Install **before** `swm setup start comfyui`. Custom-node deps go into ComfyUI's venv (not system pip):
+
+```bash
+swm run "cd /workspace/ComfyUI/custom_nodes \
+  && [ -d <node-dir> ] || git clone --depth 1 <git-url> \
+  && /workspace/ComfyUI/venv/bin/pip install -r <node-dir>/requirements.txt"
+```
+
+### 4d. Models — use the unified store
+
+`swm models pull` lands files under `/workspace/models/<bucket>/` and symlinks them into each framework's expected path. Source auto-detected from the ref shape:
+
+```bash
+swm models pull <pod> Qwen/Qwen3-8B                              # HuggingFace
+swm models pull <pod> civitai:1925758 --as lora                  # Civitai
+swm models pull <pod> https://example.com/m.safetensors --as checkpoint   # URL
+swm models pull <pod> ollama:llama3                              # Ollama
+swm models pull <pod> Comfy-Org/Wan_2.2_ComfyUI_Repackaged \
+  --as lora --filename split_files/loras/wan2.2_i2v_lightx2v_4steps_lora_v1_low_noise.safetensors
+
+swm models info <ref>             # metadata before pulling
+swm models list <pod> [--all]     # tracked (+ untracked) files
+swm models link <pod> /abs/path/to/file --as vae
+swm models remove <pod> <name>
+```
+
+API keys (set once; legacy `hf_token` also read):
+
+```bash
+swm config set hf.api_key <token>        # gated HF models
+swm config set civitai.api_key <token>   # Civitai gated / NSFW
+```
+
+`--filename` supports nested HF paths (`split_files/loras/foo.safetensors`). If a bare basename 404s, swm prints matching paths from the repo. Multi-file pulls from one HF repo get distinct manifest entries (`hf:{repo}:{filename}`); no overwrites.
+
+### 4e. Background daemon pattern
+
+Mirror swm's `exec_background`: `nohup … > log 2>&1 < /dev/null &` with `&` **outside** `bash -c`, then sleep + `pgrep` so the call returns non-zero on crash:
+
+```bash
+swm run "nohup env <VAR>=<val> /workspace/<repo>/.venv/bin/<entrypoint> \
+  --host 127.0.0.1 --port <port> > /workspace/<name>.log 2>&1 < /dev/null & \
+  sleep 3 && pgrep -fa <entrypoint> \
+  || (tail -50 /workspace/<name>.log; exit 1)"
+```
+
+Bind `127.0.0.1` for internal services, `0.0.0.0` only if the proxy URL needs to reach it. Omit `< /dev/null` and SSH may hang on stdin.
+
+## Phase 5 — Verify
+
+Every claim must hold before hand-off:
+
+- Framework main port returns `200` (ComfyUI `:8188`, vLLM `:8000/v1/models`, Ollama `:11434/api/tags`, Open WebUI `:8080/api/version`).
+- Side-server `/health` returns `200` (if any).
+- Custom-node directory appears in the host's startup log.
+- Expected node/model types appear in `/object_info` (ComfyUI) or `/v1/models` (vLLM).
+- Checkpoint dirs non-empty and roughly the size from the model card.
+- VRAM in the expected ballpark (low if lazy-loaded, near full after first request).
+- `df -h /workspace` not over 80 %.
+
+If any check fails, iterate on the relevant phase. Don't hand off a half-working pod.
+
+## Phase 6 — Hand off
+
+1. **Public URL** verbatim (RunPod: `https://<pod>-<port>.proxy.runpod.net`).
+2. **Sync status**: `swm sync status <pod>` — confirm watcher running, last push stamp recent.
+3. **Local download** for workflow / config files: `swm download <relative-path> -d ~/Downloads`.
+4. **Framework foot-guns** — spell out UI toggles (e.g. ACE-Step's `cloud → local` mode, model-selector defaults). #1 reason a working pod looks broken.
+5. **Resume command** with `-w <name>` so the next session restores the workspace.
+6. **Log tails**: `swm run "tail -f /tmp/<host>.log"` for live debugging.
+
+See [examples.md](examples.md) for a fully worked run (ACE-Step on H100).
+
+---
+
+# Command reference
+
+## GPU search
+
+```bash
+swm gpus -g h200 --secure --sort price        # filter, secure cloud only, cheapest first
+swm gpus -g h200 -c 4 --max-price 4           # 4×H200 under $4/hr
+swm gpus -p vastai -n 50 --all                # single provider, more rows
+```
+
+Unknown provider slugs raise `UsageError` listing valid ones.
+
+## Pod management
+
+```bash
+swm pod create -p runpod -g h200 -n s1 -y
 swm pod create -p vastai -g h200 -n train --gpu-count 4 --volume 200 --cloud-type SECURE -y
-swm pod list                     # all active pods
-swm pod status <pod-id>
-swm pod stop <pod-id>            # pause (keeps disk)
-swm pod start <pod-id>           # resume paused pod
-swm pod down <pod-id>            # sync workspace + terminate
+swm pod list                                  # auto-prunes stale entries vs live provider state
+swm pod status / stop / start / down / prune <pod>
 ```
 
-### Framework Installation
-
-7 built-in frameworks:
+## Sync
 
 ```bash
-swm setup list                               # show available frameworks
-swm setup install vllm <pod-id>              # vLLM inference server
-swm setup install open-webui <pod-id>        # Open WebUI chat interface
-swm setup install ollama <pod-id>            # Ollama model runner
-swm setup install comfyui <pod-id>           # ComfyUI image generation
-swm setup install swarmui <pod-id>           # SwarmUI
-swm setup install axolotl <pod-id>           # Axolotl fine-tuning
-swm setup install llm-studio <pod-id>        # H2O LLM Studio
-swm setup start <framework> <pod-id>         # start framework
-swm setup stop <framework> <pod-id>          # stop framework
+swm sync pull  [pod]              # storage → pod
+swm sync pull  [pod] --tar        # tarball mode (600k+ small files; fails loudly on error)
+swm sync push  [pod]              # pod → storage
+swm sync watch [pod]              # inotify auto-push
+swm sync status [pod]             # s5cmd, watcher, autosync, pending changes
 ```
 
-Auto-detects GPU count for tensor parallelism. Opens SSH tunnels for unexposed ports. Probes health endpoints before reporting ready.
+Three-tier sync: inotify watcher → incremental s5cmd → tar. Push reconciles inotify events with a `find -newer` scan so `pip install` bursts aren't missed. Pull re-runs framework link-repair steps so `/workspace/models/` symlinks stay wired after restore.
 
-### Workspace Sync
+## Guard
 
 ```bash
-swm sync pull <pod-id>           # storage → pod
-swm sync push <pod-id>           # pod → storage
-swm sync pull <pod-id> --force   # kill stale transfers first
-swm sync watch <pod-id>          # auto-push on file changes (inotify)
+swm guard set <pod> --mode auto-down --idle-timeout 30   # set/update policy
+swm guard set <pod> --mode remind                        # notify-only
+swm guard disable <pod> [--force-manual]                 # remove override / pin manual
+swm guard defaults --mode auto-down --idle-timeout 30    # for new pods
+swm guard list                                           # live status
+swm guard stop-daemon
 ```
 
-Three-tier smart sync: inotify watcher → incremental s5cmd → tar mode for 600k+ small files.
-Push cycles reconcile inotify events with a `find -newer` scan so fast file bursts
-(e.g. `pip install`) are not missed. Pull re-runs framework link repair steps after
-restore so ComfyUI/vLLM/Ollama symlinks into `/workspace/models/` stay wired.
+Monitors 4 signals: SSH sessions (`who`), GPU utilization, filesystem writes, active processes. Setting `auto-stop`/`auto-down` auto-starts the local daemon. `--idle-timeout 0` and `--poll-interval 0` are honored as explicit values (not unset).
 
-### Lifecycle Guard
+## Costs
 
 ```bash
-swm guard enable <pod-id> --policy auto-down --idle 30m
-swm guard disable <pod-id>
-swm guard list                   # status of all guards
+swm costs live                                # right-now burn
+swm costs summary [--period today|...]        # breakdown by provider/pod (today = UTC day)
+swm costs reconcile                           # verify vs provider billing (RunPod, Vast.ai)
+swm costs budget set 100                      # $/month alert
 ```
 
-Monitors SSH sessions, GPU utilization, filesystem writes, and active processes. If idle beyond threshold, saves workspace and terminates.
-
-Policies: `auto-down` (sync + terminate), `auto-stop` (pause), `remind` (notify only), `manual` (no action).
-
-### Cost Tracking
+## Remote
 
 ```bash
-swm costs live                   # running cost right now
-swm costs summary                # spending breakdown by provider/pod
-swm costs reconcile              # verify against provider billing APIs
-swm costs budget set 100         # $100/month alert
+swm ssh    <pod>
+swm run    [pod] '<cmd>'
+swm upload   [pod] ./local remote/path
+swm download [pod] remote/file -d ~/Downloads
 ```
 
-### Model Management
-
-Unified store at `/workspace/models/` with per-type buckets. Framework installs
-wire their paths into this store via symlinks.
+## Pricing reference
 
 ```bash
-swm config set hf.api_key <token>              # HuggingFace (also reads legacy hf_token)
-swm config set civitai.api_key <token>         # Civitai gated/NSFW content
-
-swm models search <query>                      # search HuggingFace Hub
-swm models info <ref>                          # inspect HF / Civitai / Ollama ref
-swm models pull <pod-id> <ref>                 # HF, Ollama, Civitai, or URL
-swm models pull <pod-id> <ref> --as lora       # file into the right bucket
-swm models pull <pod-id> civitai:12345         # Civitai model by id
-swm models link <pod-id> /path/to/file --as vae # register an existing on-pod file
-swm models list <pod-id>                       # tracked models from manifest
-swm models list <pod-id> --all                 # include untracked files
-swm models remove <pod-id> <name>              # delete from store + manifest
-
-swm setup start vllm <pod-id> --model Qwen/Qwen3-8B   # vLLM model (replaces models set)
-swm setup start comfyui <pod-id> --extra-args "--use-sage-attention"
+swm pricing compare  --gpu h100|h200|b200|a100|rtx-4090|l40s
+swm pricing estimate -g h200 --hours 24
 ```
 
-Reference shapes auto-detect source: `org/repo`, `ollama:llama3`, `civitai:12345`,
-or `https://...`. Use `--source hf|ollama|civitai|url` to override.
+## Instance ID format
 
-### Remote Access
-
-```bash
-swm ssh <pod-id>                 # interactive shell
-swm run <pod-id> '<command>'     # run a command remotely
-swm upload <pod-id> ./local/file remote/path
-swm download <pod-id> remote/file -d ~/Downloads
-```
-
-## Instance ID Format
-
-Pods are referenced as `provider:id`:
-- `runpod:abc123`
-- `vastai:34182944`
-- `lambda:inst-xyz`
-- `vultr:vm-abc`
-
-A bare ID (no provider prefix) auto-resolves by querying all configured providers.
+`provider:id` (`runpod:abc123`, `vastai:34182944`). A bare id auto-resolves by querying configured providers. `swm use <pod>` validates and sets the active pod.
 
 ## Providers
 
-| Provider | Slug | API | Live pricing |
-|----------|------|-----|-------------|
-| RunPod | `runpod` | GraphQL | Yes |
-| Vast.ai | `vastai` | REST | Yes |
-| Lambda Labs | `lambda` | REST | Yes |
-| Vultr | `vultr` | REST | Yes |
-| TensorDock | `tensordock` | REST | Yes |
-| FluidStack | `fluidstack` | REST | Yes |
-| AWS (EC2) | `aws` | boto3 | Yes |
-| GCP (Compute) | `gcp` | gcloud CLI | Yes |
-| Azure | `azure` | az CLI | Yes |
-| CoreWeave | `coreweave` | Kubernetes | Yes |
+| Slug | API | Live pricing |
+|---|---|---|
+| `runpod` | GraphQL | yes |
+| `vastai` | REST | yes |
+| `lambda` | REST | yes |
+| `vultr` | REST | yes |
+| `tensordock` | REST | yes |
+| `fluidstack` | REST | yes |
+| `aws` | boto3 | yes |
+| `gcp` | gcloud CLI | yes |
+| `azure` | az CLI (`pip install swm-gpu[azure]`) | yes |
+| `coreweave` | Kubernetes | yes |
 
 ## Storage
 
-All storage uses S3-compatible APIs via s5cmd. Configured with `swm config set`:
+S3-compatible via s5cmd. Config keys:
 
-| Backend | Config keys |
-|---------|------------|
+| Backend | Keys |
+|---|---|
 | Backblaze B2 | `b2.key_id`, `b2.app_key`, `b2.bucket` |
 | Amazon S3 | `s3.access_key`, `s3.secret_key`, `s3.bucket` |
 | Google GCS | `gcs.hmac_access`, `gcs.hmac_secret`, `gcp.bucket` |
 
-Default storage: `swm config set storage.default b2:<bucket-name>`
+Default: `swm config set storage.default b2:<bucket>`. Credentials are masked by suffix in `config get/list` and never written to the pod (passed as transient env vars per s5cmd call).
 
-## Anti-Patterns to Avoid
+---
 
-- **Never omit `-y`** on `swm pod create` — it hangs waiting for confirmation in agent context
-- **Never install to container root** — always use `/workspace` (data persists across stop/start)
-- **Never use `pip install -e .`** for projects with `[tool.uv.sources]` — use `pip install .` instead
-- **Never mix venvs** across frameworks with conflicting torch versions
-- **Never hand off** before all health checks pass
-- **Never skip Phase 0** — always check for existing pods first
+## Anti-patterns
 
-## Important Behaviors
-
-- `swm gpus` results are paginated (20 rows default). Use `--all` or `-n N` for more.
-- `swm pod create` injects SSH public key and waits for direct SSH before bootstrapping.
-- Storage credentials are never written to the pod — passed as transient env vars per s5cmd call.
-- Workspace sync is non-destructive: pull uses `--no-clobber`, push uses `--size-only`.
-- `--cloud-type SECURE` (default for RunPod) restricts to SOC 2 / HIPAA certified data centers.
-- Guard monitors 4 signals: SSH sessions (`who`), GPU utilization, filesystem writes, active processes.
+- **Never omit `-y` on `swm pod create`** — agent shells hang on the `Proceed?` prompt.
+- **Never install outside `/workspace`** — container disk wipes on stop; only `/workspace` survives auto-down.
+- **Never drop `&` outside `bash -c`** when starting daemons — SSH waits for foreground and `swm run` hangs.
+- **Never reuse one venv across frameworks** with conflicting `torch` pins — separate venvs (~7 GB each) beat dependency hell.
+- **Never trust `pip install -e .`** for projects with `[tool.uv.sources]` — use `uv sync`.
+- **Never `swm run -q`** during initial setup — quiet mode swallows install errors. Reserve `-q` for scripted health checks.
+- **Never tear down before `du -sh /workspace`** — 10–30 GB bloat extends the next pull.
+- **Never guess nested HF file paths** — run `swm models info <repo>` and copy the exact `rfilename`.
+- **Never skip Phase 0** — a forgotten running pod bills silently.
+- **Never hand off** before Phase 5 passes.
