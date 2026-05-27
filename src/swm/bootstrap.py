@@ -309,20 +309,29 @@ _WS_MARKER_NAMES = (
 )
 
 
-def _ensure_workspace_empty_on_pod(session: RemoteSession) -> None:
-    """Raise if /workspace/ on the pod contains any non-marker files.
+def _workspace_leftover_files(session: RemoteSession) -> list[str]:
+    """Return paths in /workspace/ that aren't swm markers.
 
-    A blind ``touch PUSH_STAMP`` on a non-empty workspace would silently
-    declare those files synced even though they were never uploaded.
-    Refuse, and tell the user to push or clear before attaching.
+    Non-marker files commonly appear because docker images use
+    /workspace as a default WORKDIR and seed it with content (e.g. the
+    pytorch base image). Callers decide how to handle these — usually
+    by uploading them as the initial baseline rather than failing.
     """
     excludes = " ".join(f"-not -name '{n}'" for n in _WS_MARKER_NAMES)
     cmd = (
-        f"find /workspace -mindepth 1 -maxdepth 1 {excludes} 2>/dev/null "
-        "| head -5"
+        f"find /workspace -mindepth 1 -maxdepth 1 {excludes} 2>/dev/null"
     )
     _, out, _ = session.exec(cmd, stream=False)
-    leftover = [line for line in out.splitlines() if line.strip()]
+    return [line for line in out.splitlines() if line.strip()]
+
+
+def _ensure_workspace_empty_on_pod(session: RemoteSession) -> None:
+    """Raise if /workspace/ on the pod contains any non-marker files.
+
+    Retained for callers that want the strict behavior. Most call sites
+    should prefer ``_workspace_leftover_files`` and seed-by-pushing.
+    """
+    leftover = _workspace_leftover_files(session)
     if leftover:
         sample = ", ".join(p.rsplit("/", 1)[-1] for p in leftover[:3])
         more = "" if len(leftover) <= 3 else f" (+ more)"
@@ -381,14 +390,49 @@ def bootstrap_workspace_on_pod(
     if storage_ok:
         try:
             if is_new:
-                _ensure_workspace_empty_on_pod(session)
-                _con.print("  [dim]New workspace — skipping pull[/dim]")
-                session.exec(
-                    f": > {WATCH_LOG} 2>/dev/null; touch {PUSH_STAMP}",
-                    stream=False,
-                )
-                if start_watcher(session, "/workspace"):
-                    _con.print("  [dim]Watcher started for change tracking[/dim]")
+                # Docker images commonly seed /workspace with content
+                # (e.g. pytorch base image). Rather than fail bootstrap
+                # and leave the pod without autosync — the historical
+                # failure mode that caused silent data loss — seed the
+                # new workspace by uploading whatever is already on the
+                # pod as the initial baseline.
+                leftover = _workspace_leftover_files(session)
+                if leftover:
+                    sample = ", ".join(
+                        p.rsplit("/", 1)[-1] for p in leftover[:3]
+                    )
+                    more = (
+                        "" if len(leftover) <= 3
+                        else f" (+ {len(leftover) - 3} more)"
+                    )
+                    _con.print(
+                        f"  [yellow]/workspace contains existing files "
+                        f"(e.g. {sample}{more}) — uploading them as the "
+                        f"new workspace baseline before starting "
+                        f"auto-sync.[/yellow]"
+                    )
+                    from swm.sync.push import workspace_push
+                    rc = workspace_push(
+                        session, storage_slug, bucket, workspace,
+                        extra_excludes=extra_excludes, force=True,
+                    )
+                    if rc != 0:
+                        raise RuntimeError(
+                            f"Initial baseline push failed (s5cmd exit "
+                            f"{rc}). Re-run `swm sync push "
+                            f"{qualified_id} --force` then "
+                            f"`swm sync auto {qualified_id}`."
+                        )
+                else:
+                    _con.print("  [dim]New workspace — skipping pull[/dim]")
+                    session.exec(
+                        f": > {WATCH_LOG} 2>/dev/null; touch {PUSH_STAMP}",
+                        stream=False,
+                    )
+                    if start_watcher(session, "/workspace"):
+                        _con.print(
+                            "  [dim]Watcher started for change tracking[/dim]"
+                        )
             else:
                 workspace_pull(
                     session, storage_slug, bucket, workspace,

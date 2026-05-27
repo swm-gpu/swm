@@ -1,6 +1,8 @@
 """swm sync — sync files between cloud storage and running instances."""
 from __future__ import annotations
 
+import sys
+
 import click
 
 from swm import config as cfg
@@ -165,12 +167,17 @@ def push(instance_id: str, path: str, bucket: str | None, dest: str, exclude: tu
     )
 
     with session_from_instance(inst) as sess:
-        workspace_push(
+        rc = workspace_push(
             sess, remote, bucket_name, ws, src=path,
             extra_excludes=list(exclude) or None, force=force,
             tar=use_tar, delete=delete,
         )
 
+    if rc:
+        console.print(
+            f"\n[yellow]⚠ Push complete with warnings (s5cmd exit {rc})[/yellow]"
+        )
+        sys.exit(rc)
     console.print("\n[green]✓ Push complete[/green]")
 
 

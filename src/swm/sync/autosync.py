@@ -146,6 +146,15 @@ def start_autosync(
             f"propagate to storage)."
         )
 
+    # When force=True, also write the push stamp so the daemon's own
+    # defense-in-depth stamp check inside _autosync_daemon.sh does not
+    # cause every cycle to no-op. Bypassing the client-side
+    # AutosyncUnsafeError without also creating the stamp leaves the
+    # daemon running but inert — silently the same problem we were
+    # trying to bypass.
+    if force and not _pull_stamp_exists(session):
+        session.exec(f"touch {PUSH_STAMP}", stream=False)
+
     if not is_watcher_alive(session):
         if not start_watcher(session, src):
             return False

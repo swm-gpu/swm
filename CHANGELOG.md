@@ -6,6 +6,36 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-05-27
+
+### Fixed
+- `swm sync push --force` now propagates the s5cmd exit code through the CLI;
+  previously partial failures (e.g. B2 503 SlowDown on a single object) were
+  silently reported as success.
+- `swm sync push --force` advances the push stamp even on partial s5cmd
+  failure during the initial baseline upload, so the next autosync cycle can
+  retry missed files via `find -newer` instead of permanently refusing to start.
+- `swm sync auto --force` touches the push stamp on the pod when missing,
+  matching the client-side `--force` semantics so the daemon's internal stamp
+  check no longer blocks startup after a forced push.
+- `swm pod create -n <name>` (without `-w`) no longer fails when `/workspace`
+  contains files from the docker image — `swm` now uploads the existing
+  contents as the new workspace baseline and starts autosync normally. This
+  was the root cause of silent data loss when a pod was created without `-w`.
+
+### Added
+- `swm pod status <pod>` now reports autosync running state, watcher state,
+  last push age, and pending change count over SSH. Loudly warns when
+  autosync is not running on a pod that has been up > 5 minutes.
+- `swm pod down --force-down` flag to override the new sync-safety guard
+  (terminate even if the workspace push did not write a recent stamp).
+
+### Changed
+- `swm pod down` refuses to wipe `/workspace` or terminate the pod when the
+  workspace push exits non-zero or fails to write a push stamp within the
+  last 10 minutes. The lifecycle guard's `auto-down` path applies the same
+  guard and leaves the pod alive on partial-push failure.
+
 ## [0.2.3] - 2026-05-24
 
 ### Fixed

@@ -634,13 +634,96 @@ def status(instance_id: str):
     except Exception:
         pass
 
+    _print_sync_health(inst, raw_id)
+
+
+def _print_sync_health(inst, raw_id: str) -> None:
+    """Probe the pod over SSH and print autosync/watcher/stamp state.
+
+    Designed to make the previously-silent failure mode (autosync not
+    running, stamp never written, watcher dead) loudly visible. Best-
+    effort — silent on any probe failure so it never blocks `status`.
+    """
+    meta = cfg.get(f"pods.{raw_id}") or {}
+    has_workspace = meta.get("workspace") and meta.get("storage")
+    if not has_workspace:
+        console.print(f"  Workspace:  [dim]not configured[/dim]")
+        return
+    if inst.status != InstanceStatus.RUNNING or not getattr(inst, "ssh_host", None):
+        return
+
+    try:
+        from swm.remote.ssh import session_from_instance
+        from swm.sync.autosync import is_autosync_alive
+        from swm.sync.paths import PUSH_STAMP, WATCH_LOG
+        from swm.sync.watcher import is_watcher_alive
+    except Exception:
+        return
+
+    try:
+        with session_from_instance(inst) as sess:
+            autosync_ok = is_autosync_alive(sess)
+            watcher_ok = is_watcher_alive(sess)
+            _, stamp_out, _ = sess.exec(
+                f"stat -c %Y {PUSH_STAMP} 2>/dev/null || echo none",
+                stream=False,
+            )
+            _, pending_out, _ = sess.exec(
+                f"wc -l < {WATCH_LOG} 2>/dev/null || echo 0",
+                stream=False,
+            )
+    except Exception as exc:
+        console.print(f"  [dim]⚠ Sync health probe failed: {exc}[/dim]")
+        return
+
+    stamp_age = _format_stamp_age(stamp_out.strip())
+    pending = pending_out.strip() or "0"
+
+    console.print(f"  Workspace:  [cyan]{meta['workspace']}[/cyan] on {meta['storage']}")
+    console.print(
+        f"  Auto-sync:  {'[green]running[/green]' if autosync_ok else '[red]NOT running[/red]'}"
+        + (f"  watcher: {'ok' if watcher_ok else 'down'}" if autosync_ok else "")
+    )
+    console.print(f"  Last push:  {stamp_age}")
+    if int(pending or 0) > 0:
+        console.print(f"  Pending:    {pending} change(s) awaiting next cycle")
+
+    if not autosync_ok and inst.uptime_seconds and inst.uptime_seconds > 300:
+        console.print(
+            f"  [bold red]⚠ Auto-sync is not running — workspace changes "
+            f"are not being backed up.[/bold red]"
+        )
+        console.print(
+            f"  [dim]Recover: swm sync auto {inst.qualified_id}[/dim]"
+        )
+
+
+def _format_stamp_age(stamp: str) -> str:
+    """Format the push-stamp mtime as a human-readable age string."""
+    if not stamp or stamp == "none":
+        return "[red]never[/red]"
+    try:
+        import time
+        ts = int(stamp)
+        age = max(0, int(time.time()) - ts)
+        if age < 90:
+            return f"{age}s ago"
+        if age < 5400:
+            return f"{age // 60}m ago"
+        if age < 86400 * 2:
+            return f"{age // 3600}h ago"
+        return f"{age // 86400}d ago [yellow](stale)[/yellow]"
+    except (ValueError, TypeError):
+        return f"unparseable ({stamp})"
+
 
 @pod.command(name="down")
 @click.argument("instance_id", required=False, shell_complete=complete_pod_id, callback=pod_arg_callback)
 @click.option("-y", "--yes", is_flag=True, help="Skip confirmation")
 @click.option("--no-sync", is_flag=True, help="Skip workspace push before termination")
+@click.option("--force-down", is_flag=True, help="Terminate even if the sync didn't write a recent push stamp (DANGEROUS)")
 @click.option("--exclude", "-x", multiple=True, help="Glob pattern to exclude from push (repeatable)")
-def pod_down(instance_id: str, yes: bool, no_sync: bool, exclude: tuple[str, ...]):
+def pod_down(instance_id: str, yes: bool, no_sync: bool, force_down: bool, exclude: tuple[str, ...]):
     """Push workspace to storage and terminate the instance.
 
     \b
@@ -684,6 +767,7 @@ def pod_down(instance_id: str, yes: bool, no_sync: bool, exclude: tuple[str, ...
             from swm.bootstrap import workspace_push
             from swm.remote.ssh import session_from_instance
             from swm.sync import stop_autosync
+            from swm.sync.paths import PUSH_STAMP
 
             slug, bucket = meta["storage"].split(":", 1)
             ws = meta["workspace"]
@@ -695,10 +779,47 @@ def pod_down(instance_id: str, yes: bool, no_sync: bool, exclude: tuple[str, ...
                         stop_autosync(sess)
                     except Exception:
                         pass
-                    workspace_push(
+                    rc = workspace_push(
                         sess, slug, bucket, ws,
                         extra_excludes=list(exclude) or None,
                     )
+                    # Defense-in-depth: only wipe the pod's /workspace
+                    # once we have proof the push succeeded AND wrote a
+                    # recent stamp. The historical failure mode was a
+                    # push that returned 0 but had silently skipped the
+                    # stamp; wiping after that destroys un-uploaded data.
+                    _, stamp_age, _ = sess.exec(
+                        f"find {PUSH_STAMP} -mmin -10 -print 2>/dev/null",
+                        stream=False,
+                    )
+                    stamp_ok = bool(stamp_age.strip())
+                    if rc != 0 or not stamp_ok:
+                        why = (
+                            f"s5cmd exit {rc}" if rc != 0
+                            else "no recent push stamp written"
+                        )
+                        msg = (
+                            f"Workspace push did not complete cleanly "
+                            f"({why}). Refusing to wipe /workspace or "
+                            f"terminate — this is the failure mode that "
+                            f"silently lost data on previous pods."
+                        )
+                        if force_down:
+                            console.print(f"[yellow]⚠ {msg}[/yellow]")
+                            console.print(
+                                "[yellow]  --force-down was passed; "
+                                "proceeding anyway.[/yellow]"
+                            )
+                        else:
+                            console.print(f"[red]✗ {msg}[/red]")
+                            console.print(
+                                "  Re-run: [bold]swm sync push "
+                                f"{inst.qualified_id} --force[/bold] "
+                                "and confirm it succeeds, then re-run "
+                                "this command. Or pass --force-down to "
+                                "override (data may be lost)."
+                            )
+                            return
                     sess.exec(
                         "rm -rf /workspace/* /workspace/.[!.]* /workspace/..?* 2>/dev/null || true",
                         stream=False,

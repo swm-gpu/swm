@@ -452,11 +452,33 @@ def _auto_down(inst: Instance) -> None:
 
     if has_workspace:
         from swm.bootstrap import workspace_push
+        from swm.sync.paths import PUSH_STAMP
 
         slug, bucket = str(meta["storage"]).split(":", 1)
         workspace = str(meta["workspace"])
         with session_from_instance(inst) as sess:
-            workspace_push(sess, slug, bucket, workspace)
+            rc = workspace_push(sess, slug, bucket, workspace)
+            # Defense in depth — raise if the push didn't actually
+            # update the stamp. The guard catches the exception and
+            # leaves the pod alive, which is the safe outcome. Without
+            # this check, an exit-0-but-silently-incomplete push would
+            # cause auto-down to terminate the pod and lose data.
+            _, stamp_age, _ = sess.exec(
+                f"find {PUSH_STAMP} -mmin -10 -print 2>/dev/null",
+                stream=False,
+            )
+            if rc != 0 or not stamp_age.strip():
+                why = (
+                    f"s5cmd exit {rc}" if rc != 0
+                    else "no recent push stamp"
+                )
+                raise RuntimeError(
+                    f"auto-down refused: workspace push did not "
+                    f"complete cleanly ({why}). Pod left running to "
+                    f"prevent silent data loss; investigate with "
+                    f"`swm pod status {inst.qualified_id}` and "
+                    f"`swm sync status {inst.qualified_id}`."
+                )
 
     provider, raw_id = resolve_instance(inst.qualified_id)
     provider.terminate_instance(raw_id)

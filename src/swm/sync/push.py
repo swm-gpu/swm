@@ -65,7 +65,7 @@ def _tar_push(
     src: str = "/workspace",
     extra_excludes: list[str] | None = None,
     force: bool = False,
-) -> None:
+) -> int:
     """Pack workspace into a tarball and upload as a single S3 object.
 
     Uses pigz (parallel gzip) when available for multi-core compression.
@@ -120,6 +120,20 @@ def _tar_push(
     if rc == 0:
         console.print(f"  [dim]Tarball uploaded as {workspace}.tar.gz[/dim]")
         session.exec(f"touch {PUSH_STAMP}", stream=False)
+    elif force:
+        console.print(
+            f"  [yellow]⚠ Tarball upload had errors (exit {rc}). "
+            f"Advancing stamp anyway since --force was used; any failed "
+            f"files will be retried by the next autosync cycle.[/yellow]"
+        )
+        session.exec(f"touch {PUSH_STAMP}", stream=False)
+    else:
+        console.print(
+            f"  [yellow]⚠ Tarball upload had errors (exit {rc}). "
+            f"Stamp NOT written; autosync will refuse to start. "
+            f"Re-run with --force to mark synced anyway.[/yellow]"
+        )
+    return rc
 
 
 def _sync_deletions(
@@ -169,7 +183,7 @@ def _push_watcher_tier(
     extra_excludes: list[str] | None,
     force: bool,
     delete: bool,
-) -> None:
+) -> int:
     """Tier 1: watcher is alive, read change log for incremental push."""
     env = _s3_env(storage_slug)
     console.print("  [dim]Watcher active — reconciling change log with filesystem scan[/dim]")
@@ -216,7 +230,7 @@ def _push_watcher_tier(
         console.print("\n[green]✓ Nothing to push — workspace is up to date[/green]")
         _stamp_to_cycle_mark(session)
         _cleanup_incremental_files(session)
-        return
+        return 0
 
     rc = 0
     if changed > 0:
@@ -236,9 +250,14 @@ def _push_watcher_tier(
     if rc == 0:
         _stamp_to_cycle_mark(session)
     else:
+        console.print(
+            f"  [yellow]⚠ Push had errors (s5cmd exit {rc}). Stamp NOT "
+            f"advanced; failed entries re-queued for the next push.[/yellow]"
+        )
         session.exec(f"cat {_WATCH_SNAP} >> {WATCH_LOG} 2>/dev/null || true", stream=False)
 
     _cleanup_incremental_files(session)
+    return rc
 
 
 def _push_find_tier(
@@ -250,7 +269,7 @@ def _push_find_tier(
     extra_excludes: list[str] | None,
     force: bool,
     delete: bool,
-) -> None:
+) -> int:
     """Tier 2: watcher dead, fall back to find -newer."""
     env = _s3_env(storage_slug)
     if delete:
@@ -276,7 +295,7 @@ def _push_find_tier(
         console.print("\n[green]✓ Nothing to push — workspace is up to date[/green]")
         _stamp_to_cycle_mark(session)
         _cleanup_incremental_files(session)
-        return
+        return 0
 
     stage_hardlinks(session, _FILELIST, src)
     rc = _s5cmd_transfer(
@@ -289,10 +308,16 @@ def _push_find_tier(
     session.exec(f"rm -rf {STAGING}", stream=False)
     if rc == 0:
         _stamp_to_cycle_mark(session)
+    else:
+        console.print(
+            f"  [yellow]⚠ Push had errors (s5cmd exit {rc}). Stamp NOT "
+            f"advanced; next push will re-scan and retry.[/yellow]"
+        )
     _cleanup_incremental_files(session)
 
     if start_watcher(session, src):
         console.print("  [dim]Watcher restarted for next push[/dim]")
+    return rc
 
 
 def _push_first_tier(
@@ -303,7 +328,7 @@ def _push_first_tier(
     src: str,
     extra_excludes: list[str] | None,
     force: bool,
-) -> None:
+) -> int:
     """Tier 3: no push stamp yet, full parallel upload."""
     env = _s3_env(storage_slug)
     excludes = ""
@@ -326,7 +351,28 @@ def _push_first_tier(
         _stamp_to_cycle_mark(session)
         if start_watcher(session, src):
             console.print("  [dim]Watcher started for future pushes[/dim]")
+    elif force:
+        # --force means the caller has explicitly asked for this pod's
+        # state to become authoritative. Transient per-file errors
+        # (e.g. B2 503 SlowDown on the long tail of a 100k+ object
+        # upload) should not block the stamp; the watcher + next
+        # autosync cycle will retry any missed files via find -newer.
+        console.print(
+            f"  [yellow]⚠ Initial push had errors (s5cmd exit {rc}). "
+            f"Advancing stamp anyway since --force was used; any failed "
+            f"files will be retried by the next autosync cycle.[/yellow]"
+        )
+        _stamp_to_cycle_mark(session)
+        if start_watcher(session, src):
+            console.print("  [dim]Watcher started for future pushes[/dim]")
+    else:
+        console.print(
+            f"  [yellow]⚠ Initial push had errors (s5cmd exit {rc}). "
+            f"Stamp NOT written; autosync will refuse to start. Re-run "
+            f"with --force to mark synced anyway.[/yellow]"
+        )
     _cleanup_incremental_files(session)
+    return rc
 
 
 def workspace_push(
@@ -339,7 +385,7 @@ def workspace_push(
     force: bool = False,
     tar: bool = False,
     delete: bool = False,
-) -> None:
+) -> int:
     """Non-destructive push: upload pod workspace to storage.
 
     When *tar* is True, packs the workspace into a compressed tarball
@@ -353,11 +399,13 @@ def workspace_push(
     1. **Watcher alive** — read changed paths from the inotify log (instant).
     2. **Watcher dead / no log** — ``find -newer`` against the push stamp.
     3. **No stamp (first push)** — full parallel upload.
+
+    Returns the s5cmd exit code (0 on success, non-zero on partial
+    failure). Callers should propagate non-zero to their own exit code.
     """
     if tar:
-        _tar_push(session, storage_slug, bucket, workspace, src,
-                  extra_excludes, force)
-        return
+        return _tar_push(session, storage_slug, bucket, workspace, src,
+                         extra_excludes, force)
 
     if force:
         session.exec(f"rm -f {PUSH_STAMP} {WATCH_LOG}", stream=False)
@@ -368,17 +416,17 @@ def workspace_push(
     has_stamp = stamp_check.strip() == "yes"
 
     if has_stamp and is_watcher_alive(session):
-        _push_watcher_tier(
+        return _push_watcher_tier(
             session, storage_slug, bucket, workspace, src,
             extra_excludes, force, delete,
         )
     elif has_stamp:
-        _push_find_tier(
+        return _push_find_tier(
             session, storage_slug, bucket, workspace, src,
             extra_excludes, force, delete,
         )
     else:
-        _push_first_tier(
+        return _push_first_tier(
             session, storage_slug, bucket, workspace, src,
             extra_excludes, force,
         )
