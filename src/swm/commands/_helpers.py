@@ -180,29 +180,36 @@ def _open_tunnel(inst, ports: dict[int, str]) -> list[int] | None:
     """
     import subprocess
 
+    from swm.remote.ssh import _ssh_config_for
+
     if not inst.ssh_host:
         return None
     unmapped = [p for p in ports if p not in (inst.ports or {})]
     if not unmapped:
         return None
 
-    ssh_port = inst.ssh_port or 22
-    user = inst.ssh_user or "root"
+    # Resolve host/port/user/key the same way `swm run`/`swm ssh` do, so the
+    # tunnel uses the configured identity (e.g. ssh.key_path) and the direct
+    # IP + mapped port-22 when available. Building a bare `ssh` command here
+    # silently fell back to default keys and could miss a custom key.
+    c = _ssh_config_for(inst)
 
-    cmd = [
-        "ssh", "-N",
+    cmd = ["ssh", "-N"]
+    if c["key_path"]:
+        cmd.extend(["-i", str(c["key_path"])])
+    cmd.extend([
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null",
         "-o", "LogLevel=ERROR",
         "-o", "ExitOnForwardFailure=yes",
         "-o", "ServerAliveInterval=30",
         "-o", "ServerAliveCountMax=3",
-    ]
+    ])
     for p in unmapped:
         cmd.extend(["-L", f"{p}:localhost:{p}"])
-    if ssh_port != 22:
-        cmd.extend(["-p", str(ssh_port)])
-    cmd.append(f"{user}@{inst.ssh_host}")
+    if c["port"] != 22:
+        cmd.extend(["-p", str(c["port"])])
+    cmd.append(f"{c['user']}@{c['host']}")
 
     subprocess.Popen(
         cmd,
