@@ -6,6 +6,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-05-29
+
+### Fixed
+- Framework SSH tunnels (e.g. `swm setup start comfyui`) now use the
+  configured SSH identity. `_open_tunnel` built a bare `ssh` command without
+  `-i <key_path>`, so when a custom `ssh.key_path` (or `<provider>.ssh_key`)
+  was set it silently fell back to the default key, failed authentication, and
+  — because of `ExitOnForwardFailure=yes` with output discarded — exited
+  immediately without forwarding the port. The tunnel now resolves its
+  host/port/user/key via the same path as `swm run`/`swm ssh`, so it also
+  targets the direct IP and mapped port-22 endpoint when available.
+
 ## [0.2.4] - 2026-05-27
 
 ### Fixed
