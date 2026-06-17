@@ -233,7 +233,12 @@ def _probe_url(url: str, timeout: int = 60) -> bool:
             r = httpx.get(url, timeout=5, follow_redirects=True)
             if r.status_code < 500:
                 return True
-        except (httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError, OSError):
+        except (httpx.HTTPError, OSError):
+            # httpx.HTTPError covers all transport-level failures —
+            # ConnectError, ReadError ("connection reset by peer" while a
+            # freshly-opened SSH tunnel settles), WriteError, TimeoutException,
+            # RemoteProtocolError, etc. A probe must never crash the command;
+            # an unreachable URL just means "not ready yet, retry".
             pass
         remaining = deadline - time.monotonic()
         time.sleep(min(interval, max(remaining, 0)))

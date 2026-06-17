@@ -43,4 +43,12 @@ WATCH_EXCLUDES: tuple[str, ...] = (
     r"\.log$",
     r"/\.cache/",
     r"/\.nv/",
+    # uv's build/wheel cache (workspace-owned uv from v0.2.x). Regenerable,
+    # and its ephemeral builds-v0/.tmp* dirs churn constantly — syncing it
+    # both wastes storage and causes delete-reconciliation failures.
+    r"/\.uv-cache/",
+    # Managed-CPython terminfo database (workspace-owned python). Its entries
+    # are dedup-hardlinked, which breaks hardlink-staging (s5cmd then can't
+    # open them → push fails). Non-essential for any venv/ML workload.
+    r"/terminfo/",
 )

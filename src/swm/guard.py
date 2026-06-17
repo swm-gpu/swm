@@ -81,10 +81,21 @@ def avg_gpu_util() -> float:
 
 
 def recent_fs_write(now: float) -> bool:
-    try:
-        return os.path.getmtime(WATCH_LOG) >= now - max(POLL * 2, 120)
-    except OSError:
-        return False
+    # Detect REAL workspace writes (user data, generation output, installs),
+    # excluding swm's own bookkeeping (autosync change-log/stamps/guard), build
+    # caches, logs, and framework noise. Keying off WATCH_LOG mtime was a bug:
+    # the autosync watcher rewrites that file every cycle, so the pod looked
+    # perpetually active and auto-down could never fire.
+    minutes = max(2, int(max(POLL * 2, 120) / 60))
+    out = sh(
+        "find /workspace -mindepth 1 -mmin -%d -type f "
+        "-not -path '*/.swm_*' -not -path '*/.swm_guard/*' "
+        "-not -path '*/.uv-cache/*' -not -path '*/.cache/*' "
+        "-not -path '*/__pycache__/*' -not -name '*.log' "
+        "-not -path '*/terminfo/*' -not -path '*/.git/*' "
+        "-not -path '*/.nv/*' 2>/dev/null | head -1" % minutes
+    )
+    return bool(out.strip())
 
 
 def transfer_locked() -> bool:

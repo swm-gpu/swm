@@ -6,6 +6,33 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-06-16
+
+### Fixed
+- **Auto-down never fired on workspace-backed pods (cost bug).** The lifecycle
+  guard's filesystem-activity signal keyed off the mtime of the autosync watcher
+  log (`/workspace/.swm_changes.log`), which autosync rewrites every cycle — so
+  pods were reported perpetually "active," the idle timer never elapsed, and
+  `auto-down`/`auto-stop` never triggered. The guard now detects *real*
+  workspace writes via `find`, excluding swm bookkeeping (`.swm_*`,
+  `.swm_guard`), build caches (`.uv-cache`, `.cache`, `__pycache__`), logs,
+  `terminfo`, `.git`, and `.nv`.
+- `swm setup start` no longer crashes with a traceback when the post-start
+  health probe hits a connection reset. `_probe_url` caught `ConnectError`/
+  `TimeoutException` but not `httpx.ReadError` ("connection reset by peer" while
+  a freshly-opened SSH tunnel settles); it now catches all `httpx.HTTPError`.
+
+### Changed
+- Workspace sync now excludes `/.uv-cache/` (uv build/wheel cache) and
+  `/terminfo/` (managed-CPython terminal database). The former churned
+  constantly and caused delete-reconciliation failures and ~11 GB of wasted
+  storage; the latter's dedup-hardlinked files broke hardlink staging.
+
+### Docs
+- Rewrote the `swm-gpu-workflow` skill for full command coverage — added the
+  entire `swm storage` group, `swm config`, `swm images`, `swm sync auto`,
+  `swm setup workspace`/`storage`, `pod terminate` vs `pod down`, and more.
+
 ## [0.2.5] - 2026-05-29
 
 ### Fixed
