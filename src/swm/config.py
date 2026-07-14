@@ -1,12 +1,30 @@
 from __future__ import annotations
 
 import tomllib
+from contextlib import contextmanager
+from contextvars import ContextVar
 from pathlib import Path
 
 import tomli_w
 
 CONFIG_DIR = Path.home() / ".config" / "swm"
 CONFIG_FILE = CONFIG_DIR / "config.toml"
+
+# Server-side overlay: lets swm.cloud inject per-request credentials
+# (flat dot-keys, e.g. {"runpod.api_key": "..."}) without touching the
+# user's TOML file. Empty overlay keeps CLI behavior identical.
+_overlay: ContextVar[dict | None] = ContextVar("swm_config_overlay", default=None)
+
+
+@contextmanager
+def overlay(values: dict):
+    """Temporarily overlay flat dot-key config values for the current context."""
+    current = _overlay.get() or {}
+    token = _overlay.set({**current, **values})
+    try:
+        yield
+    finally:
+        _overlay.reset(token)
 
 
 def _ensure_dirs() -> None:
@@ -29,6 +47,9 @@ def save(config: dict) -> None:
 
 def get(key: str, default=None):
     """Retrieve a nested value using dot-separated key (e.g. 'runpod.api_key')."""
+    ov = _overlay.get()
+    if ov is not None and key in ov:
+        return ov[key]
     node = load()
     for part in key.split("."):
         if isinstance(node, dict) and part in node:

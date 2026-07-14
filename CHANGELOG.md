@@ -6,6 +6,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-07-13
+
+### Added
+- `swm.config.overlay(values)` context manager: temporarily overlays flat
+  dot-key config values (e.g. `{"runpod.api_key": "..."}`) for the current
+  execution context, consulted by `config.get()` before the on-disk TOML.
+  This lets programmatic embedders (e.g. a server) inject per-request
+  credentials without mutating the user's `~/.config/swm/config.toml`. With no
+  active overlay, CLI behavior is byte-for-byte identical.
+
 ## [0.2.6] - 2026-06-16
 
 ### Fixed
