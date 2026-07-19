@@ -6,6 +6,19 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.9] - 2026-07-18
+
+### Fixed
+- `ensure_python`'s self-heal for uv's materialized Python minor-version
+  symlinks now repairs *every* stale `cpython-X.Y-*` slot under
+  `/workspace/.python`, not just the minor currently being installed. `uv
+  python install` reconciles the minor-version symlink for every Python
+  version it finds in the install dir on each invocation, so a single
+  leftover duplicate from an unrelated/old minor (e.g. a stray 3.12 install
+  predating a framework's pin to 3.11) was still enough to fail installing
+  3.11 with "Is a directory (os error 21)" and abort framework setup
+  entirely — even after the partial fix in 0.2.8.
+
 ## [0.2.7] - 2026-07-13
 
 ### Added

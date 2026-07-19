@@ -152,26 +152,32 @@ def ensure_uv(session: RemoteSession) -> None:
     _step(session, f"Installing uv {UV_VERSION}", cmd)
 
 
-def _python_link_repair_script(minor: str) -> str:
-    """Bash that restores uv's minor-version symlink when a workspace sync
-    materialized it into a real directory.
+def _python_link_repair_script() -> str:
+    """Bash that restores uv's minor-version symlinks when a workspace sync
+    materialized one or more of them into a real directory.
 
     uv lays out ``/workspace/.python/cpython-<x.y.z>-<platform>/`` plus a
     ``cpython-<x.y>-<platform>`` symlink pointing at it. s5cmd-based workspace
     push/pull follows symlinks, so after a restore onto a fresh pod the link
-    comes back as a second full copy of the install. ``uv python install``
-    then fails with "Is a directory (os error 21)" trying to recreate its
-    link. Detect that shape and swap the copy back to a symlink (idempotent;
-    a healthy layout is untouched).
+    comes back as a second full copy of the install. Every ``uv python
+    install`` call reconciles the minor-version symlink for *every* Python
+    version it finds under the install dir, not just the one requested — so
+    a single stale duplicate left over from an unrelated/old minor (e.g. a
+    3.12 install from before a framework pinned 3.11) is enough to fail
+    installing 3.11 with "Is a directory (os error 21)". Scan every minor
+    slot present, not just the one being installed, and swap any materialized
+    copy back to a symlink (idempotent; a healthy layout is untouched).
     """
     # Subshell so the early exit (no .python dir yet — fresh pod) cannot
     # abort the caller's chained uv install.
     return (
         '( cd /workspace/.python 2>/dev/null || exit 0; '
-        f'for d in cpython-{minor}-*; do '
+        'for d in cpython-*-*; do '
         '  [ -d "$d" ] && [ ! -L "$d" ] || continue; '
-        f'  plat="${{d#cpython-{minor}-}}"; '
-        f'  full=$(ls -d cpython-{minor}.*-"$plat" 2>/dev/null | sort -V | tail -1); '
+        '  rest="${d#cpython-}"; ver="${rest%%-*}"; '
+        '  case "$ver" in *.*.*) continue ;; esac; '
+        '  plat="${rest#$ver-}"; '
+        '  full=$(ls -d "cpython-$ver".*-"$plat" 2>/dev/null | sort -V | tail -1); '
         '  if [ -n "$full" ] && [ -x "$full/bin/python3" ]; then '
         '    rm -rf "$d" && ln -s "$full" "$d" '
         '    && echo "Repaired materialized python link: $d -> $full"; '
@@ -193,7 +199,7 @@ def ensure_python(
     directory before invoking uv (see _python_link_repair_script).
     """
     cmd = (
-        f"{_python_link_repair_script(minor)} && "
+        f"{_python_link_repair_script()} && "
         f"{UV_ENV_EXPORTS} && "
         f"{WORKSPACE_UV} python install {minor} && "
         f"{WORKSPACE_UV} python find {minor}"
