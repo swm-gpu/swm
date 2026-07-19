@@ -152,6 +152,34 @@ def ensure_uv(session: RemoteSession) -> None:
     _step(session, f"Installing uv {UV_VERSION}", cmd)
 
 
+def _python_link_repair_script(minor: str) -> str:
+    """Bash that restores uv's minor-version symlink when a workspace sync
+    materialized it into a real directory.
+
+    uv lays out ``/workspace/.python/cpython-<x.y.z>-<platform>/`` plus a
+    ``cpython-<x.y>-<platform>`` symlink pointing at it. s5cmd-based workspace
+    push/pull follows symlinks, so after a restore onto a fresh pod the link
+    comes back as a second full copy of the install. ``uv python install``
+    then fails with "Is a directory (os error 21)" trying to recreate its
+    link. Detect that shape and swap the copy back to a symlink (idempotent;
+    a healthy layout is untouched).
+    """
+    # Subshell so the early exit (no .python dir yet — fresh pod) cannot
+    # abort the caller's chained uv install.
+    return (
+        '( cd /workspace/.python 2>/dev/null || exit 0; '
+        f'for d in cpython-{minor}-*; do '
+        '  [ -d "$d" ] && [ ! -L "$d" ] || continue; '
+        f'  plat="${{d#cpython-{minor}-}}"; '
+        f'  full=$(ls -d cpython-{minor}.*-"$plat" 2>/dev/null | sort -V | tail -1); '
+        '  if [ -n "$full" ] && [ -x "$full/bin/python3" ]; then '
+        '    rm -rf "$d" && ln -s "$full" "$d" '
+        '    && echo "Repaired materialized python link: $d -> $full"; '
+        '  fi; '
+        'done )'
+    )
+
+
 def ensure_python(
     session: RemoteSession,
     minor: str = PYTHON_DEFAULT_MINOR,
@@ -161,8 +189,11 @@ def ensure_python(
     Delegates to ``uv python install``, which fetches the matching
     python-build-standalone tarball into ``/workspace/.python/``.
     Idempotent — uv reports the install as already-present on reruns.
+    Self-heals a symlink that a workspace sync materialized into a real
+    directory before invoking uv (see _python_link_repair_script).
     """
     cmd = (
+        f"{_python_link_repair_script(minor)} && "
         f"{UV_ENV_EXPORTS} && "
         f"{WORKSPACE_UV} python install {minor} && "
         f"{WORKSPACE_UV} python find {minor}"
