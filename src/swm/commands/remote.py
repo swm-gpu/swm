@@ -8,8 +8,10 @@ import click
 from swm.commands._helpers import (
     console,
     _instance_for,
+    _iter_configured_pod_ids,
     complete_pod_id,
     pod_arg_callback,
+    resolve_active_pod,
     split_pod_and_command,
 )
 
@@ -123,10 +125,10 @@ def upload(instance_id: str, local_path: str, remote_path: str, recursive: bool)
 
 
 @click.command()
-@click.argument("instance_id", required=False, shell_complete=complete_pod_id, callback=pod_arg_callback)
-@click.argument("remote_path")
+@click.argument("instance_id", required=False, shell_complete=complete_pod_id)
+@click.argument("remote_path", required=False)
 @click.option("-d", "--dir", "local_dir", default=".", type=click.Path(), help="Local directory to save into (default: current dir)")
-def download(instance_id: str, remote_path: str, local_dir: str):
+def download(instance_id: str | None, remote_path: str | None, local_dir: str):
     """Download a file or directory from a running instance.
 
     \b
@@ -137,13 +139,21 @@ def download(instance_id: str, remote_path: str, local_dir: str):
     \b
     Examples:
       swm download runpod:abc123 output.mp4
+      swm download output.mp4                  (uses the active pod)
       swm download runpod:abc123 output.mp4 -d ~/Downloads
       swm download runpod:abc123 ComfyUI/output/ -d ./results
     """
     from pathlib import Path
     from swm.remote.ssh import session_from_instance
 
-    inst = _instance_for(instance_id)
+    # Click fills positionals greedily, so `swm download <path>` lands the
+    # path in INSTANCE_ID.  Shift it over and fall back to the active pod.
+    if remote_path is None:
+        if instance_id is None or instance_id in _iter_configured_pod_ids():
+            raise click.UsageError("Missing argument 'REMOTE_PATH'.")
+        instance_id, remote_path = None, instance_id
+
+    inst = _instance_for(resolve_active_pod(instance_id))
 
     if not remote_path.startswith("/"):
         remote_path = f"/workspace/{remote_path}"
