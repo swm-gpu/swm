@@ -6,6 +6,40 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.10] - 2026-07-26
+
+### Fixed
+- **ComfyUI PyTorch auto-repair now detects GPU-architecture mismatches.**
+  The pre-start check compared only CUDA runtime versions (a cu124 torch
+  under a 12.8+ driver passes numerically), so a workspace venv restored
+  onto a newer GPU generation — e.g. a cu124 build on a Blackwell B200
+  (sm_100) — sailed through the check and ComfyUI died at runtime with
+  "CUDA error: no kernel image is available for execution on the device".
+  The check now executes a real CUDA op, so any unrunnable install —
+  missing architecture kernels, torch newer than the driver, wedged
+  packages — fails the check and triggers the reinstall path.
+- **PyTorch wheel-index selection no longer shells out to `nvidia-smi`.**
+  Marketplace hosts sometimes replace `nvidia-smi` with broken wrapper
+  scripts (observed on a Vast.ai host whose GSP-workaround stub exec'd a
+  nonexistent path), which made CUDA-version detection silently return
+  empty and fall back to reinstalling the same wrong build. Detection now
+  queries NVML directly via ctypes (`nvmlSystemGetCudaDriverVersion_v2`,
+  `nvmlDeviceGetCudaComputeCapability` — the approach used by WheelNext's
+  nvidia-variant-provider), falling back to the kernel-provided
+  `/proc/driver/nvidia/version` when NVML is unavailable.
+- `swm download <path>` now works with the `swm use` active pod. Click
+  fills positional arguments greedily, so a lone path landed in
+  `[INSTANCE_ID]` and parsing failed with "Missing argument 'REMOTE_PATH'"
+  before the active-pod fallback could run. A lone argument now shifts to
+  `REMOTE_PATH`, and the pod resolves from the active selection.
+
+### Changed
+- PyTorch wheel-index selection is architecture-aware and tracks the
+  current PyTorch support matrix: pre-Turing GPUs (< sm_75) are routed to
+  the cu126 legacy tier (retained through torch 2.14), and driver CUDA
+  ≥ 13.0 now selects cu130 — the old table capped at cu128, which strands
+  modern GPUs on torch ≤ 2.11 now that cu128 wheels are discontinued.
+
 ## [0.2.9] - 2026-07-18
 
 ### Fixed
