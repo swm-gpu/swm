@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import time
 
 import httpx
@@ -15,6 +16,10 @@ from swm.providers.base import (
 )
 
 API_BASE = "https://console.vast.ai/api/v0"
+API_BASE_V1 = "https://console.vast.ai/api/v1"
+
+# v1 rejects anything larger and silently clamps values <= 0 to 5.
+V1_PAGE_LIMIT = 25
 
 DEFAULT_IMAGE = "vastai/pytorch"
 
@@ -62,6 +67,16 @@ class VastAIProvider(CloudProvider):
             resp.raise_for_status()
             return resp.json()
 
+    def _get_v1(self, path: str, params: dict | None = None) -> dict:
+        with httpx.Client(timeout=30) as client:
+            resp = client.get(
+                f"{API_BASE_V1}/{path}",
+                headers=self._headers(),
+                params=params,
+            )
+            resp.raise_for_status()
+            return resp.json()
+
     def _post(self, path: str, body: dict | None = None) -> dict:
         with httpx.Client(timeout=30) as client:
             resp = client.post(
@@ -93,9 +108,35 @@ class VastAIProvider(CloudProvider):
 
     # ── queries ─────────────────────────────────────────────────────
 
+    def _instance_rows(self, select_filters: dict | None = None) -> list[dict]:
+        """Fetch raw instance rows from v1; the v0 collection listing is deprecated.
+
+        v1 caps pages at 25 rows and uses keyset pagination, where the cursor is
+        read from the response as ``next_token`` but sent back as ``after_token``.
+        Unknown query params are ignored rather than rejected, so sending the
+        wrong name would silently re-request the first page forever.
+        """
+        rows: list[dict] = []
+        params: dict[str, str | int] = {
+            "limit": V1_PAGE_LIMIT,
+            "order_by": json.dumps([{"col": "id", "dir": "asc"}]),
+        }
+        if select_filters:
+            params["select_filters"] = json.dumps(select_filters)
+
+        seen_tokens: set[str] = set()
+        while True:
+            data = self._get_v1("instances/", params)
+            rows.extend(data.get("instances") or [])
+            token = data.get("next_token")
+            if not token or token in seen_tokens:
+                break
+            seen_tokens.add(token)
+            params["after_token"] = token
+        return rows
+
     def list_instances(self) -> list[Instance]:
-        data = self._get("instances/")
-        return [self._to_instance(i) for i in data.get("instances", [])]
+        return [self._to_instance(i) for i in self._instance_rows()]
 
     def list_gpus(self, gpu_count: int | None = None) -> list[GpuInfo]:
         num_filter: dict = {"eq": gpu_count} if gpu_count else {"gte": 1}
@@ -229,10 +270,15 @@ class VastAIProvider(CloudProvider):
     # ── helpers ──────────────────────────────────────────────────────
 
     def _get_instance(self, instance_id: str) -> Instance:
-        data = self._get("instances/")
-        for inst in data.get("instances", []):
-            if str(inst.get("id")) == str(instance_id):
-                return self._to_instance(inst)
+        # There is no v1 single-instance endpoint, so filter the collection
+        # server-side to avoid paging through every instance.
+        try:
+            select_filters: dict | None = {"id": {"eq": int(instance_id)}}
+        except ValueError:
+            select_filters = None
+        for raw in self._instance_rows(select_filters):
+            if str(raw.get("id")) == str(instance_id):
+                return self._to_instance(raw)
         raise RuntimeError(f"Instance {instance_id} not found")
 
     def _to_instance(self, raw: dict) -> Instance:
