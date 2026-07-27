@@ -6,6 +6,32 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.11] - 2026-07-27
+
+### Fixed
+- **Vast.ai instance listing migrated to the v1 API.** Vast.ai deprecated
+  `GET /api/v0/instances/`, which now returns `410 Gone` with
+  `{"error":"deprecated_endpoint"}` for accounts included in the staged
+  rollout, breaking `swm pod list`, `swm pod status`, workspace sync, and
+  every command that resolves a pod by name. Listing now uses
+  `GET /api/v1/instances/` with keyset pagination. The v1 rows are
+  field-identical to v0 for everything the provider reads — verified by
+  diffing both payloads for the same running instance — including the
+  `{"22/tcp": [{"HostIp": …, "HostPort": …}]}` port mapping, so SSH and
+  port forwarding are unaffected. Only the collection listing was
+  deprecated: GPU search, provisioning, start/stop, and terminate have no
+  v1 equivalents and continue to use v0.
+
+### Changed
+- Single-pod lookups resolve through a server-side `select_filters` id
+  filter instead of scanning the full instance list. Vast.ai exposes no v1
+  single-instance endpoint and v1 caps pages at 25 rows, so the filter
+  keeps the refresh after each start/stop at one request.
+- Pagination sends the cursor as `after_token`, the request-side name for
+  the response's `next_token`. Vast.ai ignores unknown query parameters
+  rather than rejecting them, so the mismatched name would re-request the
+  first page indefinitely; the loop also stops if a cursor ever repeats.
+
 ## [0.2.10] - 2026-07-26
 
 ### Fixed
