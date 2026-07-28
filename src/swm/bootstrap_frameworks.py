@@ -5,12 +5,14 @@ from __future__ import annotations
 import shlex
 import time
 
+
 from rich.console import Console
 
 from swm.bootstrap import _step
+from swm.redact import SafeConsole
 from swm.remote.ssh import RemoteSession
 
-console = Console()
+console = SafeConsole()
 
 
 def install_framework(

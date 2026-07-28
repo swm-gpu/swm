@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import subprocess
 
+
 from rich.console import Console
 
+from swm.redact import SafeConsole
 from swm.remote.ssh import RemoteSession
 
-console = Console()
+console = SafeConsole()
 
 S5CMD_VERSION = "2.3.0"
 S5CMD_URL = (

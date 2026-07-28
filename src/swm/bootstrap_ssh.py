@@ -5,11 +5,11 @@ from __future__ import annotations
 import subprocess
 import time
 
-from rich.console import Console
 
 from swm.providers.base import Instance, InstanceStatus
+from swm.redact import SafeConsole
 
-console = Console()
+console = SafeConsole()
 
 
 def _has_direct_ssh(inst: Instance) -> bool:

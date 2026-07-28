@@ -4,13 +4,13 @@ from __future__ import annotations
 import os
 
 import click
-from rich.console import Console
 from rich.table import Table
 
 from swm import config as cfg
 from swm.providers import resolve_instance
+from swm.redact import SafeConsole
 
-console = Console(log_path=False)
+console = SafeConsole(log_path=False)
 
 
 _ACTIVE_POD_KEY = "active_pod"

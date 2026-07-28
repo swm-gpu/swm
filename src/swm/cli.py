@@ -10,6 +10,9 @@ from swm.providers import (
     get_provider,
     ALL_PROVIDERS,
 )
+from swm.redact import install_error_redaction
+
+install_error_redaction()
 
 _WORKFLOW_EPILOG = """\b
 Workflow:

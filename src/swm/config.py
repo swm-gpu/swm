@@ -27,6 +27,11 @@ def overlay(values: dict):
         _overlay.reset(token)
 
 
+def overlay_values() -> dict:
+    """The overlay active in this context, if any (used for redaction)."""
+    return _overlay.get() or {}
+
+
 def _ensure_dirs() -> None:
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
 

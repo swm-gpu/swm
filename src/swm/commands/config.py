@@ -5,25 +5,13 @@ import click
 
 from swm import config as cfg
 from swm.commands._helpers import console
-
-
-_SENSITIVE_SUFFIXES = (
-    ".api_key", ".app_key", ".secret_key", ".access_key", ".token", ".password",
-)
-_SENSITIVE_EXACT = frozenset({"hf_token"})
-
-
-def _is_sensitive_key(key: str) -> bool:
-    lowered = key.lower()
-    if lowered in _SENSITIVE_EXACT:
-        return True
-    return any(lowered.endswith(suffix) for suffix in _SENSITIVE_SUFFIXES)
+from swm.redact import is_sensitive_key as _is_sensitive_key, mask
 
 
 def _mask_value(key: str, value: str) -> str:
     if not _is_sensitive_key(key):
         return value
-    return value[:4] + "****" if len(value) > 4 else "****"
+    return mask(value)
 
 
 @click.group(name="config")
