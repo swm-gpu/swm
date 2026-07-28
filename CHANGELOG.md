@@ -6,6 +6,28 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.12] - 2026-07-27
+
+### Security
+- **Credentials no longer reach the terminal.** RunPod's GraphQL API takes
+  the key as a URL query parameter rather than a header, so httpx built
+  exception messages around a live credential: a failed `swm pod list`
+  printed the full API key, which then persisted in shell scrollback, CI
+  logs, and any pasted bug report. Output is scrubbed at the three places
+  text reaches a terminal — the Rich consoles, Click's error reporter, and
+  the uncaught-traceback hook — rather than at each of the ~60 raise sites.
+  Redaction replaces the exact credentials found in config, including those
+  injected through `config.overlay()`, and falls back to matching the shapes
+  credentials travel in (`api_key=` query params, `Authorization: Bearer`
+  headers, `"token": "…"` JSON bodies) for secrets that never reach config.
+- **`swm config list` displayed `gcs.hmac_secret` and `gcs.hmac_access` in
+  full.** Sensitive keys were matched by exact suffix — `.secret_key`,
+  `.access_key` — which `hmac_secret` and `hmac_access` never matched, so
+  the GCS HMAC credentials were printed unmasked on every invocation. Key
+  classification now matches substrings. Path-like keys such as
+  `ssh.key_path` and `aws.key_name` deliberately still display in full,
+  since hiding them makes the config unreadable for no security benefit.
+
 ## [0.2.11] - 2026-07-27
 
 ### Fixed
