@@ -75,6 +75,58 @@ def _step(session: RemoteSession, label: str, command: str) -> tuple[int, str, s
     return code, stdout, stderr
 
 
+# ── privilege ───────────────────────────────────────────────────────
+#
+# Container pods (RunPod, Vast.ai, Vultr) log in as root and /workspace is
+# already part of the image. VM pods (Lambda Labs, FluidStack, TensorDock,
+# Hyperstack, Azure) log in as an unprivileged user — ubuntu, or `user` on
+# TensorDock — where /workspace does not exist and neither it nor
+# /usr/local/bin can be written without escalating.
+#
+# Cloud VM images grant that user passwordless sudo through cloud-init
+# (`NOPASSWD:ALL`), because the images are built to be configured with no human
+# present. `sudo -n` is used everywhere regardless: it refuses rather than
+# prompting, so an image without that grant fails immediately with a readable
+# error instead of blocking on a password nothing can answer.
+
+_PRIV = "if [ \"$(id -u)\" = 0 ]; then :; else SUDO='sudo -n'; fi; "
+
+
+def _privileged(command: str) -> str:
+    """Wrap *command* so ``$SUDO`` is empty as root and ``sudo -n`` otherwise.
+
+    Prepending sudo unconditionally would break container images, which log in
+    as root and frequently do not ship sudo at all.
+    """
+    return f"SUDO=''; {_PRIV}{command}"
+
+
+def ensure_workspace_dir(session: RemoteSession) -> None:
+    """Make /workspace exist and be writable by the login user.
+
+    Every later step — s5cmd, uv, the managed Python, framework installs — is
+    unprivileged and assumes it can write here. Creating the directory once and
+    handing it to the login user is what lets one unprivileged bootstrap serve
+    both container and VM images.
+    """
+    _step(
+        session,
+        "Preparing /workspace",
+        _privileged(
+            "set -e; "
+            "if [ ! -d /workspace ]; then "
+            '  if [ -n "$SUDO" ] && ! sudo -n true 2>/dev/null; then '
+            "    echo 'Cannot create /workspace: no root and no passwordless "
+            "sudo on this image.' >&2; exit 90; "
+            "  fi; "
+            "  $SUDO mkdir -p /workspace; "
+            '  $SUDO chown "$(id -u):$(id -g)" /workspace; '
+            "fi; "
+            "test -w /workspace && echo '/workspace ready'"
+        ),
+    )
+
+
 # ── s5cmd ──────────────────────────────────────────────────────────
 
 
@@ -114,9 +166,11 @@ def install_s5cmd(session: RemoteSession) -> None:
     _step(
         session,
         "Installing s5cmd",
-        f"command -v s5cmd >/dev/null 2>&1 && echo 's5cmd already installed' || "
-        f"(curl -sL '{S5CMD_URL}' | tar xz -C /usr/local/bin s5cmd "
-        f"&& chmod +x /usr/local/bin/s5cmd && s5cmd version)",
+        _privileged(
+            "command -v s5cmd >/dev/null 2>&1 && echo 's5cmd already installed' || "
+            f"(curl -sL '{S5CMD_URL}' | $SUDO tar xz -C /usr/local/bin s5cmd "
+            "&& $SUDO chmod +x /usr/local/bin/s5cmd && s5cmd version)"
+        ),
     )
 
 
@@ -315,8 +369,11 @@ def _install_inotify(session: RemoteSession) -> None:
     _step(
         session,
         "Installing inotify-tools",
-        "command -v inotifywait >/dev/null 2>&1 && echo 'inotify-tools already installed' || "
-        "(apt-get update -qq && apt-get install -y -qq inotify-tools && echo 'installed')",
+        _privileged(
+            "command -v inotifywait >/dev/null 2>&1 && echo 'inotify-tools already installed' || "
+            "($SUDO apt-get update -qq && $SUDO apt-get install -y -qq inotify-tools "
+            "&& echo 'installed')"
+        ),
     )
 
 
@@ -324,6 +381,7 @@ def configure_storage(
     session: RemoteSession, storage_slug: str, bucket: str = "",
 ) -> None:
     """Install s5cmd, inotify-tools, and verify the S3-compatible connection."""
+    ensure_workspace_dir(session)
     install_s5cmd(session)
     try:
         _install_inotify(session)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from swm.bootstrap import _step
+from swm.bootstrap import _privileged, _step
 from swm.remote.ssh import RemoteSession
 from swm.sync.paths import STAGING
 
@@ -32,7 +32,9 @@ def ensure_pigz(session: RemoteSession, console) -> str:
         return "pigz"
 
     console.print("  [dim]Installing pigz for parallel compression…[/dim]")
-    session.exec("apt-get install -y -qq pigz 2>/dev/null", stream=False)
+    # Falls back to gzip if this fails, so the sudo probe staying quiet is fine.
+    session.exec(_privileged("$SUDO apt-get install -y -qq pigz 2>/dev/null"),
+                 stream=False)
     _, has_pigz, _ = session.exec(
         "command -v pigz >/dev/null 2>&1 && echo yes || echo no",
         stream=False,
