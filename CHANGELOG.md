@@ -6,6 +6,33 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.13] - 2026-08-18
+
+### Fixed
+- **Pods that do not log in as root could not be provisioned.** Bootstrap
+  assumed a root login on a container image. RunPod, Vast.ai and Vultr do log
+  in as root and ship `/workspace` in the image, so the assumption went
+  unnoticed; every VM provider — Lambda Labs, FluidStack, TensorDock, Azure —
+  logs in as an unprivileged user, and there `/workspace` does not exist and
+  cannot be created, while `/usr/local/bin` cannot be written. The pod would
+  provision, report running, and then fail installing s5cmd with "Permission
+  denied", leaving a GPU that bills and cannot be used.
+
+  The root cause was the missing directory rather than the missing `sudo`:
+  everything after the first step (uv, the managed Python, framework installs)
+  is already unprivileged and only needs `/workspace` to be writable. It is now
+  created once and chowned to the login user, which makes one unprivileged
+  bootstrap correct on both kinds of image. Only three operations genuinely
+  need privilege — the s5cmd install, the `inotify-tools` install, and the
+  `pigz` install — and they now ask for it.
+
+  Escalation is always `sudo -n`, never bare `sudo`. A bare `sudo` on an image
+  without a `NOPASSWD` grant blocks on stdin waiting for a password, which
+  inside a provisioning job means a pod that bills until its lease expires;
+  `-n` turns that into an immediate, readable failure. It is applied only when
+  not already root, because container images log in as root and frequently do
+  not ship `sudo` at all.
+
 ## [0.2.12] - 2026-07-27
 
 ### Security
