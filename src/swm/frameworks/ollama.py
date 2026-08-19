@@ -5,7 +5,7 @@ Installs the Ollama binary and configures model storage under
 install, pull models with ``ollama pull <model>`` over SSH.
 """
 
-from swm.frameworks import Framework, Step
+from swm.frameworks import Framework, Step, Usage
 
 _OLLAMA_HOME = "/workspace/ollama"
 _OLLAMA_MODELS_DIR = f"{_OLLAMA_HOME}/models"
@@ -39,6 +39,35 @@ FRAMEWORK = Framework(
     ),
     ports={11434: "http"},
     category="llm",
+    # Ollama's root answers "Ollama is running" and nothing else — a browser
+    # link is a dead end. It is an API, and these are the ways in.
+    access="api",
+    usage=[
+        Usage(
+            label="Chat (curl)",
+            kind="curl",
+            command=(
+                'curl {base_url}/api/chat -d \'{"model": "llama3.2:3b", '
+                '"messages": [{"role": "user", "content": "Hello!"}], '
+                '"stream": false}\''
+            ),
+            description="Ollama's native chat API.",
+        ),
+        Usage(
+            label="OpenAI-compatible endpoint",
+            kind="openai",
+            command="{base_url}/v1",
+            description=(
+                "Use with any OpenAI SDK: set base_url to this and api_key "
+                "to any non-empty string."
+            ),
+        ),
+        Usage(
+            label="List installed models",
+            kind="curl",
+            command="curl {base_url}/api/tags",
+        ),
+    ],
     stop_cmd="pkill -x ollama 2>/dev/null; sleep 1; echo stopped",
     process_pattern="ollama serve",
     env_setup=f"export OLLAMA_MODELS={_OLLAMA_HOME}/models OLLAMA_HOST=0.0.0.0:11434",

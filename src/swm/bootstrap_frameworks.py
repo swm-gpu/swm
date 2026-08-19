@@ -61,6 +61,32 @@ def install_framework(
         _step(session, f"[{idx}/{total}] {step.label}", cmd)
 
 
+def _print_usage(
+    con: Console, fw, host: str, port: int | None,
+) -> None:
+    """Show how to talk to the framework that just started.
+
+    Printing only a URL was a dead end for API frameworks: an Ollama root
+    answers with a banner and nothing else, so the user was left at a page
+    that says nothing about how to actually use it.
+    """
+    from swm.frameworks import render_usage
+
+    fw_port = port or (next(iter(fw.ports)) if fw.ports else None)
+    if fw.access == "ui" and fw_port:
+        con.print(f"  Open: http://{host}:{fw_port}")
+        return
+    if not fw.usage:
+        return
+    base = f"http://{host}:{fw_port}" if fw_port else f"http://{host}"
+    for u in render_usage(fw, base):
+        con.print(f"  [bold]{u.label}[/bold]")
+        if u.description:
+            con.print(f"    [dim]{u.description}[/dim]")
+        if u.command:
+            con.print(f"    {u.command}")
+
+
 def start_framework(
     session: RemoteSession,
     name: str,
@@ -148,6 +174,7 @@ def start_framework(
         _con.print(f"  [green]✓ {fw.label} started[/green]")
         _pod_ref = qualified_id or "<pod>"
         _con.print(f"  Logs: swm run {_pod_ref} 'tail -f {logfile}'")
+        _print_usage(_con, fw, session.host, port)
     else:
         _con.print(f"  [red]✗ {fw.label} failed to start[/red]")
         _con.print(f"  Last lines from {logfile}:")

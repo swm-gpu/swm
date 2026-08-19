@@ -22,7 +22,7 @@ from swm.bootstrap import (
     UV_ENV_EXPORTS,
     WORKSPACE_UV,
 )
-from swm.frameworks import Framework, Step, nvidia_ld_exports
+from swm.frameworks import Framework, Step, Usage, nvidia_ld_exports
 
 _INSTALL_DIR = "/workspace/vllm"
 _VENV = f"{_INSTALL_DIR}/venv"
@@ -86,6 +86,33 @@ FRAMEWORK = Framework(
     launch_cmd=f"bash {_LAUNCHER}",
     ports={8000: "http"},
     category="llm",
+    # vLLM serves the OpenAI wire protocol; its root URL is JSON, not a page.
+    access="api",
+    usage=[
+        Usage(
+            label="OpenAI-compatible endpoint",
+            kind="openai",
+            command="{base_url}/v1",
+            description=(
+                "Point any OpenAI SDK here; api_key may be any non-empty "
+                "string unless one was set with --api-key."
+            ),
+        ),
+        Usage(
+            label="Chat completion (curl)",
+            kind="curl",
+            command=(
+                'curl {base_url}/v1/chat/completions -H "Content-Type: application/json" '
+                '-d \'{"model": "{model}", "messages": '
+                '[{"role": "user", "content": "Hello!"}]}\''
+            ),
+        ),
+        Usage(
+            label="List served models",
+            kind="curl",
+            command="curl {base_url}/v1/models",
+        ),
+    ],
     stop_cmd="pkill -f 'vllm serve'",
     process_pattern="vllm serve",
     env_setup=_ENV,
