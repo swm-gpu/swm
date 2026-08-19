@@ -31,13 +31,26 @@ ASSET_DIRS: dict[str, str] = {
     "file": "files",
 }
 
-# Asset types that ComfyUI / SwarmUI expose through a bucket-style directory.
+# Asset types that ComfyUI-style diffusion stacks expose through a bucket
+# directory. Kept for backward compatibility; the authoritative statement of
+# who consumes what is Framework.consumes in swm.frameworks.
 COMFYUI_TYPES = {
     "checkpoint", "lora", "vae", "controlnet", "embedding",
     "clip", "clip-vision", "upscaler", "unet", "diffusion", "text-encoder",
 }
 
 VALID_SOURCES = {"hf", "ollama", "civitai", "url"}
+
+
+def _first_consumer(asset_type: str) -> str | None:
+    """Deprecated needs_engine shim: the name of one framework able to load
+    this type. The model layer no longer knows frameworks; this import runs
+    inward from the registry purely so published consumers of the field keep
+    working for one release."""
+    from swm.frameworks import consumers_of
+
+    consumers = consumers_of(asset_type)
+    return consumers[0].name if consumers else None
 
 
 @dataclass
@@ -48,7 +61,10 @@ class Resolved:
     ref: str  # canonical reference (e.g. "Qwen/Qwen3-8B")
     asset_type: str  # swm asset-type vocab
     display_name: str  # human-friendly name (often == ref)
-    needs_engine: str | None = None  # framework name required to consume this
+    # Deprecated: one framework able to consume this type, kept for published
+    # consumers of the field. Ask swm.frameworks.consumers_of(asset_type) for
+    # the full answer — several frameworks can consume the same type.
+    needs_engine: str | None = None
     extra: dict | None = None  # source-specific payload (civitai version etc.)
 
 
@@ -160,32 +176,24 @@ def _resolve_hf(ref: str, *, asset_type: str | None, token: str | None) -> Resol
             f"Network error while resolving {ref!r}: {exc}"
         ) from exc
     detected = asset_type or _default_type_for_hf(info)
-    needs = {
-        "llm": "vllm",
-        "llm-gguf": "ollama",
-        "checkpoint": "comfyui",
-        "lora": "comfyui",
-        "vae": "comfyui",
-        "controlnet": "comfyui",
-        "embedding": "comfyui",
-    }.get(detected)
     return Resolved(
         source="hf",
         ref=info.get("id", ref),
         asset_type=detected,
         display_name=info.get("id", ref),
-        needs_engine=needs,
+        needs_engine=_first_consumer(detected),
         extra={"hf_info": info},
     )
 
 
 def _resolve_ollama(ref: str, *, asset_type: str | None) -> Resolved:
+    detected = asset_type or "ollama"
     return Resolved(
         source="ollama",
         ref=ref if ":" in ref else f"{ref}:latest",
-        asset_type=asset_type or "ollama",
+        asset_type=detected,
         display_name=ref,
-        needs_engine="ollama",
+        needs_engine=_first_consumer(detected),
     )
 
 
@@ -221,7 +229,7 @@ def _resolve_civitai(
         ref=canonical,
         asset_type=detected,
         display_name=f"{info.creator}/{info.name}" if info.creator else info.name,
-        needs_engine="comfyui",
+        needs_engine=_first_consumer(detected),
         extra={"civitai_model": info, "version_id": version.version_id},
     )
 

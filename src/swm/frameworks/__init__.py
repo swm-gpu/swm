@@ -61,6 +61,19 @@ class Framework:
     # "open the URL", which remains the right default for every web UI.
     usage: list[Usage] = field(default_factory=list)
 
+    # Asset types (swm.models.resolver vocabulary) this framework can load
+    # from the unified store at /workspace/models/. Empty means it consumes
+    # no models — Open WebUI fronts other engines rather than loading
+    # weights itself. This is the single source of truth for "which engine
+    # can use this model": the model layer never names frameworks.
+    consumes: frozenset[str] = frozenset()
+
+    # Shell probe for "is this framework present on the pod". Empty derives
+    # a default from install_dir. Override when presence is not equivalent
+    # to the install dir existing (Ollama's binary lives in /usr/local/bin;
+    # a vLLM venv can exist half-built without its entrypoint).
+    installed_check: str = ""
+
     # Absolute path to the Python venv this framework owns, or None for
     # frameworks that don't need a venv (e.g. Go binaries like Ollama).
     # When set, swm will ensure workspace-owned Python + uv exist and
@@ -70,6 +83,11 @@ class Framework:
     @property
     def launch_workdir(self) -> str:
         return self.install_dir
+
+    @property
+    def installed_probe(self) -> str:
+        """Shell that exits 0 when this framework is present on the pod."""
+        return self.installed_check or f"[ -d {self.install_dir} ]"
 
 
 def nvidia_ld_exports(venv: str) -> str:
@@ -141,6 +159,22 @@ def render_usage(fw: Framework, base_url: str, model: str | None = None) -> list
             description=u.description,
         ))
     return out
+
+
+def consumers_of(asset_type: str) -> list[Framework]:
+    """Frameworks that can load models of *asset_type* from the unified store.
+
+    This query replaces the tables that used to hardcode framework names in
+    the model layer (resolver's needs_engine map, the CLI's probe dict): the
+    declaration lives on each framework, and everything downstream asks.
+
+    Serving frameworks sort before training ones. Callers that surface a
+    single suggestion take the first entry, and "install vLLM to run this
+    LLM" is the right default; suggesting the fine-tuner would be technically
+    true and practically wrong.
+    """
+    hits = [fw for fw in list_frameworks() if asset_type in fw.consumes]
+    return sorted(hits, key=lambda fw: fw.category == "training")
 
 
 def get_framework(name: str) -> Framework:
