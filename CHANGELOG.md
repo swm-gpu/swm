@@ -6,6 +6,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.15] - 2026-08-19
+
+### Changed
+- **Frameworks declare what they consume; the model layer stops naming
+  frameworks.** The resolver mapped asset types to hardcoded engine names —
+  every Civitai ref claimed to need comfyui even on a pod running SwarmUI —
+  and the CLI kept a second table of install probes, while the diffusion
+  bucket list existed in three drifting copies. Each framework now declares
+  `consumes` (the asset types it loads from `/workspace/models/`) and an
+  `installed_check` probe, and `consumers_of(asset_type)` answers the
+  question everything used to hardcode, serving frameworks first. The three
+  symlink scripts collapsed into one generator whose output is byte-identical
+  to the originals, so nothing that runs on a pod changed shape. The
+  post-pull warning now fires only when nothing installed can load the type.
+  `Resolved.needs_engine` remains populated through the query for published
+  consumers of the field; prefer `consumers_of()`.
+
 ## [0.2.14] - 2026-08-18
 
 ### Added
