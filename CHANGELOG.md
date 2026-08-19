@@ -6,6 +6,23 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.14] - 2026-08-18
+
+### Added
+- **Frameworks now say how to use them, not just that they started.** Starting
+  Ollama ended at a URL whose page reads "Ollama is running" and nothing else:
+  the registry knew every port but nothing about what answers on it, so every
+  client could only offer "open the URL" — right for ComfyUI, a dead end for an
+  API server. Each framework now declares `access` (`ui`, `api`, or `none`) and
+  a list of `Usage` entries: labelled command templates taking `{base_url}` and
+  `{model}`. `render_usage()` materializes them against whatever endpoint the
+  client routes through (host:port for the CLI, a tunnel URL on swm.cloud) and
+  drops entries whose model is not configured, since a snippet that cannot run
+  as pasted is worse than none. Ollama and vLLM carry curl and OpenAI-endpoint
+  entries, Axolotl its SSH training commands; the web UIs keep the default of
+  opening the URL. The CLI prints the entries after `setup start`. Purely
+  additive — no existing field or consumer changes.
+
 ## [0.2.13] - 2026-08-18
 
 ### Fixed
