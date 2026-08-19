@@ -43,10 +43,15 @@ jobs:
         if: runner.os == 'Linux'
         # The Azure apt mirror stalls without failing (actions/runner-images
         # #11347, #12949): three consecutive v0.2.15 releases hung here for
-        # 40+ minutes. Clearing stale lists, forcing non-interactive, and
-        # capping each command turns an indefinite hang into a bounded retry.
+        # 40+ minutes, and with timeouts the mirror still stalled every
+        # retry. Point apt straight at archive.ubuntu.com instead of the
+        # runner's Azure mirror list, keep everything non-interactive and
+        # bounded, and fail visibly within five minutes worst-case.
         timeout-minutes: 5
         run: |
+          sudo rm -f /etc/apt/apt-mirrors.txt
+          sudo sed -i 's|mirror+file:/etc/apt/apt-mirrors.txt|http://archive.ubuntu.com/ubuntu/|g' \
+            /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources 2>/dev/null || true
           sudo apt-get clean
           sudo rm -rf /var/lib/apt/lists/*
           for i in 1 2 3; do
