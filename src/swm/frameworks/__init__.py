@@ -17,6 +17,22 @@ class Step:
 
 
 @dataclass
+class Usage:
+    """One way to talk to a running framework, renderable by any client.
+
+    ``command`` templates take ``{base_url}`` (scheme://host[:port] of the
+    framework's HTTP endpoint — a tunnel URL on swm.cloud, host:port over
+    plain swm) and ``{model}`` (the launch model, when one is configured).
+    Rendering is the client's job because only the client knows its routing.
+    """
+
+    label: str
+    kind: str  # "browser" | "curl" | "openai" | "cli"
+    command: str = ""
+    description: str = ""
+
+
+@dataclass
 class Framework:
     """Declarative description of an installable framework."""
 
@@ -34,6 +50,16 @@ class Framework:
     process_pattern: str = ""
     category: str = "inference"
     description: str = ""
+
+    # What answers on the framework's port. "ui" opens in a browser; "api"
+    # serves programmatic clients only, so a browser link is a dead end (an
+    # Ollama root answers with a plain-text banner, a vLLM root with JSON);
+    # "none" listens on nothing and is driven over SSH.
+    access: str = "ui"  # "ui" | "api" | "none"
+
+    # How to actually use it once started, in preference order. Empty means
+    # "open the URL", which remains the right default for every web UI.
+    usage: list[Usage] = field(default_factory=list)
 
     # Absolute path to the Python venv this framework owns, or None for
     # frameworks that don't need a venv (e.g. Go binaries like Ollama).
@@ -92,6 +118,29 @@ def _load_registry() -> dict[str, Framework]:
         fw: Framework = mod.FRAMEWORK
         _registry[fw.name] = fw
     return _registry
+
+
+def render_usage(fw: Framework, base_url: str, model: str | None = None) -> list[Usage]:
+    """Materialize a framework's usage entries against a concrete endpoint.
+
+    ``base_url`` is wherever this client reaches the framework — a tunnel URL
+    on swm.cloud, ``http://host:port`` over plain swm — and is stripped of any
+    trailing slash so templates can safely write ``{base_url}/v1``. Entries
+    that need a model are dropped rather than rendered with a placeholder:
+    a snippet that cannot run as pasted is worse than no snippet.
+    """
+    base = base_url.rstrip("/")
+    out: list[Usage] = []
+    for u in fw.usage:
+        if "{model}" in u.command and not model:
+            continue
+        out.append(Usage(
+            label=u.label,
+            kind=u.kind,
+            command=u.command.replace("{base_url}", base).replace("{model}", model or ""),
+            description=u.description,
+        ))
+    return out
 
 
 def get_framework(name: str) -> Framework:

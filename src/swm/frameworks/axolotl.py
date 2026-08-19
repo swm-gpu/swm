@@ -5,7 +5,7 @@ from swm.bootstrap import (
     UV_ENV_EXPORTS,
     WORKSPACE_UV,
 )
-from swm.frameworks import Framework, Step, nvidia_ld_exports
+from swm.frameworks import Framework, Step, Usage, nvidia_ld_exports
 
 _VENV = "/workspace/axolotl/venv"
 _PYTHON = f"{_VENV}/bin/python"
@@ -22,6 +22,27 @@ FRAMEWORK = Framework(
     ports={},
     process_pattern="axolotl\\.cli\\.train",
     category="training",
+    # Training runs are driven from a shell, not a port.
+    access="none",
+    usage=[
+        Usage(
+            label="Fine-tune from a config",
+            kind="cli",
+            command=(
+                "cd /workspace/axolotl && source venv/bin/activate && "
+                "axolotl train examples/llama-3/lora-1b.yml"
+            ),
+            description="Run over SSH; training streams to the terminal.",
+        ),
+        Usage(
+            label="Fetch example configs",
+            kind="cli",
+            command=(
+                "cd /workspace/axolotl && source venv/bin/activate && "
+                "axolotl fetch examples"
+            ),
+        ),
+    ],
     env_setup=(
         f"{UV_ENV_EXPORTS} && "
         f"export PIP_CACHE_DIR={_PIP_CACHE} && "
