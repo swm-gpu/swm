@@ -22,6 +22,7 @@ FRAMEWORK = Framework(
     ports={},
     process_pattern="axolotl\\.cli\\.train",
     category="training",
+    consumes=frozenset({"llm"}),
     # Training runs are driven from a shell, not a port.
     access="none",
     usage=[

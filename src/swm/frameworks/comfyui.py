@@ -6,42 +6,13 @@ from swm.bootstrap import (
     WORKSPACE_UV,
 )
 from swm.frameworks import Framework, Step, nvidia_ld_exports
+from swm.frameworks._model_store import (
+    DIFFUSION_BUCKETS,
+    DIFFUSION_CONSUMES,
+    link_store_script,
+)
 
-_COMFY_MODEL_DIRS = [
-    "checkpoints", "loras", "vae", "controlnet", "embeddings",
-    "clip", "clip_vision", "upscale_models", "unet",
-    "diffusion_models", "text_encoders",
-]
-
-
-def _link_script() -> str:
-    """Build the bash that points ComfyUI's per-type dirs at the unified store.
-
-    Preserves anything already sitting under ``/workspace/ComfyUI/models/<type>``
-    by moving it into ``/workspace/models/<type>`` before replacing with a
-    symlink.  Idempotent: re-running is a no-op once the symlinks exist.
-    """
-    parts = [
-        "mkdir -p /workspace/models/{" + ",".join(_COMFY_MODEL_DIRS) + "}",
-        "mkdir -p /workspace/ComfyUI/models",
-    ]
-    for d in _COMFY_MODEL_DIRS:
-        target = f"/workspace/ComfyUI/models/{d}"
-        store = f"/workspace/models/{d}"
-        parts.append(
-            f"if [ -L {target} ]; then :; "
-            f"elif [ -d {target} ]; then "
-            f"  ( shopt -s dotglob nullglob; mv {target}/* {store}/ 2>/dev/null || true ); "
-            f"  rmdir {target} 2>/dev/null || rm -rf {target}; "
-            f"  ln -s {store} {target}; "
-            f"else "
-            f"  ln -s {store} {target}; "
-            f"fi"
-        )
-    return " && ".join(parts)
-
-
-_LINK_COMFYUI = _link_script()
+_LINK_COMFYUI = link_store_script("/workspace/ComfyUI/models", DIFFUSION_BUCKETS)
 
 _VENV = "/workspace/ComfyUI/venv"
 _PYTHON = f"{_VENV}/bin/python"
@@ -137,6 +108,7 @@ FRAMEWORK = Framework(
     launch_cmd=f"{_PYTHON} main.py --listen 0.0.0.0 --port 8188",
     ports={8188: "http"},
     category="inference",
+    consumes=DIFFUSION_CONSUMES,
     stop_cmd="pkill -f 'python main.py.*--port 8188'",
     process_pattern="python main.py.*--listen",
     env_setup=(

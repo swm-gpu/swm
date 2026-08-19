@@ -341,16 +341,17 @@ def models_pull(
         f"[dim](source={resolved.source}, type={resolved.asset_type})[/dim]"
     )
 
-    engine_missing = False
+    missing_engine: str | None = None
     with session_from_instance(inst) as sess:
         sess.exec(_ensure_models_root_cmd(), stream=False)
 
-        if resolved.needs_engine and not _engine_installed(sess, resolved.needs_engine):
-            engine_missing = True
+        missing_engine = _missing_consumer(sess, resolved.asset_type)
+        if missing_engine:
             console.print(
-                f"\n[yellow]\u26a0 {resolved.needs_engine} is not installed on this pod.[/yellow]\n"
+                f"\n[yellow]\u26a0 Nothing installed on this pod can load a "
+                f"{resolved.asset_type} model.[/yellow]\n"
                 f"[yellow]  The model will be staged but cannot be used until you run:[/yellow]\n"
-                f"[bold]     swm setup install {resolved.needs_engine} {inst.qualified_id}[/bold]\n"
+                f"[bold]     swm setup install {missing_engine} {inst.qualified_id}[/bold]\n"
             )
 
         if resolved.source == "hf":
@@ -378,27 +379,51 @@ def models_pull(
         for entry in entries:
             console.print(f"  [dim]{entry.path}[/dim]")
 
-    if engine_missing:
+    if missing_engine:
         console.print(
             f"\n[yellow]\u26a0 Remember to install the engine before using it:[/yellow]\n"
-            f"[bold]     swm setup install {resolved.needs_engine} {inst.qualified_id}[/bold]\n"
+            f"[bold]     swm setup install {missing_engine} {inst.qualified_id}[/bold]\n"
         )
 
 
+def _missing_consumer(sess, asset_type: str) -> str | None:
+    """Name a framework to install when nothing present can load *asset_type*.
+
+    Asks the registry which frameworks consume the type, then probes each
+    with its own installed_check. Returns None when at least one consumer is
+    installed, or when the type has no consumers at all (plain files need no
+    engine). The old version answered from two hardcoded tables and therefore
+    claimed Civitai models always needed comfyui, even with SwarmUI present.
+    """
+    from swm.frameworks import consumers_of
+
+    consumers = consumers_of(asset_type)
+    if not consumers:
+        return None
+    for fw in consumers:
+        exit_code, _, _ = sess.exec(
+            f"{fw.installed_probe} && echo yes || echo no", stream=False,
+        )
+        if exit_code == 0:
+            return None
+    return consumers[0].name
+
+
 def _engine_installed(sess, framework_name: str) -> bool:
-    """Quick check: is the binary or install dir for *framework_name* present?"""
-    probes = {
-        "vllm": "[ -x /workspace/vllm/venv/bin/vllm ]",
-        "ollama": "[ -x /usr/local/bin/ollama ]",
-        "comfyui": "[ -d /workspace/ComfyUI ]",
-        "swarmui": "[ -d /workspace/SwarmUI ]",
-        "axolotl": "[ -d /workspace/axolotl ]",
-        "llm-studio": "[ -d /workspace/llm-studio ]",
-    }
-    probe = probes.get(framework_name)
-    if not probe:
+    """Is one specific framework present on the pod?
+
+    The probe comes from the framework's own declaration rather than a local
+    table, so a new framework never needs an entry here.
+    """
+    from swm.frameworks import get_framework
+
+    try:
+        fw = get_framework(framework_name)
+    except KeyError:
         return True
-    exit_code, _, _ = sess.exec(f"{probe} && echo yes || echo no", stream=False)
+    exit_code, _, _ = sess.exec(
+        f"{fw.installed_probe} && echo yes || echo no", stream=False,
+    )
     return exit_code == 0
 
 

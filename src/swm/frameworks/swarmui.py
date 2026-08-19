@@ -1,6 +1,11 @@
 """SwarmUI framework definition."""
 
 from swm.frameworks import Framework, Step, nvidia_ld_exports
+from swm.frameworks._model_store import (
+    DIFFUSION_BUCKETS,
+    DIFFUSION_CONSUMES,
+    link_store_script,
+)
 
 _DOTNET_DIR = "/workspace/.dotnet"
 _NUGET_DIR = "/workspace/.nuget"
@@ -8,35 +13,8 @@ _PIP_CACHE = "/workspace/.cache/pip"
 _COMFY_VENV = "/workspace/ComfyUI/venv"
 
 _BUNDLED_COMFY = "/workspace/SwarmUI/dlbackend/ComfyUI"
-_COMFY_MODEL_DIRS = [
-    "checkpoints", "loras", "vae", "controlnet", "embeddings",
-    "clip", "clip_vision", "upscale_models", "unet",
-    "diffusion_models", "text_encoders",
-]
 
-
-def _link_bundled_comfy() -> str:
-    parts = [
-        "mkdir -p /workspace/models/{" + ",".join(_COMFY_MODEL_DIRS) + "}",
-        f"mkdir -p {_BUNDLED_COMFY}/models",
-    ]
-    for d in _COMFY_MODEL_DIRS:
-        target = f"{_BUNDLED_COMFY}/models/{d}"
-        store = f"/workspace/models/{d}"
-        parts.append(
-            f"if [ -L {target} ]; then :; "
-            f"elif [ -d {target} ]; then "
-            f"  ( shopt -s dotglob nullglob; mv {target}/* {store}/ 2>/dev/null || true ); "
-            f"  rmdir {target} 2>/dev/null || rm -rf {target}; "
-            f"  ln -s {store} {target}; "
-            f"else "
-            f"  ln -s {store} {target}; "
-            f"fi"
-        )
-    return " && ".join(parts)
-
-
-_LINK_SWARMUI = _link_bundled_comfy()
+_LINK_SWARMUI = link_store_script(f"{_BUNDLED_COMFY}/models", DIFFUSION_BUCKETS)
 _ENV = (
     f"export PATH={_DOTNET_DIR}:$PATH "
     f"DOTNET_ROOT={_DOTNET_DIR} "
@@ -53,6 +31,7 @@ FRAMEWORK = Framework(
     launch_cmd="bash launch-linux.sh --launch_mode none --port 7801 --host 0.0.0.0",
     ports={7801: "http"},
     category="inference",
+    consumes=DIFFUSION_CONSUMES,
     stop_cmd="pkill -f 'SwarmUI.*--port'",
     process_pattern="SwarmUI.*--port",
     env_setup=_ENV,

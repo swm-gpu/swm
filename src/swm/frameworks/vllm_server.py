@@ -86,6 +86,9 @@ FRAMEWORK = Framework(
     launch_cmd=f"bash {_LAUNCHER}",
     ports={8000: "http"},
     category="llm",
+    consumes=frozenset({"llm"}),
+    # The venv dir can exist half-built; the entrypoint is the real signal.
+    installed_check="[ -x /workspace/vllm/venv/bin/vllm ]",
     # vLLM serves the OpenAI wire protocol; its root URL is JSON, not a page.
     access="api",
     usage=[

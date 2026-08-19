@@ -39,6 +39,10 @@ FRAMEWORK = Framework(
     ),
     ports={11434: "http"},
     category="llm",
+    consumes=frozenset({"ollama", "llm-gguf"}),
+    # install_dir is only the model home; the binary is the real presence
+    # signal and lives outside /workspace.
+    installed_check="[ -x /usr/local/bin/ollama ]",
     # Ollama's root answers "Ollama is running" and nothing else — a browser
     # link is a dead end. It is an API, and these are the ways in.
     access="api",
