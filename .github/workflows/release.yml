@@ -41,9 +41,20 @@ jobs:
 
       - name: Install system deps (Linux)
         if: runner.os == 'Linux'
+        # The Azure apt mirror stalls without failing (actions/runner-images
+        # #11347, #12949): three consecutive v0.2.15 releases hung here for
+        # 40+ minutes. Clearing stale lists, forcing non-interactive, and
+        # capping each command turns an indefinite hang into a bounded retry.
+        timeout-minutes: 5
         run: |
-          sudo apt-get update
-          sudo apt-get install -y patchelf ccache
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+          for i in 1 2 3; do
+            timeout 90 sudo env DEBIAN_FRONTEND=noninteractive apt-get update && break
+            echo "apt-get update stalled (attempt $i); retrying"
+          done
+          timeout 120 sudo env DEBIAN_FRONTEND=noninteractive \
+            apt-get install -y --no-install-recommends patchelf ccache
 
       - name: Extract version
         id: version
