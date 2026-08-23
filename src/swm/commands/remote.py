@@ -6,6 +6,7 @@ import os
 import click
 
 from swm.commands._helpers import (
+    absorb_pod_positional,
     console,
     _instance_for,
     _iter_configured_pod_ids,
@@ -77,9 +78,9 @@ def run(instance_id: str | None, command: tuple[str, ...], quiet: bool):
 
 
 @click.command()
-@click.argument("instance_id", required=False, shell_complete=complete_pod_id, callback=pod_arg_callback)
-@click.argument("local_path", type=click.Path(exists=True))
-@click.argument("remote_path", default="")
+@click.argument("instance_id", required=False, shell_complete=complete_pod_id)
+@click.argument("local_path", required=False)
+@click.argument("remote_path", default=None, required=False)
 @click.option("-r", "--recursive", is_flag=True, help="Upload a directory recursively")
 def upload(instance_id: str, local_path: str, remote_path: str, recursive: bool):
     """Upload a file or directory to a running instance.
@@ -97,6 +98,12 @@ def upload(instance_id: str, local_path: str, remote_path: str, recursive: bool)
     from pathlib import Path
     from swm.remote.ssh import session_from_instance
 
+    instance_id, (local_path, remote_path) = absorb_pod_positional(
+        instance_id, (local_path, remote_path),
+        ("LOCAL_PATH", "REMOTE_PATH"), required=1,
+    )
+    if not Path(local_path).exists():
+        raise click.UsageError(f"Local path {local_path!r} does not exist.")
     inst = _instance_for(instance_id)
 
     if not remote_path:

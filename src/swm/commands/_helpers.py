@@ -111,6 +111,34 @@ def looks_like_pod_id(value: str) -> bool:
     return isinstance(pods, dict) and value in pods
 
 
+def absorb_pod_positional(
+    instance_id: str | None,
+    values: tuple,
+    names: tuple[str, ...],
+    required: int | None = None,
+) -> tuple[str, list]:
+    """Disambiguate ``[INSTANCE_ID] ARG...`` positionals.
+
+    Click fills positionals greedily left-to-right, so with an active pod
+    configured, ``swm models pull <ref>`` lands the ref in INSTANCE_ID and
+    errors "Missing argument 'REF'". When the trailing value is missing
+    and the leading value doesn't look like a pod id, shift everything
+    one slot right and resolve the active pod.
+
+    *required* is how many leading *values* must be present after the
+    shift (default: all). Returns ``(resolved_instance_id, values)``.
+    """
+    vals = list(values)
+    if vals and vals[-1] is None and instance_id and not looks_like_pod_id(instance_id):
+        vals = [instance_id, *vals[:-1]]
+        instance_id = None
+    need = len(names) if required is None else required
+    for value, name in list(zip(vals, names))[:need]:
+        if value is None:
+            raise click.UsageError(f"Missing argument '{name}'.")
+    return resolve_active_pod(instance_id), vals
+
+
 def split_pod_and_command(
     instance_id: str | None,
     command: tuple[str, ...],

@@ -17,6 +17,7 @@ import click
 from swm.commands._helpers import (
     console,
     _instance_for,
+    absorb_pod_positional,
     complete_pod_id,
     pod_arg_callback,
 )
@@ -266,9 +267,8 @@ _SOURCE_CHOICES = click.Choice(
     "instance_id",
     required=False,
     shell_complete=complete_pod_id,
-    callback=pod_arg_callback,
 )
-@click.argument("ref")
+@click.argument("ref", required=False)
 @click.option(
     "--as", "asset_type",
     type=_ASSET_CHOICES,
@@ -319,6 +319,9 @@ def models_pull(
     from swm.models.manifest import ModelEntry, RemoteManifest, make_key
     from swm.remote.ssh import session_from_instance
 
+    instance_id, (ref,) = absorb_pod_positional(
+        instance_id, (ref,), ("REF",),
+    )
     inst = _instance_for(instance_id)
 
     hf_token = huggingface.get_token(token)
@@ -386,6 +389,28 @@ def models_pull(
         )
 
 
+def _probe_installed(sess, fw) -> bool:
+    """Run a framework's presence probe and read the ANSWER, not the exit code.
+
+    The command's exit code is useless here: ``probe && echo yes || echo no``
+    exits 0 on both branches (the old code tested exit_code == 0 and
+    therefore reported every framework as installed, always). Unique markers
+    keep pod images with chatty shells from confusing the check; if neither
+    marker comes back (SSH hiccup), assume installed — the lenient direction,
+    matching historical behavior, so transient failures never block a pull.
+    """
+    _, out, _ = sess.exec(
+        f"{fw.installed_probe} "
+        f"&& echo __SWM_INSTALLED__ || echo __SWM_ABSENT__",
+        stream=False,
+    )
+    if "__SWM_INSTALLED__" in out:
+        return True
+    if "__SWM_ABSENT__" in out:
+        return False
+    return True
+
+
 def _missing_consumer(sess, asset_type: str) -> str | None:
     """Name a framework to install when nothing present can load *asset_type*.
 
@@ -401,10 +426,7 @@ def _missing_consumer(sess, asset_type: str) -> str | None:
     if not consumers:
         return None
     for fw in consumers:
-        exit_code, _, _ = sess.exec(
-            f"{fw.installed_probe} && echo yes || echo no", stream=False,
-        )
-        if exit_code == 0:
+        if _probe_installed(sess, fw):
             return None
     return consumers[0].name
 
@@ -421,10 +443,7 @@ def _engine_installed(sess, framework_name: str) -> bool:
         fw = get_framework(framework_name)
     except KeyError:
         return True
-    exit_code, _, _ = sess.exec(
-        f"{fw.installed_probe} && echo yes || echo no", stream=False,
-    )
-    return exit_code == 0
+    return _probe_installed(sess, fw)
 
 
 def _pull_hf(sess, resolved, hf_token: str | None, filename_override: str | None) -> list:
@@ -468,7 +487,9 @@ def _pull_hf(sess, resolved, hf_token: str | None, filename_override: str | None
     for remote_filename, save_as in files:
         url = _hf_file_url(resolved.ref, remote_filename)
         dest = f"{bucket_path}/{save_as}"
-        cmd = _curl_to_file(url, dest, hf_token)
+        cmd = _hf_file_download_cmd(
+            resolved.ref, remote_filename, bucket_path, dest, url, hf_token,
+        )
         exit_code, _, _ = sess.exec(cmd)
         if exit_code != 0:
             hint = _hf_fetch_hint(resolved, remote_filename, filename_override)
@@ -489,18 +510,104 @@ def _pull_hf(sess, resolved, hf_token: str | None, filename_override: str | None
     return entries
 
 
+# Locates an hf CLI on the pod (PATH, then known framework venvs), derives
+# its owning python, and best-effort enables hf_transfer. The env var is
+# only exported when the package actually imports: huggingface_hub raises
+# outright when HF_HUB_ENABLE_HF_TRANSFER=1 but hf_transfer is missing.
+# Discovery order matters: `hf` only ships with modern huggingface_hub, so
+# PATH-first is safe for it, while a PATH `huggingface-cli` may be an
+# image-baked symlink-era relic (< 0.23) that must not shadow fresh venv
+# CLIs — it is checked dead last. On hub >= 1.x the speedup actually comes
+# from Xet and HF_HUB_ENABLE_HF_TRANSFER is deprecated; the hf_transfer
+# gate still matters for the 0.2x-0.3x hubs where it is the speedup.
+_HF_FIND_SNIPPET = (
+    'HFBIN=""; '
+    "command -v hf >/dev/null 2>&1 && HFBIN=$(command -v hf); "
+    'if [ -z "$HFBIN" ]; then '
+    "  for v in /workspace/vllm/venv /workspace/ComfyUI/venv; do "
+    '    [ -x "$v/bin/hf" ] && HFBIN="$v/bin/hf" && break; '
+    '    [ -x "$v/bin/huggingface-cli" ] && HFBIN="$v/bin/huggingface-cli" && break; '
+    "  done; "
+    "fi; "
+    'if [ -z "$HFBIN" ]; then '
+    "  command -v huggingface-cli >/dev/null 2>&1 "
+    "    && HFBIN=$(command -v huggingface-cli); "
+    "fi; "
+    'HFXFER=0; '
+    'if [ -n "$HFBIN" ]; then '
+    '  HFPY="$(dirname "$HFBIN")/python3"; [ -x "$HFPY" ] || HFPY=python3; '
+    '  "$HFPY" -c "import hf_transfer" 2>/dev/null '
+    '    || "$HFPY" -m pip install -q hf_transfer 2>/dev/null || true; '
+    '  "$HFPY" -c "import hf_transfer" 2>/dev/null && HFXFER=1; '
+    "fi; "
+)
+
+
+def _hf_file_download_cmd(
+    repo: str,
+    remote_filename: str,
+    bucket_path: str,
+    dest: str,
+    url: str,
+    token: str | None,
+) -> str:
+    """Download one HF file fast, falling back to single-connection curl.
+
+    ``hf download`` with hf_transfer fetches a file over many parallel
+    range requests (~8x a single curl stream on datacenter links). The
+    staging dir sits under ``<bucket>/.cache/`` — same filesystem as the
+    destination (mv is a rename) and inside the sync excludes, so the
+    autosync watcher can never ship a partial download.
+    """
+    token_env = f"HF_TOKEN={shlex.quote(token)} " if token else ""
+    qd = shlex.quote(dest)
+    tmp_parent = shlex.quote(f"{bucket_path}/.cache")
+    return (
+        f"{_HF_FIND_SNIPPET}"
+        f"ok=0; "
+        f'if [ -n "$HFBIN" ] && [ "$HFXFER" = "1" ]; then '
+        f"  mkdir -p {tmp_parent} && "
+        f"  tmp=$(mktemp -d {tmp_parent}/swm-hfdl-XXXXXX) && "
+        f"  if {token_env}HF_HUB_ENABLE_HF_TRANSFER=1 "
+        f"    PYTHONWARNINGS=ignore::FutureWarning "
+        f'    "$HFBIN" download {shlex.quote(repo)} '
+        f"    {shlex.quote(remote_filename)} "
+        f'    --local-dir "$tmp"; then '
+        # Symlink-era hubs (< 0.23) put a RELATIVE symlink into the hub
+        # cache at $tmp/<file>; moving it would dangle. Only accept a
+        # regular file — anything else falls through to curl.
+        f'    mv -f "$tmp/"{shlex.quote(remote_filename)} {qd} '
+        f"      && [ ! -L {qd} ] && ok=1; "
+        f"  fi; "
+        f'  rm -rf "$tmp"; '
+        f"fi; "
+        f'if [ "$ok" != "1" ]; then '
+        f"  [ -L {qd} ] && rm -f {qd}; "
+        f"  {_curl_to_file(url, dest, token)}; "
+        f"fi && [ -s {qd} ] && [ ! -L {qd} ]"
+    )
+
+
 def _hf_repo_download_cmd(ref: str, cache_dir: str, token: str | None) -> str:
     token_env = f"HF_TOKEN={shlex.quote(token)} " if token else ""
-    hf_env = f"{token_env}HF_HOME={cache_dir}"
+    hf_env = f"{token_env}HF_HOME={shlex.quote(cache_dir)}"
+    qref = shlex.quote(ref)
     return (
-        f"mkdir -p {cache_dir} && "
-        f"if [ -x /workspace/vllm/venv/bin/huggingface-cli ]; then "
-        f"  {hf_env} /workspace/vllm/venv/bin/huggingface-cli download {ref}; "
-        f"elif command -v huggingface-cli >/dev/null 2>&1; then "
-        f"  {hf_env} huggingface-cli download {ref}; "
-        f"else "
+        f"mkdir -p {shlex.quote(cache_dir)} && "
+        f"{_HF_FIND_SNIPPET}"
+        f'if [ -z "$HFBIN" ]; then '
         f"  pip install -q 'huggingface_hub[cli]' && "
-        f"  {hf_env} huggingface-cli download {ref}; "
+        f"  HFBIN=$(command -v hf || command -v huggingface-cli); "
+        f"fi && "
+        f'if [ "$HFXFER" = "1" ]; then '
+        # Retry plainly if the accelerated attempt fails — covers CLIs
+        # whose interpreter the HFPY heuristic mis-detected (hub < 1.0
+        # raises when the env var is set without the package).
+        f"  {hf_env} HF_HUB_ENABLE_HF_TRANSFER=1 "
+        f'    PYTHONWARNINGS=ignore::FutureWarning "$HFBIN" download {qref} '
+        f'  || {hf_env} "$HFBIN" download {qref}; '
+        f"else "
+        f'  {hf_env} "$HFBIN" download {qref}; '
         f"fi"
     )
 
@@ -581,6 +688,51 @@ def _curl_to_file(url: str, dest: str, token: str | None) -> str:
     )
 
 
+def _fast_url_download_cmd(url: str, bucket_path: str, dest: str) -> str:
+    """Download an arbitrary URL fast, falling back to single-stream curl.
+
+    aria2c fetches one file over up to 16 parallel range requests — the
+    same trick that makes hf_transfer ~8x faster than a lone curl stream.
+    It's installed on demand the way swm already installs inotify-tools;
+    any miss (no apt, no sudo, aria2c failure, server without range
+    support) degrades to the plain curl path. Staging lives under the
+    destination bucket's ``.cache/`` — same filesystem (mv is a rename)
+    and inside the sync excludes, so partial downloads never sync.
+
+    Known trade-off: on failure aria2c echoes the URL, which for Civitai
+    embeds the ``?token=`` — the same transient exposure the curl status
+    quo has (URL on the command line / in ps). Moving Civitai auth to a
+    header would eliminate it and is tracked as a follow-up.
+    """
+    from swm.bootstrap import _privileged
+
+    qd = shlex.quote(dest)
+    qu = shlex.quote(url)
+    tmp_parent = shlex.quote(f"{bucket_path}/.cache")
+    ensure = _privileged(
+        "command -v aria2c >/dev/null 2>&1 || "
+        "($SUDO apt-get update -qq && "
+        "$SUDO apt-get install -y -qq aria2) >/dev/null 2>&1 || true"
+    )
+    return (
+        f"{ensure}; ok=0; "
+        f"if command -v aria2c >/dev/null 2>&1; then "
+        f"  mkdir -p {tmp_parent} && "
+        f"  tmp=$(mktemp -d {tmp_parent}/swm-dl-XXXXXX) && "
+        f"  if aria2c -x16 -s16 -k1M --file-allocation=none "
+        f"     --auto-file-renaming=false --console-log-level=warn "
+        f"     --summary-interval=30 "
+        f'     -d "$tmp" -o payload {qu}; then '
+        f'    mv -f "$tmp/payload" {qd} && ok=1; '
+        f"  fi; "
+        f'  rm -rf "$tmp"; '
+        f"fi; "
+        f'if [ "$ok" != "1" ]; then '
+        f"  curl -fL --retry 3 --retry-delay 2 -o {qd} {qu}; "
+        f"fi && [ -s {qd} ]"
+    )
+
+
 def _pull_ollama(sess, resolved, hf_token: str | None):
     """Try ollama pull; if no binary, fall back to bartowski HF GGUF mirror."""
     from swm.models import huggingface, resolver
@@ -657,11 +809,7 @@ def _pull_civitai(sess, resolved, civitai_token: str | None, filename_override: 
     dest = f"{bucket_path}/{save_as}"
 
     sess.exec(f"mkdir -p {shlex.quote(bucket_path)}", stream=False)
-    cmd = (
-        f"curl -fL --retry 3 --retry-delay 2 -o {shlex.quote(dest)} "
-        f"{shlex.quote(url)} && "
-        f"[ -s {shlex.quote(dest)} ]"
-    )
+    cmd = _fast_url_download_cmd(url, bucket_path, dest)
     exit_code, _, _ = sess.exec(cmd)
     if exit_code != 0:
         raise click.ClickException(f"Failed to download {resolved.display_name}")
@@ -695,11 +843,7 @@ def _pull_url(sess, resolved, filename_override: str | None):
     dest = f"{bucket_path}/{save_as}"
 
     sess.exec(f"mkdir -p {shlex.quote(bucket_path)}", stream=False)
-    cmd = (
-        f"curl -fL --retry 3 --retry-delay 2 -o {shlex.quote(dest)} "
-        f"{shlex.quote(resolved.ref)} && "
-        f"[ -s {shlex.quote(dest)} ]"
-    )
+    cmd = _fast_url_download_cmd(resolved.ref, bucket_path, dest)
     exit_code, _, _ = sess.exec(cmd)
     if exit_code != 0:
         raise click.ClickException(f"Failed to download {resolved.ref}")
@@ -845,9 +989,8 @@ def _scan_orphans(sess, manifest) -> list[tuple[str, int]]:
     "instance_id",
     required=False,
     shell_complete=complete_pod_id,
-    callback=pod_arg_callback,
 )
-@click.argument("source_path")
+@click.argument("source_path", required=False)
 @click.option(
     "--as", "asset_type",
     type=_ASSET_CHOICES,
@@ -880,6 +1023,9 @@ def models_link(
     from swm.models.manifest import ModelEntry, RemoteManifest, make_key
     from swm.remote.ssh import session_from_instance
 
+    instance_id, (source_path,) = absorb_pod_positional(
+        instance_id, (source_path,), ("SOURCE_PATH",),
+    )
     inst = _instance_for(instance_id)
     bucket = resolver.target_dir_for(asset_type)
     bucket_path = f"{_MODELS_ROOT}/{bucket}"
@@ -927,9 +1073,8 @@ def models_link(
     "instance_id",
     required=False,
     shell_complete=complete_pod_id,
-    callback=pod_arg_callback,
 )
-@click.argument("ref")
+@click.argument("ref", required=False)
 @click.option("--yes", "-y", is_flag=True, help="Skip confirmation")
 def models_remove(instance_id: str, ref: str, yes: bool):
     """Remove a model from the pod's unified store.
@@ -946,6 +1091,9 @@ def models_remove(instance_id: str, ref: str, yes: bool):
     from swm.models.manifest import RemoteManifest
     from swm.remote.ssh import session_from_instance
 
+    instance_id, (ref,) = absorb_pod_positional(
+        instance_id, (ref,), ("REF",),
+    )
     inst = _instance_for(instance_id)
 
     with session_from_instance(inst) as sess:
@@ -974,7 +1122,21 @@ def models_remove(instance_id: str, ref: str, yes: bool):
                 abort=True,
             )
 
-        if target.source == "ollama" and _engine_installed(sess, "ollama"):
+        if target.source == "ollama":
+            # Ollama entries record path=/workspace/models/ollama — the whole
+            # shared, content-addressed store. The generic rm -rf branch would
+            # therefore delete EVERY ollama model, not the one confirmed, so
+            # ollama removals must go through the binary. It routinely
+            # vanishes on pod restart (/usr/local/bin isn't persisted) while
+            # the store survives in /workspace.
+            if not _engine_installed(sess, "ollama"):
+                raise click.ClickException(
+                    "Ollama isn't installed on this pod, and ollama models "
+                    "share one content-addressed store — removing files "
+                    "directly would delete other models too. Reinstall the "
+                    f"engine first (swm setup install ollama "
+                    f"{inst.qualified_id}), then re-run this remove."
+                )
             sess.exec(
                 f"OLLAMA_MODELS=/workspace/models/ollama "
                 f"/usr/local/bin/ollama rm {shlex.quote(target.ref)} || true",
