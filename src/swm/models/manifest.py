@@ -9,7 +9,9 @@ thin :class:`RemoteManifest` wrapper that uses a :class:`RemoteSession`.
 """
 from __future__ import annotations
 
+import base64
 import json
+import shlex
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
@@ -126,21 +128,65 @@ class RemoteManifest:
     def load(self) -> Manifest:
         cmd = f"cat {MANIFEST_PATH} 2>/dev/null || true"
         _, out, _ = self.session.exec(cmd, stream=False)
+        if out.strip():
+            try:
+                json.loads(out)
+            except json.JSONDecodeError:
+                # Preserve the unparseable file instead of letting the next
+                # save() silently replace it — the pre-fix writer corrupted
+                # manifests containing $/`/" and this is the recovery path.
+                self.session.exec(
+                    f"cp {MANIFEST_PATH} "
+                    f"{MANIFEST_PATH}.corrupt-$(date +%s) 2>/dev/null || true",
+                    stream=False,
+                )
         return Manifest.from_json(out)
 
     def save(self, manifest: Manifest) -> None:
+        # Base64 transport: byte-exact for any content. The previous
+        # escape-then-quoted-heredoc approach corrupted every manifest
+        # whose JSON contained $, `, " or non-ASCII (a quoted heredoc
+        # performs no expansion, so the "escaping" landed literally),
+        # and a corrupted manifest reloaded as empty — wiping all
+        # tracked models on the next save.
         body = manifest.to_json()
-        encoded = body.replace("\\", "\\\\").replace("$", "\\$").replace("`", "\\`")
+        b64 = base64.b64encode(body.encode("utf-8")).decode("ascii")
+
+        if len(b64) > 100_000:
+            # Linux caps a single argv element at 128 KiB (MAX_ARG_STRLEN);
+            # the whole ssh command travels as one. Large manifests
+            # (~90+ tracked models) go over scp instead.
+            self._save_via_scp(body)
+            return
+
         cmd = (
             f"mkdir -p {MODELS_ROOT} && "
-            f"cat > {MANIFEST_PATH}.tmp <<'SWM_MANIFEST_EOF'\n"
-            f"{encoded}\n"
-            f"SWM_MANIFEST_EOF\n"
+            f"echo '{b64}' | base64 -d > {MANIFEST_PATH}.tmp && "
             f"mv {MANIFEST_PATH}.tmp {MANIFEST_PATH}"
         )
         exit_code, _, _ = self.session.exec(cmd, stream=False)
         if exit_code != 0:
             raise RuntimeError(f"failed to write manifest to {MANIFEST_PATH}")
+
+    def _save_via_scp(self, body: str) -> None:
+        import os
+        import tempfile
+
+        fd, local = tempfile.mkstemp(suffix=".manifest.json")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(body)
+            self.session.exec(f"mkdir -p {MODELS_ROOT}", stream=False)
+            self.session.upload(local, f"{MANIFEST_PATH}.tmp")
+            exit_code, _, _ = self.session.exec(
+                f"mv {MANIFEST_PATH}.tmp {MANIFEST_PATH}", stream=False,
+            )
+            if exit_code != 0:
+                raise RuntimeError(
+                    f"failed to write manifest to {MANIFEST_PATH}"
+                )
+        finally:
+            os.unlink(local)
 
     def upsert(self, entry: ModelEntry) -> Manifest:
         manifest = self.load()
@@ -162,14 +208,19 @@ def reconcile_paths(manifest: Manifest, session: RemoteSession) -> dict[str, str
     """
     if not manifest.models:
         return {}
+    # Keys and paths are user/provider-controlled: URL keys contain & and ?,
+    # link paths can contain spaces — all of which broke (or backgrounded
+    # parts of) the unquoted command.
     paths_check = " ; ".join(
-        f"echo {key} $([ -e {entry.path} ] && echo ok || echo missing)"
+        f"echo {shlex.quote(key)} "
+        f"$([ -e {shlex.quote(entry.path)} ] && echo ok || echo missing)"
         for key, entry in manifest.models.items()
     )
     _, out, _ = session.exec(paths_check, stream=False)
     result: dict[str, str] = {}
     for line in out.splitlines():
-        parts = line.strip().split()
-        if len(parts) >= 2:
+        # rsplit: keys may themselves contain spaces (link keys embed paths).
+        parts = line.strip().rsplit(None, 1)
+        if len(parts) == 2 and parts[1] in ("ok", "missing"):
             result[parts[0]] = parts[1]
     return result
