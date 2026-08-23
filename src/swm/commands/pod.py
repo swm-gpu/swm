@@ -43,12 +43,14 @@ def pod_list(provider: str | None):
         return
 
     all_instances = []
+    ok_slugs: set[str] = set()
     with console.status("Fetching instances…", spinner="dots") as spin:
         for p in providers:
             spin.update(f"Querying {p.name}…")
             try:
                 insts = p.list_instances()
                 all_instances.extend(insts)
+                ok_slugs.add(p.slug)
                 console.log(f"[green]✓[/green] {p.name} — {len(insts)} instances")
             except Exception as e:
                 console.log(f"[red]✗[/red] {p.name}: {e}")
@@ -88,53 +90,82 @@ def pod_list(provider: str | None):
     console.print()
     console.print("[dim]Connect:  swm ssh <id>    Run:  swm run <id> <command>[/dim]")
 
-    _prune_stale_pods(live_ids={i.id for i in all_instances})
+    _prune_stale_pods(
+        live_ids={i.id for i in all_instances}, provider_slugs=ok_slugs,
+    )
 
 
-def _prune_stale_pods(live_ids: set[str] | None = None) -> int:
+def _prune_stale_pods(
+    live_ids: set[str] | None = None,
+    provider_slugs: set[str] | None = None,
+) -> tuple[int, int]:
     """Remove config entries for pods that no longer exist on any provider.
 
-    If *live_ids* is given, skip the API call and use these as the set of
-    known-live instance IDs.  Returns the number of entries removed.
+    A config entry may only be pruned when its recorded provider is in
+    *provider_slugs* — the set of providers whose listing actually
+    succeeded. Absence from *live_ids* alone is not evidence of
+    termination: a filtered listing or one provider's API failure would
+    otherwise delete other providers' workspace/storage/guard bindings
+    while their pods keep running. Entries whose provider can't be
+    attributed are never pruned.
+
+    If *live_ids* is None, queries every configured provider; any listing
+    failure aborts the whole prune. Returns ``(removed, kept)`` where
+    *kept* counts entries that are absent from *live_ids* but were
+    protected because their provider could not be attributed or queried.
     """
     pods = cfg.get("pods", {}) or {}
     if not pods:
-        return 0
+        return 0, 0
 
     if live_ids is None:
         live_ids = set()
+        provider_slugs = set()
         for p in get_configured_providers():
             try:
                 for inst in p.list_instances():
                     live_ids.add(inst.id)
+                provider_slugs.add(p.slug)
             except Exception:
-                return 0
+                return 0, 0
 
     removed = 0
+    kept = 0
     for pod_id in list(pods):
-        if pod_id not in live_ids:
-            try:
-                from swm.costs.tracker import record_stop
+        if pod_id in live_ids:
+            continue
+        meta = pods[pod_id] if isinstance(pods[pod_id], dict) else {}
+        provider_slug = meta.get("provider", "")
+        if not provider_slug or provider_slug not in (provider_slugs or set()):
+            kept += 1
+            continue
+        try:
+            from swm.costs.tracker import record_stop
 
-                provider_slug = (pods[pod_id] or {}).get("provider", "")
-                if provider_slug:
-                    record_stop(pod_id, provider_slug)
-            except Exception:
-                pass
-            cfg.delete(f"pods.{pod_id}")
-            removed += 1
-    return removed
+            record_stop(pod_id, provider_slug)
+        except Exception:
+            pass
+        cfg.delete(f"pods.{pod_id}")
+        removed += 1
+    return removed, kept
 
 
 @pod.command(name="prune")
 def pod_prune():
     """Remove config entries for pods that no longer exist."""
     with console.status("Checking providers…", spinner="dots"):
-        removed = _prune_stale_pods()
+        removed, kept = _prune_stale_pods()
     if removed:
         console.print(f"[green]✓[/green] Removed {removed} stale pod(s) from config.")
     else:
         console.print("[dim]No stale pods found.[/dim]")
+    if kept:
+        console.print(
+            f"[yellow]⚠ Kept {kept} entr{'y' if kept == 1 else 'ies'} that "
+            f"couldn't be verified (provider unconfigured, unreachable, or "
+            f"not recorded). Remove manually with "
+            f"`swm config delete pods.<id>` if truly gone.[/yellow]"
+        )
 
 
 @pod.command()
@@ -156,7 +187,12 @@ def pod_prune():
 @click.option("--cloud-type", default="SECURE", help="RunPod cloud type: SECURE, COMMUNITY, ALL")
 @click.option("--ports", default="22/tcp,8888/http,8188/http", help="Ports to expose")
 @click.option("--gpu-count", default=1, type=int, help="Number of GPUs")
-@click.option("--region", default=None, help="Datacenter/region ID (e.g. US-CA-2)")
+@click.option(
+    "--region",
+    default=None,
+    help="RunPod: datacenter ID (e.g. US-CA-2). "
+         "Vast.ai: two-letter country code (e.g. US).",
+)
 @click.option(
     "--lifecycle",
     default=None,
@@ -204,6 +240,22 @@ def create(
     from swm.remote.ssh import read_ssh_public_key
 
     p = get_provider(provider)
+
+    # Vast.ai maps only port 22 plus whatever the image exposes; the
+    # --ports string has no effect there. Warn when the user explicitly
+    # set it so they aren't left wondering why a port never opened.
+    ctx = click.get_current_context(silent=True)
+    if (
+        provider == "vastai"
+        and ctx is not None
+        and ctx.get_parameter_source("ports")
+        == click.core.ParameterSource.COMMANDLINE
+    ):
+        console.print(
+            "[yellow]⚠ --ports is ignored on Vast.ai: only port 22 and "
+            "ports exposed by the image are mapped. Unmapped ports are "
+            "reached via SSH tunnels (swm setup start handles this).[/yellow]"
+        )
 
     try:
         pub_key = read_ssh_public_key()
@@ -350,7 +402,20 @@ def create(
         inst = wait_for_ssh(p, inst.id)
         ssh_ok = True
     except TimeoutError as e:
-        console.print(f"[yellow]⚠ {e}[/yellow]")
+        from rich.markup import escape
+
+        console.print(f"[yellow]⚠ {escape(str(e))}[/yellow]")
+        rate = (
+            f"${inst.cost_per_hr:.2f}/hr" if inst.cost_per_hr
+            else "provider rates"
+        )
+        console.print(
+            f"[bold yellow]⚠ The pod exists and is BILLING at {rate} even "
+            f"though SSH never came up.[/bold yellow]\n"
+            f"  Check again:   swm pod status {inst.qualified_id}\n"
+            f"  Retry SSH:     swm ssh {inst.qualified_id}\n"
+            f"  Cut losses:    swm pod terminate {inst.qualified_id} -y"
+        )
 
     cfg.set_value(f"pods.{inst.id}.provider", provider)
     cfg.set_value(f"pods.{inst.id}.name", name)

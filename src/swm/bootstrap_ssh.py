@@ -34,6 +34,7 @@ def wait_for_ssh(
     timeout: int = 600,
     poll_interval: int = 10,
     direct_grace: int = 30,
+    probe_timeout: int = 240,
 ) -> Instance:
     """Poll until the instance is running and SSH is reachable.
 
@@ -41,6 +42,10 @@ def wait_for_ssh(
     only a relay endpoint is found, keeps polling up to *direct_grace*
     extra seconds for a direct endpoint before falling back.  Providers
     that expose SSH directly (Lambda, GCP, AWS) skip the grace window.
+
+    *timeout* budgets phase 1 (instance boot); *probe_timeout* budgets
+    the SSH probe separately, so a slow image pull can no longer starve
+    the probe of attempts.
 
     Displays ``status_detail`` from the provider (e.g. Vast.ai Docker
     build progress) when available to give the user visibility into
@@ -51,6 +56,7 @@ def wait_for_ssh(
     start = time.time()
     last_status = ""
     last_detail = ""
+    last_poll_error = ""
     inst = None
     relay_seen_at: float | None = None
 
@@ -88,14 +94,31 @@ def wait_for_ssh(
                             relay_seen_at = time.time()
                         elif time.time() - relay_seen_at >= direct_grace:
                             break
-        except Exception:
-            pass
+        except Exception as exc:
+            # Keep retrying (provider APIs blip), but never silently: a
+            # persistent failure (bad API key, dead endpoint) used to
+            # burn the whole budget with zero feedback. Exception text is
+            # provider-controlled free text — escape it or a stray [/tag]
+            # crashes the console mid-handler.
+            from rich.markup import escape
+
+            err = f"{type(exc).__name__}: {exc}"
+            if err != last_poll_error:
+                console.print(
+                    f"  [yellow]⚠ provider poll failed: "
+                    f"{escape(err[:160])}[/yellow]  ({_elapsed()})"
+                )
+                last_poll_error = err
 
         time.sleep(poll_interval)
     else:
+        suffix = (
+            f" Last provider error: {last_poll_error}"
+            if last_poll_error else ""
+        )
         raise TimeoutError(
             f"Pod not running after {timeout}s for instance {instance_id}. "
-            f"Last status: {last_status}"
+            f"Last status: {last_status or 'unknown'}.{suffix}"
         )
 
     # Phase 2: pick the best SSH path — direct mapped port always wins.
@@ -116,8 +139,9 @@ def wait_for_ssh(
         console.print("  [yellow]No SSH endpoint found — returning anyway[/yellow]")
         return inst
 
-    # Phase 3: probe until SSH actually responds.
-    console.print(f"  Probing SSH…  ({_elapsed()})")
+    # Phase 3: probe until SSH actually responds — on its own clock, so a
+    # slow boot in phase 1 can't starve it of attempts.
+    console.print(f"  Probing SSH (up to {probe_timeout}s)…  ({_elapsed()})")
     probe = [
         "ssh",
         "-o", "StrictHostKeyChecking=no",
@@ -131,18 +155,27 @@ def wait_for_ssh(
         probe.extend(["-i", str(key)])
     probe.extend([f"{ssh_user}@{ssh_target}", "echo __SWM_OK__"])
 
-    while time.time() - start < timeout:
+    probe_start = time.time()
+    last_probe_error = ""
+    while time.time() - probe_start < probe_timeout:
         try:
             result = subprocess.run(probe, capture_output=True, timeout=15)
             if b"__SWM_OK__" in result.stdout:
                 console.print(f"  [green]✓ SSH ready[/green]  ({_elapsed()})")
                 return inst
+            err = (result.stdout + b"\n" + result.stderr).decode(
+                "utf-8", errors="replace"
+            ).strip().splitlines()
+            if err and err[-1] != last_probe_error:
+                last_probe_error = err[-1]
         except (subprocess.TimeoutExpired, OSError):
             pass
         time.sleep(5)
 
+    suffix = f" Last SSH error: {last_probe_error}" if last_probe_error else ""
     raise TimeoutError(
-        f"SSH not reachable after {timeout}s for instance {instance_id}"
+        f"SSH not reachable after {probe_timeout}s of probing "
+        f"{ssh_user}@{ssh_target}:{port} for instance {instance_id}.{suffix}"
     )
 
 
