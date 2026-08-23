@@ -56,7 +56,10 @@ def pull(instance_id: str, path: str, bucket: str | None, dest: str, exclude: tu
 
     if bucket:
         from swm.storage import resolve_bucket
-        sp, bname = resolve_bucket(bucket)
+        try:
+            sp, bname = resolve_bucket(bucket)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
         remote, bucket_name = sp.slug, bname
         ws = path or ""
     elif meta and meta.get("workspace") and meta.get("storage"):
@@ -147,7 +150,10 @@ def push(instance_id: str, path: str, bucket: str | None, dest: str, exclude: tu
 
     if bucket:
         from swm.storage import resolve_bucket
-        sp, bname = resolve_bucket(bucket)
+        try:
+            sp, bname = resolve_bucket(bucket)
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
         remote, bucket_name = sp.slug, bname
         ws = dest
     elif meta and meta.get("workspace") and meta.get("storage"):
@@ -167,11 +173,14 @@ def push(instance_id: str, path: str, bucket: str | None, dest: str, exclude: tu
     )
 
     with session_from_instance(inst) as sess:
-        rc = workspace_push(
-            sess, remote, bucket_name, ws, src=path,
-            extra_excludes=list(exclude) or None, force=force,
-            tar=use_tar, delete=delete,
-        )
+        try:
+            rc = workspace_push(
+                sess, remote, bucket_name, ws, src=path,
+                extra_excludes=list(exclude) or None, force=force,
+                tar=use_tar, delete=delete,
+            )
+        except RuntimeError as exc:
+            raise click.ClickException(str(exc)) from exc
 
     if rc:
         console.print(
@@ -277,7 +286,10 @@ def sync_auto(instance_id: str, stop: bool, show_status: bool, interval: int,
 
         if bucket:
             from swm.storage import resolve_bucket
-            sp, bname = resolve_bucket(bucket)
+            try:
+                sp, bname = resolve_bucket(bucket)
+            except ValueError as exc:
+                raise click.ClickException(str(exc)) from exc
             remote, bucket_name = sp.slug, bname
             ws = dest
         elif meta and meta.get("workspace") and meta.get("storage"):
@@ -289,8 +301,17 @@ def sync_auto(instance_id: str, stop: bool, show_status: bool, interval: int,
                 "No workspace tracked for this pod. Use -b to specify a bucket."
             )
 
-        if is_autosync_alive(sess):
-            console.print("[yellow]Auto-sync already running.[/yellow] "
+        from swm.sync.autosync import is_autosync_current, refresh_credentials
+
+        if is_autosync_alive(sess) and is_autosync_current(
+            sess, remote, bucket_name, ws, interval=interval,
+        ):
+            # The daemon reads credentials from its env file every cycle;
+            # refreshing here makes `swm sync auto` the rotation path even
+            # when the running daemon is already current.
+            refresh_credentials(sess, remote)
+            console.print("[yellow]Auto-sync already running (current "
+                          "config; credentials refreshed).[/yellow] "
                           "Use --stop to stop it first.")
             return
 
