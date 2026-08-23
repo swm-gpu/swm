@@ -40,13 +40,41 @@ def resolve_bucket(spec: str | None = None) -> tuple[StorageProvider, str]:
     """Resolve 'provider:bucket' or bare 'bucket' to (provider, bucket_name).
 
     Resolution order:
-      1. Explicit 'provider:bucket' spec
-      2. Global default from ``storage.default`` config (e.g. "b2:my-bucket")
-      3. First configured provider with a default bucket
+      1. Explicit 'provider:bucket' spec — taken verbatim.
+      2. Bare 'bucket' — matched against each configured provider's actual
+         buckets; no match is an error. A user-supplied name must never
+         silently alias to a different bucket (``storage.default`` used to
+         win here, sending e.g. ``storage rm -b other`` at the default).
+      3. No spec — global default from ``storage.default`` config, then
+         the first configured provider with a default bucket.
     """
     if spec and ":" in spec:
         slug, bucket = spec.split(":", 1)
         return get_storage(slug), bucket
+
+    if spec:
+        matches: list[StorageProvider] = []
+        for p in get_configured_storage():
+            try:
+                buckets = p.list_buckets()
+            except Exception:
+                continue
+            if any(b.name == spec for b in buckets):
+                matches.append(p)
+        if len(matches) > 1:
+            options = ", ".join(f"'{p.slug}:{spec}'" for p in matches)
+            raise ValueError(
+                f"Bucket {spec!r} exists on multiple providers — "
+                f"target one explicitly: {options}."
+            )
+        if matches:
+            return matches[0], spec
+        raise ValueError(
+            f"Bucket {spec!r} was not found on any configured storage "
+            f"provider. If it exists but your credentials cannot list "
+            f"buckets, target it explicitly as 'provider:{spec}' "
+            f"(e.g. 'b2:{spec}')."
+        )
 
     from swm import config as cfg
 
@@ -57,12 +85,6 @@ def resolve_bucket(spec: str | None = None) -> tuple[StorageProvider, str]:
             return get_storage(slug), bucket
         except ValueError:
             pass
-
-    for p in get_configured_storage():
-        if spec:
-            buckets = p.list_buckets()
-            if any(b.name == spec for b in buckets):
-                return p, spec
 
     for p in get_configured_storage():
         default = p.default_bucket()
