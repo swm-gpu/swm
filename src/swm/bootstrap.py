@@ -396,6 +396,8 @@ def configure_storage(
     )
 
 
+# Keep ".swm_staging" in sync with swm.sync.paths.STAGING_ROOT_NAME
+# (not imported here: swm.sync modules import this module).
 _WS_MARKER_NAMES = (
     ".swm_last_push",
     ".swm_changes.log",
@@ -403,6 +405,7 @@ _WS_MARKER_NAMES = (
     ".swm_autosync.log",
     ".swm_guard",
     ".swm_watcher.pid",
+    ".swm_staging",
 )
 
 

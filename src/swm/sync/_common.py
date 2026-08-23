@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import shlex
+
 from swm.bootstrap import _privileged, _step
 from swm.remote.ssh import RemoteSession
-from swm.sync.paths import STAGING
+from swm.sync.paths import staging_dir_for
 
 
 def restore_permissions(session: RemoteSession, dest: str) -> None:
@@ -42,20 +44,61 @@ def ensure_pigz(session: RemoteSession, console) -> str:
     return "pigz" if "yes" in has_pigz else "gzip"
 
 
-def stage_hardlinks(session: RemoteSession, filelist: str, src: str) -> None:
+def clear_staged_files(session: RemoteSession, staging: str) -> None:
+    """Delete staged files but keep the directory skeleton.
+
+    The staging dirs are deliberately persistent: deleting them would emit
+    bare-path inotify events that evade the slash-anchored excludes and
+    poison delete-reconciliation with nonexistent S3 keys.
+    """
+    q = shlex.quote(staging)
+    session.exec(
+        f"[ -d {q} ] && find {q} -type f -delete 2>/dev/null; true",
+        stream=False,
+    )
+
+
+def stage_hardlinks(session: RemoteSession, filelist: str, src: str) -> str:
     """Create a staging tree of hardlinks for only the changed files.
 
     Each file in *filelist* (absolute paths under *src*) gets a hardlink
-    in ``STAGING`` preserving relative directory structure.  Hardlinks
-    are instant and use no extra disk space.
+    in a persistent staging dir **inside** *src* — same filesystem, so
+    links are instant and use no extra disk space. Files that vanished
+    since the scan are skipped (they surface as deletions next cycle).
+    A link failure on an existing file aborts: silently falling back to
+    ``cp`` used to duplicate the workspace onto the container overlay
+    and could upload partial files as corrupt objects.
+
+    Returns the staging directory path. Raises ``RuntimeError`` if
+    staging could not be completed.
     """
-    session.exec(f"rm -rf {STAGING}", stream=False)
-    session.exec(
+    staging = staging_dir_for(src)
+    q = shlex.quote(staging)
+    clear_staged_files(session, staging)
+    exit_code, out, _ = session.exec(
+        f"mkdir -p {q} && fail=0; "
         f"while IFS= read -r f; do "
+        f"  [ -f \"$f\" ] || continue; "
         f"  rel=\"${{f#{src}/}}\"; "
-        f"  mkdir -p \"{STAGING}/$(dirname \"$rel\")\"; "
-        f"  ln \"$f\" \"{STAGING}/$rel\" 2>/dev/null "
-        f"    || cp \"$f\" \"{STAGING}/$rel\"; "
-        f"done < {filelist}",
+        f"  mkdir -p \"{staging}/$(dirname \"$rel\")\" "
+        f"    || {{ echo \"SWM_STAGE_FAIL(mkdir): $rel\"; fail=1; break; }}; "
+        f"  ln -f \"$f\" \"{staging}/$rel\" "
+        f"    || {{ echo \"SWM_STAGE_FAIL(ln): $f\"; fail=1; break; }}; "
+        f"done < {shlex.quote(filelist)}; "
+        f"exit $fail",
         stream=False,
     )
+    if exit_code != 0:
+        clear_staged_files(session, staging)
+        detail = next(
+            (l.strip() for l in out.splitlines() if "SWM_STAGE_FAIL" in l),
+            "unknown file",
+        )
+        raise RuntimeError(
+            f"Hardlink staging failed ({detail}). Staging lives inside "
+            f"{src} so links never cross filesystems; a failure here "
+            f"means the file is unlinkable (permissions, immutable, or "
+            f"hardlink limit) and the push was aborted rather than "
+            f"silently copying data."
+        )
+    return staging

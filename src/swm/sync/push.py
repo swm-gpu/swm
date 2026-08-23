@@ -6,11 +6,10 @@ import shlex
 
 from swm.bootstrap import _s3_env, _s5cmd_transfer, console
 from swm.remote.ssh import RemoteSession
-from swm.sync._common import ensure_pigz, stage_hardlinks
+from swm.sync._common import clear_staged_files, ensure_pigz, stage_hardlinks
 from swm.sync.paths import (
     DELETED_LIST,
     PUSH_STAMP,
-    STAGING,
     TAR_PATH,
     WATCH_EXCLUDES,
     WATCH_LOG,
@@ -79,7 +78,7 @@ def _tar_push(
     for builtin in (
         ".git", "__pycache__", ".swm_changes.log",
         ".swm_last_push", ".swm_watcher.pid",
-        ".swm_workspace.tar.gz",
+        ".swm_workspace.tar.gz", ".swm_staging", ".cache",
     ):
         tar_excludes += f" --exclude='{builtin}'"
 
@@ -188,6 +187,17 @@ def _push_watcher_tier(
     env = _s3_env(storage_slug)
     console.print("  [dim]Watcher active — reconciling change log with filesystem scan[/dim]")
 
+    # A watcher started by an older swm may lack the current exclude list
+    # (notably the staging dir). start_watcher no-ops when the fingerprint
+    # matches and restarts otherwise; it truncates WATCH_LOG on restart, so
+    # this must happen BEFORE the snapshot below.
+    start_watcher(session, src)
+
+    # Filter watcher-derived paths through the excludes: inotify-tools
+    # >= 3.22 lets directory-create events through regardless of
+    # --exclude, and an older watcher may have logged now-excluded paths.
+    exclude_re = shlex.quote("(" + "|".join(WATCH_EXCLUDES) + ")")
+
     _touch_cycle_mark(session)
     session.exec(
         f"cp {WATCH_LOG} {_WATCH_SNAP} 2>/dev/null || : > {_WATCH_SNAP}; "
@@ -197,14 +207,14 @@ def _push_watcher_tier(
     find_cmd = _find_changed_command(src, _CYCLE_MARK, extra_excludes)
     session.exec(f"{find_cmd} > {_FINDLIST}", stream=False)
     session.exec(
-        f"{{ sort -u {_WATCH_SNAP}"
+        f"{{ sort -u {_WATCH_SNAP} | grep -Ev {exclude_re}"
         f" | while IFS= read -r f; do [ -f \"$f\" ] && echo \"$f\"; done; "
         f"cat {_FINDLIST}; }} | sort -u > {_FILELIST}",
         stream=False,
     )
     if delete:
         session.exec(
-            f"sort -u {_WATCH_SNAP} 2>/dev/null"
+            f"sort -u {_WATCH_SNAP} 2>/dev/null | grep -Ev {exclude_re}"
             f" | while IFS= read -r f; do [ ! -e \"$f\" ] && echo \"$f\"; done"
             f" > {DELETED_LIST}",
             stream=False,
@@ -234,15 +244,26 @@ def _push_watcher_tier(
 
     rc = 0
     if changed > 0:
-        stage_hardlinks(session, _FILELIST, src)
+        try:
+            staging = stage_hardlinks(session, _FILELIST, src)
+        except RuntimeError:
+            # Re-queue the snapshot so deletions seen by the watcher are
+            # not lost — the stamp was not advanced, so changed files are
+            # still discoverable, but watcher-only events would vanish.
+            session.exec(
+                f"cat {_WATCH_SNAP} >> {WATCH_LOG} 2>/dev/null || true",
+                stream=False,
+            )
+            _cleanup_incremental_files(session)
+            raise
         rc = _s5cmd_transfer(
             session,
             f"Pushing {changed} changed file(s) → {workspace}/ on s3://{bucket}",
             f"{env} s5cmd cp --show-progress "
-            f"'{STAGING}/*' 's3://{bucket}/{workspace}/'",
+            f"'{staging}/*' 's3://{bucket}/{workspace}/'",
             force=force,
         )
-        session.exec(f"rm -rf {STAGING}", stream=False)
+        clear_staged_files(session, staging)
 
     if rc == 0 and deleted_count > 0:
         _sync_deletions(session, storage_slug, bucket, workspace, src)
@@ -297,15 +318,19 @@ def _push_find_tier(
         _cleanup_incremental_files(session)
         return 0
 
-    stage_hardlinks(session, _FILELIST, src)
+    try:
+        staging = stage_hardlinks(session, _FILELIST, src)
+    except RuntimeError:
+        _cleanup_incremental_files(session)
+        raise
     rc = _s5cmd_transfer(
         session,
         f"Pushing {changed} changed file(s) → {workspace}/ on s3://{bucket}",
         f"{env} s5cmd cp --show-progress "
-        f"'{STAGING}/*' 's3://{bucket}/{workspace}/'",
+        f"'{staging}/*' 's3://{bucket}/{workspace}/'",
         force=force,
     )
-    session.exec(f"rm -rf {STAGING}", stream=False)
+    clear_staged_files(session, staging)
     if rc == 0:
         _stamp_to_cycle_mark(session)
     else:
@@ -403,6 +428,19 @@ def workspace_push(
     Returns the s5cmd exit code (0 on success, non-zero on partial
     failure). Callers should propagate non-zero to their own exit code.
     """
+    # Normalize: a trailing slash breaks the ${f#src/} prefix strip used
+    # by staging, silently shifting every uploaded S3 key.
+    src = "/" + src.strip("/") if src.strip("/") else "/"
+
+    # Clear staged files a crashed push or autosync daemon may have left
+    # behind so tier-3 full uploads (which don't apply WATCH_EXCLUDES)
+    # can't ship them, and so leftover hardlinks stop pinning deleted
+    # inodes. Keeps the dir skeleton (see paths.STAGING_ROOT_NAME). Worst
+    # case of racing a live daemon cycle: that cycle's s5cmd errors and
+    # re-queues — safe, and the transfer lock serializes the rest.
+    from swm.sync.paths import STAGING_ROOT_NAME
+    clear_staged_files(session, f"{src.rstrip('/')}/{STAGING_ROOT_NAME}")
+
     if tar:
         return _tar_push(session, storage_slug, bucket, workspace, src,
                          extra_excludes, force)

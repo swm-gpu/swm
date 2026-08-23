@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import time
 from pathlib import Path
 
 from swm import config as cfg
 from swm.remote.ssh import RemoteSession
 from swm.sync.paths import (
+    AUTO_ENV,
     AUTO_LOG,
     AUTO_PID,
     AUTO_SCRIPT,
@@ -73,7 +75,13 @@ def _render_daemon_script(
     src: str,
     interval: int,
 ) -> str:
-    """Render the daemon bash script with concrete values substituted."""
+    """Render the daemon bash script with concrete values substituted.
+
+    Credentials are deliberately NOT part of the render — they live in a
+    separate 0600 file (see ``_write_env_file``) that the daemon sources
+    every cycle. The script stays free of secrets and its content hash
+    (``is_autosync_current``) stays stable across credential rotations.
+    """
     template = _DAEMON_TEMPLATE.read_text()
     replacements = {
         "__SWM_INTERVAL__": str(interval),
@@ -86,11 +94,65 @@ def _render_daemon_script(
         "__SWM_TRANSFER_LOCK__": TRANSFER_LOCK,
         "__SWM_WATCHER_EXCLUDES_FILE__": WATCHER_EXCLUDES_FILE,
         "__SWM_WATCHER_EXCLUDES__": "|".join(WATCH_EXCLUDES),
-        "__SWM_ENV_EXPORTS__": _storage_env_exports(storage_slug),
+        "__SWM_ENV_FILE__": AUTO_ENV,
     }
     for placeholder, value in replacements.items():
         template = template.replace(placeholder, value)
     return template
+
+
+def _write_env_file(session: RemoteSession, storage_slug: str) -> None:
+    """Atomically write the daemon's credentials file with 0600 perms.
+
+    The umask guarantees the temp file is 0600 from creation; the rename
+    replaces any pre-existing file (and its permissions) atomically, so a
+    concurrently running daemon cycle sees either the old or the new
+    credentials, never a partial or missing file.
+    """
+    body = _storage_env_exports(storage_slug) + "\n"
+    b64 = base64.b64encode(body.encode()).decode()
+    exit_code, _, _ = session.exec(
+        f"( umask 077; echo '{b64}' | base64 -d > {AUTO_ENV}.tmp ) && "
+        f"mv -f {AUTO_ENV}.tmp {AUTO_ENV}",
+        stream=False,
+    )
+    if exit_code != 0:
+        raise RuntimeError(
+            f"failed to write daemon credentials to {AUTO_ENV}"
+        )
+
+
+def refresh_credentials(session: RemoteSession, storage_slug: str) -> None:
+    """Public entry point: rewrite the daemon's 0600 credentials file.
+
+    The daemon sources the file every cycle, so a rotated key takes
+    effect within one interval without restarting anything.
+    """
+    _write_env_file(session, storage_slug)
+
+
+def is_autosync_current(
+    session: RemoteSession,
+    storage_slug: str,
+    bucket: str,
+    workspace: str,
+    src: str = "/workspace",
+    interval: int = 60,
+) -> bool:
+    """True iff the deployed daemon script matches the current render.
+
+    A running daemon keeps executing the script it was deployed with —
+    exclude lists, staging layout, and credentials baked at deploy time.
+    Comparing content hashes lets callers detect and replace a stale
+    daemon after an swm upgrade or a config change.
+    """
+    body = _render_daemon_script(storage_slug, bucket, workspace, src, interval)
+    want = hashlib.sha256(body.encode()).hexdigest()
+    _, out, _ = session.exec(
+        f"sha256sum {AUTO_SCRIPT} 2>/dev/null | cut -d' ' -f1",
+        stream=False,
+    )
+    return out.strip() == want
 
 
 class AutosyncUnsafeError(RuntimeError):
@@ -132,11 +194,21 @@ def start_autosync(
     has no remote copy yet, or you explicitly want the pod's current
     state to become the authoritative copy.
 
-    Returns True if the daemon was started (or was already running).
+    Returns True if the daemon was started (or was already running with
+    a current script). A running daemon whose deployed script is stale
+    (older swm, changed config) is stopped and redeployed.
     Raises ``AutosyncUnsafeError`` if the safety check fails.
     """
     if _pid_alive(session):
-        return True
+        if is_autosync_current(
+            session, storage_slug, bucket, workspace, src, interval,
+        ):
+            # Script is current — refresh only the credentials file so a
+            # rotated key takes effect within one cycle, no restart.
+            _write_env_file(session, storage_slug)
+            return True
+        stop_autosync(session)
+        time.sleep(1)
 
     if not force and not _pull_stamp_exists(session):
         raise AutosyncUnsafeError(
@@ -159,6 +231,7 @@ def start_autosync(
         if not start_watcher(session, src):
             return False
 
+    _write_env_file(session, storage_slug)
     script_body = _render_daemon_script(
         storage_slug, bucket, workspace, src, interval,
     )
@@ -176,10 +249,10 @@ def start_autosync(
 
 
 def stop_autosync(session: RemoteSession) -> None:
-    """Stop the background auto-sync daemon if running."""
+    """Stop the background auto-sync daemon and remove its credentials."""
     session.exec(
         f"test -f {AUTO_PID} && kill $(cat {AUTO_PID}) 2>/dev/null; "
-        f"rm -f {AUTO_PID}",
+        f"rm -f {AUTO_PID} {AUTO_ENV}",
         stream=False,
     )
 
