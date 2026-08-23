@@ -6,6 +6,110 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.16] - 2026-08-23
+
+Audit-driven hardening release: thirteen defects found in a full-codebase
+audit, each reproduced before fixing and adversarially reviewed after.
+Several were caught live during a provisioning session (a filled container
+disk, a locked-out billing pod, an 87 MB/s ceiling on a 700 MB/s link).
+
+### Security
+- **The autosync daemon no longer persists storage credentials in a
+  world-readable script.** `_storage_env_exports` baked literal
+  `AWS_SECRET_ACCESS_KEY` lines into `/tmp/.swm_autosync.sh` (mode 755),
+  contradicting the documented invariant. Credentials now live in a
+  0600 file written atomically and sourced by the daemon every cycle, so
+  `swm sync auto` doubles as the rotation path: a new key takes effect
+  within one interval, no restart. `--stop` removes the file; the script
+  itself is secret-free, which also makes its content hash stable so the
+  new staleness check can redeploy old daemons on contact.
+- **RunPod GraphQL requests are injection-proof and keep the API key out
+  of URLs.** Every query was assembled by raw f-string interpolation — a
+  double quote in a pod name spliced arbitrary GraphQL — and the key rode
+  as a `?api_key=` query parameter, visible to proxies and embedded in
+  httpx exception text. All string values now pass through JSON-rules
+  escaping (fuzzed through a real GraphQL parser), `cloudType` is
+  validated as the enum it is, and auth moved to an `Authorization:
+  Bearer` header (verified live; RunPod's GraphQL spec documents it).
+
+### Fixed
+- **Workspace sync staging can no longer fill the container disk or ship
+  corrupt backups.** Staging hardlinks were built under `/tmp` — a
+  different filesystem than `/workspace` on every RunPod pod — so `ln`
+  failed with EXDEV and a silent `cp` fallback duplicated the workspace
+  onto the 40 GB overlay (observed live at 106 GB pending) and could
+  upload ENOSPC-truncated partials as healthy objects, defeating
+  auto-down's push verification. Staging now lives in a persistent
+  skeleton inside the synced tree (hardlinks always legal, zero bytes),
+  the `cp` fallback is gone, per-file failures abort the cycle loudly,
+  and snapshot-derived upload/delete lists are filtered through the
+  excludes (inotify-tools ≥ 3.22 passes directory-create events through
+  `--exclude`). Tier-1 pushes restart stale watchers; the daemon script
+  self-redeploys when its hash goes stale.
+- **The model manifest no longer corrupts itself.** Saves went through a
+  quoted heredoc after "escaping" `$`, backticks and backslashes — but
+  quoted heredocs expand nothing, so any model whose JSON contained `$`,
+  `` ` `` or `"` produced an unparseable file, which reloaded as empty
+  and wiped every tracked model on the next save (non-ASCII names were
+  silently mangled). Transport is now base64 (byte-exact for any
+  content), oversized manifests go over scp instead of the argv limit,
+  and unparseable manifests are preserved as `.corrupt-<ts>` backups
+  instead of being replaced. `reconcile_paths` quotes keys and paths.
+- **`swm pod list` can no longer erase other pods' config.** Pruning
+  treated "absent from the listing" as "terminated", so a `-p` filter or
+  one provider's API hiccup deleted the workspace/storage/guard bindings
+  of every pod it didn't see. Entries are now only pruned when their own
+  provider's listing succeeded; unattributable entries are kept and
+  `swm pod prune` says so.
+- **Bare `-b <bucket>` resolves to the named bucket or fails loudly.**
+  With `storage.default` configured, `swm storage rm -b otherbucket`
+  silently operated on the default bucket. Explicit input now matches
+  against real provider buckets, errors when absent (with a
+  `provider:bucket` hint for list-restricted keys), and reports
+  ambiguity when two providers share a name. Defaults apply only when no
+  bucket was given.
+- **Framework presence probes tell the truth.** `probe && echo yes ||
+  echo no` always exits 0, and only the exit code was checked — every
+  framework registered as installed, so the "install X first" hint never
+  fired and Ollama pulls on Ollama-less pods failed instead of falling
+  back to an HF GGUF mirror. Probes now read a marker from output
+  (lenient on SSH hiccups). The truthful answer also armed a latent
+  hazard the review caught: removing an ollama model with the binary
+  absent would have `rm -rf`ed the entire shared ollama store — that
+  path now errors with reinstall guidance instead.
+- **`wait_for_ssh` budgets boot and probing separately and never fails
+  silently.** Both phases shared one 600 s clock (a slow image pull
+  starved the probe to zero attempts) and phase-1 API errors were
+  swallowed — a bad key meant ten silent minutes. The probe now gets its
+  own 240 s window, poll failures print as they happen and ride in the
+  timeout message, and a probe timeout ends with an explicit
+  "pod exists and is BILLING" warning plus status/retry/terminate
+  commands.
+- **CLI positionals stop eating arguments.** With an active pod set,
+  `swm models pull <ref>` (and `link`, `remove`, `upload`) put the
+  trailing argument in the pod slot and died on "Missing argument".
+  A shared `absorb_pod_positional` now shifts and resolves the active
+  pod, matching what `swm run` and `swm download` already did.
+
+### Changed
+- **Model downloads are parallel.** HF single-file pulls route through
+  `hf download` with hf_transfer/Xet (measured 87 MB/s → ~700 MB/s on
+  the same pod) staged in the watcher-excluded `.cache/` of the
+  destination bucket, with automatic fallback to curl and a guard
+  against symlink-era (< 0.23) hub CLIs. The repo-snapshot path gains
+  the same acceleration; Civitai and direct-URL pulls use aria2c
+  (16-way ranged, installed on demand like inotify-tools) with the same
+  curl fallback.
+- **Vast.ai honours its options.** `--region` now filters offers
+  (two-letter country code), `num_gpus` matches exactly instead of
+  renting more GPUs than asked, `--cloud-type` is case-insensitive,
+  explicit `--ports` warns that Vast ignores it, and a new
+  `vastai.exclude_machines` config blocklists broken hosts that the
+  price sort would otherwise re-rent.
+- **RunPod restarts multi-GPU pods at their real size.** `podResume`
+  hardcoded `gpuCount: 1`; it now uses the pod's own count and
+  propagates lookup failures instead of guessing.
+
 ## [0.2.15] - 2026-08-19
 
 ### Changed
