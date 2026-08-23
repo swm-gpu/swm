@@ -186,6 +186,21 @@ class VastAIProvider(CloudProvider):
         })
         return list({o.get("gpu_name", "") for o in data.get("offers", []) if o.get("gpu_name")})
 
+    def _excluded_machines(self) -> set[str]:
+        """Machine IDs the user has blocklisted via config.
+
+        ``vastai.exclude_machines`` accepts a list or a comma-separated
+        string. The marketplace re-lists broken hosts (e.g. ones that
+        never populate authorized_keys) at the top of the price sort, so
+        without this a retry rents the identical bad machine.
+        """
+        raw = cfg.get("vastai.exclude_machines")
+        if raw is None:
+            return set()
+        if isinstance(raw, (list, tuple)):
+            return {str(m).strip() for m in raw if str(m).strip()}
+        return {m.strip() for m in str(raw).split(",") if m.strip()}
+
     def create_instance(self, config: CreateConfig) -> Instance:
         gpu_name = resolve_gpu_type(config.gpu_type, self._gpu_names())
         image = config.image or DEFAULT_IMAGE
@@ -193,20 +208,40 @@ class VastAIProvider(CloudProvider):
         disk_gb = max(config.container_disk_gb, config.volume_gb)
         search_body: dict = {
             "gpu_name": {"eq": gpu_name},
-            "num_gpus": {"gte": config.gpu_count},
+            # eq, not gte: a gte match can rent (and bill) more GPUs than
+            # asked. list_gpus already uses eq for the same reason.
+            "num_gpus": {"eq": config.gpu_count},
             "rentable": {"eq": True},
             "disk_space": {"gte": disk_gb},
             "order": [["dph_total", "asc"]],
             "limit": 10,
         }
-        if config.cloud_type == "SECURE":
+        excluded = self._excluded_machines()
+        if excluded:
+            # Exclusions filter AFTER the fetch; widen it so a blocklist
+            # can't starve the candidate pool below the rent loop's needs.
+            search_body["limit"] = 10 + len(excluded)
+        if str(config.cloud_type).upper() == "SECURE":
             search_body["verification"] = {"eq": "verified"}
+        if config.region:
+            # Vast matches two-letter country codes, case-sensitively and
+            # uppercase (verified against the live search API). Previously
+            # --region was silently ignored on this provider.
+            search_body["geolocation"] = {"eq": str(config.region).strip().upper()}
 
         data = self._post("bundles/", search_body)
         offers = data.get("offers", [])
+
+        if excluded:
+            offers = [
+                o for o in offers if str(o.get("machine_id")) not in excluded
+            ]
+
         if not offers:
             raise RuntimeError(
                 f"No Vast.ai offers found for {gpu_name} x{config.gpu_count}"
+                + (f" in region {config.region!r}" if config.region else "")
+                + (" (after machine blocklist)" if excluded else "")
             )
 
         rent_body = {

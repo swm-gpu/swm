@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import httpx
 
 from swm import config as cfg
@@ -35,6 +37,19 @@ POD_FIELDS = """
 
 SSH_RELAY_HOST = "ssh.runpod.io"
 
+_CLOUD_TYPES = ("SECURE", "COMMUNITY", "ALL")
+
+
+def _gql_str(value: object) -> str:
+    """Render a value as a GraphQL string literal, quotes included.
+
+    GraphQL string literals share JSON's escaping rules, so json.dumps
+    both quotes and escapes correctly. Interpolating raw f-string values
+    let a double quote in a pod name (or any user-controlled field)
+    corrupt the whole mutation.
+    """
+    return json.dumps(str(value))
+
 
 class RunPodProvider(CloudProvider):
     @property
@@ -57,12 +72,16 @@ class RunPodProvider(CloudProvider):
         return str(key)
 
     def _gql(self, query: str) -> dict:
+        # Bearer header, never a URL query param: URLs land in proxy and
+        # server logs and in httpx exception messages; headers do not.
         with httpx.Client(timeout=30) as client:
             resp = client.post(
                 API_URL,
-                params={"api_key": self._api_key()},
                 json={"query": query},
-                headers={"Content-Type": "application/json"},
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {self._api_key()}",
+                },
             )
             resp.raise_for_status()
             body = resp.json()
@@ -79,12 +98,12 @@ class RunPodProvider(CloudProvider):
 
     def get_instance(self, pod_id: str) -> Instance:
         data = self._gql(
-            f'query {{ pod(input: {{podId: "{pod_id}"}}) {{ {POD_FIELDS} }} }}'
+            f"query {{ pod(input: {{podId: {_gql_str(pod_id)}}}) {{ {POD_FIELDS} }} }}"
         )
         return self._to_instance(data["pod"])
 
     def list_gpus(self, gpu_count: int | None = None) -> list[GpuInfo]:
-        n = gpu_count or 1
+        n = int(gpu_count or 1)
         data = self._gql(f"""
             query {{
                 gpuTypes {{
@@ -123,23 +142,35 @@ class RunPodProvider(CloudProvider):
         gpu_id = resolve_gpu_type(config.gpu_type, all_ids)
         image = config.image or DEFAULT_IMAGE
         env_entries = ", ".join(
-            f'{{ key: "{k}", value: "{v}" }}' for k, v in config.env.items()
+            f"{{ key: {_gql_str(k)}, value: {_gql_str(v)} }}"
+            for k, v in config.env.items()
         )
 
-        dc_line = f'dataCenterId: "{config.region}"' if config.region else ""
+        # cloudType is a GraphQL enum token (unquoted), so it can't be
+        # string-escaped — validate against the closed set instead.
+        cloud_type = str(config.cloud_type).upper()
+        if cloud_type not in _CLOUD_TYPES:
+            raise RuntimeError(
+                f"Invalid cloud type {config.cloud_type!r}; "
+                f"expected one of {', '.join(_CLOUD_TYPES)}"
+            )
+
+        dc_line = (
+            f"dataCenterId: {_gql_str(config.region)}" if config.region else ""
+        )
 
         data = self._gql(f"""
             mutation {{
                 podFindAndDeployOnDemand(input: {{
-                    cloudType: {config.cloud_type}
-                    gpuCount: {config.gpu_count}
-                    gpuTypeId: "{gpu_id}"
-                    name: "{config.name}"
-                    imageName: "{image}"
-                    volumeInGb: {config.volume_gb}
-                    containerDiskInGb: {config.container_disk_gb}
+                    cloudType: {cloud_type}
+                    gpuCount: {int(config.gpu_count)}
+                    gpuTypeId: {_gql_str(gpu_id)}
+                    name: {_gql_str(config.name)}
+                    imageName: {_gql_str(image)}
+                    volumeInGb: {int(config.volume_gb)}
+                    containerDiskInGb: {int(config.container_disk_gb)}
                     volumeMountPath: "/workspace"
-                    ports: "{config.ports}"
+                    ports: {_gql_str(config.ports)}
                     env: [{env_entries}]
                     {dc_line}
                 }}) {{ {POD_FIELDS} }}
@@ -148,9 +179,14 @@ class RunPodProvider(CloudProvider):
         return self._to_instance(data["podFindAndDeployOnDemand"])
 
     def start_instance(self, instance_id: str) -> Instance:
+        # podResume requires gpuCount; hardcoding 1 silently downsized
+        # multi-GPU pods on restart. Use the pod's own count — and let a
+        # failed lookup propagate rather than guessing 1, which would be
+        # the original bug wearing a trenchcoat.
+        gpu_count = int(self.get_instance(instance_id).gpu_count or 1)
         data = self._gql(f"""
             mutation {{
-                podResume(input: {{ podId: "{instance_id}", gpuCount: 1 }}) {{
+                podResume(input: {{ podId: {_gql_str(instance_id)}, gpuCount: {gpu_count} }}) {{
                     {POD_FIELDS}
                 }}
             }}
@@ -160,7 +196,7 @@ class RunPodProvider(CloudProvider):
     def stop_instance(self, instance_id: str) -> Instance:
         data = self._gql(f"""
             mutation {{
-                podStop(input: {{ podId: "{instance_id}" }}) {{
+                podStop(input: {{ podId: {_gql_str(instance_id)} }}) {{
                     id name desiredStatus
                 }}
             }}
@@ -170,7 +206,7 @@ class RunPodProvider(CloudProvider):
     def terminate_instance(self, instance_id: str) -> bool:
         self._gql(f"""
             mutation {{
-                podTerminate(input: {{ podId: "{instance_id}" }})
+                podTerminate(input: {{ podId: {_gql_str(instance_id)} }})
             }}
         """)
         return True
