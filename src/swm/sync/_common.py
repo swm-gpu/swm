@@ -44,6 +44,28 @@ def ensure_pigz(session: RemoteSession, console) -> str:
     return "pigz" if "yes" in has_pigz else "gzip"
 
 
+def ensure_zstd(session: RemoteSession, console) -> str | None:
+    """Ensure a Zstandard tool is available; return ``'pzstd'`` (parallel,
+    multi-frame) or ``'zstd'``, or None when neither can be had.
+
+    Unlike gzip there is no universally present fallback, so callers must
+    treat None as a hard error rather than silently degrading.
+    """
+    probe = ("command -v pzstd >/dev/null 2>&1 && echo pzstd || "
+             "(command -v zstd >/dev/null 2>&1 && echo zstd || echo no)")
+    _, found, _ = session.exec(probe, stream=False)
+    found = found.strip()
+    if found in ("pzstd", "zstd"):
+        return found
+
+    console.print("  [dim]Installing zstd…[/dim]")
+    session.exec(_privileged("$SUDO apt-get install -y -qq zstd 2>/dev/null"),
+                 stream=False)
+    _, found, _ = session.exec(probe, stream=False)
+    found = found.strip()
+    return found if found in ("pzstd", "zstd") else None
+
+
 def clear_staged_files(session: RemoteSession, staging: str) -> None:
     """Delete staged files but keep the directory skeleton.
 
