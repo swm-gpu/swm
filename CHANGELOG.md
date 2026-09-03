@@ -6,6 +6,24 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.18] - 2026-09-03
+
+### Fixed
+- **`tar_pull` downloads to a staging file again.** 0.2.17 streamed the
+  archive through `s5cmd cat` so the download and the extract could overlap.
+  On the first 100 GB production restore that pipeline stalled after 3.6 GB:
+  `cat`'s ordered writer head-of-line blocks on one slow part and buffers
+  every later part without bound (2.5 GB resident and climbing, tar starved),
+  and the run had to be forced off. `cp` writes parts at their offsets and
+  has no ordering constraint, so a slow part costs only its own time. The
+  pull is once more `s5cmd cp` (64 concurrent 100 MiB parts) into
+  `/workspace/.swm_workspace.tar.{zst,gz}`, then the codec-aware extract
+  from 0.2.17 — `pzstd -d` across frames for `.tar.zst`, both stage
+  statuses checked and echoed. The volume must again hold the packed archive
+  and the unpacked tree at once; the `.tar.zst` staging name is excluded
+  from the watcher, from `tar_push`, and is a workspace marker like its
+  gzip sibling.
+
 ## [0.2.17] - 2026-09-03
 
 ### Changed
