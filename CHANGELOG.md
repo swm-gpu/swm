@@ -6,6 +6,35 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.17] - 2026-09-03
+
+### Changed
+- **`tar_pull` streams the archive instead of staging it.** The old pull
+  downloaded the whole tarball to `/workspace/.swm_workspace.tar.gz`, then
+  decompressed and extracted it in a second, serial phase — so a 110 GB
+  restore paid for the download *and* the extract back to back (21 and 15
+  minutes on a real pod) and needed volume headroom for the packed archive
+  on top of the unpacked tree. The object is now fed straight through
+  `s5cmd cat` (concurrent ranged parts, re-ordered for stdout) into the
+  decompressor and `tar -x`: the three stages overlap, the pull takes about
+  as long as the slower of the link and the disk, and nothing but the tree
+  lands on the volume. Every stage's exit status is checked and echoed
+  (`pull stages: download=… decompress=… extract=…`), because with
+  `pipefail` alone a truncated download that the decompressor tolerates
+  could report success; GNU tar prints a heartbeat per GiB so a long pull
+  is visibly alive.
+- **Zstandard tarballs.** `tar_pull` resolves the codec from the key's
+  suffix — `.tar.zst` (decompressed by `pzstd`, in parallel across frames,
+  or `zstd`) or `.tar.gz` (`pigz`/`gzip`) — and installs `zstd` on the pod
+  on first use, like `pigz`. A bare name still means `.tar.gz`, so existing
+  callers and archives are unaffected; the new `compression=` keyword names
+  the codec for bare names. `tar_object()` exposes the resolution.
+
+### Added
+- `swm.sync.ensure_zstd(session, console)`: returns `"pzstd"`, `"zstd"`,
+  or `None` after an install attempt. Unlike gzip there is no always-present
+  fallback, so callers treat `None` as a hard error instead of degrading.
+
 ## [0.2.16] - 2026-08-23
 
 Audit-driven hardening release: thirteen defects found in a full-codebase
