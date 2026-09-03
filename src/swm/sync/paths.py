@@ -59,7 +59,7 @@ WATCH_EXCLUDES: tuple[str, ...] = (
     r"\.swm_changes\.log",
     r"\.swm_last_push",
     r"\.swm_watcher\.pid",
-    r"\.swm_workspace\.tar\.gz",
+    r"\.swm_workspace\.tar\.(gz|zst)",
     # Push/autosync staging lives inside the synced tree (same filesystem,
     # so hardlinks work) and must never sync itself. The daemon and tier-1
     # push additionally filter their snapshot lists through these excludes,

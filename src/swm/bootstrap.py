@@ -402,6 +402,7 @@ _WS_MARKER_NAMES = (
     ".swm_last_push",
     ".swm_changes.log",
     ".swm_workspace.tar.gz",
+    ".swm_workspace.tar.zst",
     ".swm_autosync.log",
     ".swm_guard",
     ".swm_watcher.pid",

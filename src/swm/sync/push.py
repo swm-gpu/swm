@@ -78,7 +78,7 @@ def _tar_push(
     for builtin in (
         ".git", "__pycache__", ".swm_changes.log",
         ".swm_last_push", ".swm_watcher.pid",
-        ".swm_workspace.tar.gz", ".swm_staging", ".cache",
+        ".swm_workspace.tar.gz", ".swm_workspace.tar.zst", ".swm_staging", ".cache",
     ):
         tar_excludes += f" --exclude='{builtin}'"
 

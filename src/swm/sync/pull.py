@@ -7,7 +7,7 @@ import shlex
 from swm.bootstrap import _s3_env, _s5cmd_transfer, console
 from swm.remote.ssh import RemoteSession, _sh_quote
 from swm.sync._common import ensure_pigz, ensure_zstd, restore_permissions
-from swm.sync.paths import PUSH_STAMP, WATCH_LOG
+from swm.sync.paths import PUSH_STAMP, TAR_PATH, WATCH_LOG
 from swm.sync.watcher import start_watcher
 
 
@@ -117,16 +117,23 @@ def workspace_pull(
 # historical ``.tar.gz`` (or ``.tar.zst`` when the caller names the codec).
 TAR_SUFFIXES: dict[str, str] = {".tar.zst": "zstd", ".tar.gz": "gzip"}
 
-# ``s5cmd cat`` downloads ranged parts concurrently and re-orders them for
-# stdout, holding out-of-order parts in memory: the window is roughly
-# concurrency x part size (1 GiB here), observed to peak at ~2-3x under a
-# fast link. GPU hosts have the RAM; a wider window buys little because the
-# pipeline is bound by the slower of the link and the extracting disk.
-_CAT_CONCURRENCY = 16
-_CAT_PART_MIB = 64
+# The archive is downloaded to a staging file (concurrent ranged parts written
+# at their offsets) and extracted from there. Streaming it through
+# ``s5cmd cat`` was tried: its ordered writer head-of-line blocks on one slow
+# part and buffers every later part without bound — a 100 GB restore stalled
+# after 3.6 GB with 2.5 GB resident and tar starved. ``cp`` has no ordering
+# constraint, so a slow part costs only its own time.
+_CP_CONCURRENCY = 64
+_CP_PART_MIB = 100
 # GNU tar emits one heartbeat line per 1 GiB of archive read (102400 records
-# of 10 KiB) so a long pull is visibly alive without a progress bar.
+# of 10 KiB) so a long extract is visibly alive without a progress bar.
 _TAR_CHECKPOINT = "--checkpoint=102400 --checkpoint-action=echo"
+
+
+def tar_staging_path(codec: str) -> str:
+    """Where the downloaded archive lands before extraction; the suffix keeps
+    the file self-describing for anyone inspecting a half-finished restore."""
+    return TAR_PATH if codec == "gzip" else TAR_PATH[: -len(".gz")] + ".zst"
 
 
 def tar_object(workspace: str, compression: str | None = None) -> tuple[str, str]:
@@ -165,15 +172,12 @@ def _ensure_decompressor(session: RemoteSession, codec: str) -> str:
     return f"{ensure_pigz(session, console)} -d -c"
 
 
-def tar_pull_pipeline(env: str, s3_key: str, decompressor: str, dest: str) -> str:
-    """The remote pipeline: ``s5cmd cat | decompress | tar -x`` under bash.
+def tar_extract_pipeline(decompressor: str, staged: str, dest: str) -> str:
+    """The remote extract: ``decompress < staged | tar -x`` under bash.
 
-    Download, decompression and extraction overlap, and nothing but the tree
-    itself lands on the volume — a pull needs only the unpacked size of disk,
-    not unpacked plus packed. Every stage's status is checked: with
-    ``pipefail`` alone a truncated download that the decompressor happens to
-    tolerate could report success, and the stage statuses are echoed so a
-    failure names its stage.
+    Both stages' statuses are checked: with ``pipefail`` alone a truncated
+    archive the decompressor happens to tolerate could report success, and
+    the statuses are echoed so a failure names its stage.
     """
     checkpoint = (
         "CKPT=''; tar --version 2>/dev/null | grep -q GNU && "
@@ -181,14 +185,10 @@ def tar_pull_pipeline(env: str, s3_key: str, decompressor: str, dest: str) -> st
     )
     return (
         "set -o pipefail; " + checkpoint
-        + f"{env} s5cmd cat --concurrency {_CAT_CONCURRENCY} "
-        f"--part-size {_CAT_PART_MIB} '{s3_key}' "
-        f"| {decompressor} | tar $CKPT -xf - -C '{dest}'; "
+        + f"{decompressor} < '{staged}' | tar $CKPT -xf - -C '{dest}'; "
         'pcs=("${PIPESTATUS[@]}"); '
-        'echo "pull stages: download=${pcs[0]:-1} decompress=${pcs[1]:-1} '
-        'extract=${pcs[2]:-1}"; '
-        '[ "${pcs[0]:-1}" -eq 0 ] && [ "${pcs[1]:-1}" -eq 0 ] && '
-        '[ "${pcs[2]:-1}" -eq 0 ]'
+        'echo "extract stages: decompress=${pcs[0]:-1} extract=${pcs[1]:-1}"; '
+        '[ "${pcs[0]:-1}" -eq 0 ] && [ "${pcs[1]:-1}" -eq 0 ]'
     )
 
 
@@ -202,30 +202,50 @@ def tar_pull(
     *,
     compression: str | None = None,
 ) -> None:
-    """Stream a tarball from S3 straight into *dest*.
+    """Download a tarball from S3 and extract it into *dest*.
 
     Counterpart to ``tar_push``. *workspace* is the object key without the
     bucket, with or without its ``.tar.zst`` / ``.tar.gz`` suffix (see
-    :func:`tar_object`). The object is downloaded as concurrent ranged parts
-    and fed through the decompressor into tar as it arrives, so the pull
-    needs no staging file and takes about as long as the slower of the
-    download and the extraction rather than their sum.
+    :func:`tar_object`). The archive is fetched as concurrent ranged parts
+    into a staging file beside *dest*, then decompressed (in parallel across
+    frames for ``pzstd`` archives) into tar; the volume must hold the packed
+    archive and the unpacked tree at once.
     """
     env = _s3_env(storage_slug)
     key, codec = tar_object(workspace, compression)
     s3_key = f"s3://{bucket}/{key}"
     decompressor = _ensure_decompressor(session, codec)
+    staged = tar_staging_path(codec)
 
     session.exec(f"mkdir -p '{dest}'", stream=False)
 
     rc = _s5cmd_transfer(
         session,
-        f"Streaming {s3_key} → {dest}/",
-        f"bash -c {_sh_quote(tar_pull_pipeline(env, s3_key, decompressor, dest))}",
+        f"Downloading {s3_key}",
+        f"{env} s5cmd cp --show-progress "
+        f"--concurrency {_CP_CONCURRENCY} --part-size {_CP_PART_MIB} "
+        f"'{s3_key}' {staged}",
         force=force,
     )
     if rc != 0:
-        raise RuntimeError("Tarball download/extraction failed")
+        raise RuntimeError("Tarball download failed")
+
+    _, tar_size, _ = session.exec(
+        f"ls -lh {staged} 2>/dev/null | awk '{{print $5}}'",
+        stream=False,
+    )
+    console.print(f"  [dim]Tarball: {tar_size.strip() or '?'} — extracting[/dim]")
+
+    extract_rc = _s5cmd_transfer(
+        session,
+        f"Extracting → {dest}/",
+        f"bash -c {_sh_quote(tar_extract_pipeline(decompressor, staged, dest))}",
+        force=False,
+    )
+    if extract_rc != 0:
+        raise RuntimeError("Tarball extraction failed")
+
+    session.exec(f"rm -f {staged}", stream=False)
 
     restore_permissions(session, dest)
     _repair_framework_links(session, dest)
