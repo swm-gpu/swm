@@ -73,9 +73,22 @@ def _detect_storage_region() -> str | None:
 @main.command()
 @click.option("--gpu", "-g", default=None, help="Filter by GPU name (free text, e.g. h200, a100, rtx4090)")
 @click.option("--count", "-c", "gpu_count", default=None, type=int, help="GPU count (e.g. 4 for 4×GPU configs)")
-@click.option("--max-price", default=None, type=float, help="Max on-demand $/hr per GPU")
+@click.option(
+    "--max-price",
+    default=None,
+    type=float,
+    help="Max on-demand $/hr for the listed GPU configuration",
+)
+@click.option("--min-vram", "min_vram_gb", default=None, type=float, help="Minimum VRAM in GB")
+@click.option(
+    "--min-download",
+    "min_download_mbps",
+    default=None,
+    type=float,
+    help="Minimum provider-reported download bandwidth in Mbps",
+)
 @click.option("--provider", "-p", default=None, help="Filter to one provider")
-@click.option("--secure", is_flag=True, help="Only show secure-cloud providers")
+@click.option("--secure", is_flag=True, help="Only show secure-cloud offers")
 @click.option(
     "--sort", "sort_by", default="price",
     type=click.Choice(["price", "vram", "provider"], case_sensitive=False),
@@ -84,9 +97,19 @@ def _detect_storage_region() -> str | None:
 @click.option("--region", "-r", default=None, help="Filter by region (free text, e.g. us-east, europe)")
 @click.option("--limit", "-n", default=20, type=int, help="Max rows to show (default: 20)")
 @click.option("--all", "show_all", is_flag=True, help="Show all results (no pagination)")
-def gpus(gpu: str | None, gpu_count: int | None, max_price: float | None,
-         provider: str | None, secure: bool, sort_by: str,
-         region: str | None, limit: int, show_all: bool):
+def gpus(
+    gpu: str | None,
+    gpu_count: int | None,
+    max_price: float | None,
+    min_vram_gb: float | None,
+    min_download_mbps: float | None,
+    provider: str | None,
+    secure: bool,
+    sort_by: str,
+    region: str | None,
+    limit: int,
+    show_all: bool,
+):
     """Search live GPU availability and pricing across all providers.
 
     \b
@@ -103,8 +126,22 @@ def gpus(gpu: str | None, gpu_count: int | None, max_price: float | None,
       swm gpus -r us-west             # GPUs in US West regions
     """
     from rich.table import Table
-    from swm.providers.base import GpuInfo
+    from swm.providers.base import (
+        GpuInfo,
+        GpuSearchQuery,
+        UnsupportedSearchFilters,
+    )
     from swm.cuda import min_cuda_for
+
+    query = GpuSearchQuery(
+        gpu=gpu,
+        gpu_count=gpu_count,
+        max_price=max_price,
+        region=region,
+        secure_only=secure,
+        min_vram_gb=min_vram_gb,
+        min_download_mbps=min_download_mbps,
+    )
 
     if provider:
         try:
@@ -124,42 +161,30 @@ def gpus(gpu: str | None, gpu_count: int | None, max_price: float | None,
             sources.append(get_provider(slug))
 
     all_gpus: list[GpuInfo] = []
+    searched_sources = 0
+    skipped_sources = 0
     with console.status("Searching GPUs…", spinner="dots") as spin:
         for p in sources:
             label = _provider_display(p.slug) if hasattr(p, "slug") else p.name
             spin.update(f"Querying {label}…")
             try:
-                results = p.list_gpus(gpu_count=gpu_count)
+                results = p.search_gpus(query)
+                searched_sources += 1
                 all_gpus.extend(results)
                 console.log(f"[green]✓[/green] {label} — {len(results)} GPUs")
+            except UnsupportedSearchFilters as exc:
+                skipped_sources += 1
+                console.log(f"[yellow]–[/yellow] {label} — {exc}")
             except Exception as exc:
                 console.log(f"[red]✗[/red] {label} — {exc}")
 
-    if gpu:
-        needle = gpu.lower()
-        all_gpus = [
-            g for g in all_gpus
-            if needle in g.display_name.lower() or needle in g.type_id.lower()
-        ]
-
-    if max_price is not None:
-        all_gpus = [
-            g for g in all_gpus
-            if g.on_demand_price is not None and g.on_demand_price <= max_price
-        ]
-
-    if secure:
-        all_gpus = [g for g in all_gpus if g.secure_cloud]
-
-    if region:
-        needle = region.lower()
-        all_gpus = [
-            g for g in all_gpus
-            if any(needle in r.lower() for r in g.regions)
-        ]
-
     if not all_gpus:
-        console.print("[yellow]No GPUs found matching filters.[/yellow]")
+        if skipped_sources and not searched_sources:
+            console.print(
+                "[yellow]No providers can apply all requested filters.[/yellow]"
+            )
+        else:
+            console.print("[yellow]No GPUs found matching filters.[/yellow]")
         return
 
     if sort_by == "vram":

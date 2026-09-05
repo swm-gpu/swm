@@ -16,14 +16,20 @@ swm gpus [OPTIONS]
 | Option | Description |
 |--------|------------|
 | `-g`, `--gpu` | GPU name filter (fuzzy match) |
-| `-c`, `--count` | Minimum GPU count |
-| `--max-price` | Maximum price per hour |
+| `-c`, `--count` | GPU count |
+| `--max-price` | Maximum price per hour for the listed GPU configuration |
+| `--min-vram` | Minimum VRAM in GB |
+| `--min-download` | Minimum provider-reported download bandwidth in Mbps |
 | `-p`, `--provider` | Filter to specific provider |
 | `--secure` | Only show secure cloud offers |
 | `-r`, `--region` | Filter by region (free text, e.g. `us-west`) |
 | `--sort` | Sort by: `price` (default), `vram`, `provider` |
 | `-n`, `--limit` | Max results to show |
 | `--all` | Show all results (no limit) |
+
+Providers apply filters to their native APIs when supported, then perform
+provider-neutral checks locally. A provider is skipped with an explicit
+message when it cannot guarantee a requested filter.
 
 ## Examples
 

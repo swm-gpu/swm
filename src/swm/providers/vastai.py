@@ -10,8 +10,11 @@ from swm.providers.base import (
     CloudProvider,
     CreateConfig,
     GpuInfo,
+    GpuSearchField,
+    GpuSearchQuery,
     Instance,
     InstanceStatus,
+    normalize_gpu_search,
     resolve_gpu_type,
 )
 
@@ -32,6 +35,16 @@ _STATUS = {
 
 
 class VastAIProvider(CloudProvider):
+    native_search_fields = frozenset({
+        GpuSearchField.GPU,
+        GpuSearchField.GPU_COUNT,
+        GpuSearchField.MAX_PRICE,
+        GpuSearchField.REGION,
+        GpuSearchField.SECURE,
+        GpuSearchField.MIN_VRAM,
+        GpuSearchField.MIN_DOWNLOAD,
+    })
+
     @property
     def name(self) -> str:
         return "Vast.ai"
@@ -139,13 +152,44 @@ class VastAIProvider(CloudProvider):
         return [self._to_instance(i) for i in self._instance_rows()]
 
     def list_gpus(self, gpu_count: int | None = None) -> list[GpuInfo]:
-        num_filter: dict = {"eq": gpu_count} if gpu_count else {"gte": 1}
-        data = self._post("bundles/", {
+        return self._search_gpus(GpuSearchQuery(gpu_count=gpu_count))
+
+    def _search_gpus(self, query: GpuSearchQuery) -> list[GpuInfo]:
+        num_filter: dict = (
+            {"eq": query.gpu_count}
+            if query.gpu_count is not None
+            else {"gte": 1}
+        )
+        search_body: dict = {
             "num_gpus": num_filter,
             "rentable": {"eq": True},
             "order": [["dph_total", "asc"]],
             "limit": 3000,
-        })
+        }
+        if query.gpu:
+            needle = normalize_gpu_search(query.gpu)
+            matches = [
+                name
+                for name in self._gpu_names()
+                if needle in normalize_gpu_search(name)
+            ]
+            if not matches:
+                return []
+            search_body["gpu_name"] = {"in": matches}
+        if query.max_price is not None:
+            search_body["dph_total"] = {"lte": query.max_price}
+        if query.region:
+            search_body["geolocation"] = {
+                "eq": query.region.strip().upper(),
+            }
+        if query.secure_only:
+            search_body["verified"] = {"eq": True}
+        if query.min_vram_gb is not None:
+            search_body["gpu_ram"] = {"gte": query.min_vram_gb * 1024}
+        if query.min_download_mbps is not None:
+            search_body["inet_down"] = {"gte": query.min_download_mbps}
+
+        data = self._post("bundles/", search_body)
         seen: dict[tuple[str, int], GpuInfo] = {}
         for offer in data.get("offers", []):
             gpu_name = offer.get("gpu_name", "unknown")
@@ -179,12 +223,9 @@ class VastAIProvider(CloudProvider):
     # ── mutations ───────────────────────────────────────────────────
 
     def _gpu_names(self) -> list[str]:
-        """Fetch the set of distinct GPU names currently on the marketplace."""
-        data = self._post("bundles/", {
-            "rentable": {"eq": True},
-            "limit": 10000,
-        })
-        return list({o.get("gpu_name", "") for o in data.get("offers", []) if o.get("gpu_name")})
+        """Fetch Vast.ai's complete GPU-name catalog."""
+        data = self._get("gpu_names/unique/")
+        return [str(name) for name in data.get("gpu_names", []) if name]
 
     def _excluded_machines(self) -> set[str]:
         """Machine IDs the user has blocklisted via config.

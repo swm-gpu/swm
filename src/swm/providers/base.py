@@ -39,6 +39,52 @@ class GpuInfo:
     regions: list[str] = field(default_factory=list)
 
 
+class GpuSearchField(str, Enum):
+    GPU = "gpu"
+    GPU_COUNT = "gpu_count"
+    MAX_PRICE = "max_price"
+    REGION = "region"
+    SECURE = "secure"
+    MIN_VRAM = "min_vram"
+    MIN_DOWNLOAD = "min_download"
+
+
+@dataclass(frozen=True)
+class GpuSearchQuery:
+    """Provider-neutral constraints for GPU searches."""
+
+    gpu: str | None = None
+    gpu_count: int | None = None
+    max_price: float | None = None
+    region: str | None = None
+    secure_only: bool = False
+    min_vram_gb: float | None = None
+    min_download_mbps: float | None = None
+
+    @property
+    def active_fields(self) -> frozenset[GpuSearchField]:
+        fields: set[GpuSearchField] = set()
+        if self.gpu:
+            fields.add(GpuSearchField.GPU)
+        if self.gpu_count is not None:
+            fields.add(GpuSearchField.GPU_COUNT)
+        if self.max_price is not None:
+            fields.add(GpuSearchField.MAX_PRICE)
+        if self.region:
+            fields.add(GpuSearchField.REGION)
+        if self.secure_only:
+            fields.add(GpuSearchField.SECURE)
+        if self.min_vram_gb is not None:
+            fields.add(GpuSearchField.MIN_VRAM)
+        if self.min_download_mbps is not None:
+            fields.add(GpuSearchField.MIN_DOWNLOAD)
+        return frozenset(fields)
+
+
+class UnsupportedSearchFilters(ValueError):
+    """Raised when a provider cannot guarantee one or more search filters."""
+
+
 @dataclass
 class Instance:
     """Unified representation of a GPU instance across all providers."""
@@ -111,6 +157,11 @@ def _normalize(s: str) -> str:
     return re.sub(r"[^a-z0-9.]+", " ", s.lower()).strip()
 
 
+def normalize_gpu_search(s: str) -> str:
+    """Normalize GPU text so compact CLI names match provider display names."""
+    return re.sub(r"[^a-z0-9]+", "", s.lower())
+
+
 def resolve_gpu_type(needle: str, candidates: list[str]) -> str:
     """Fuzzy-match a user-supplied GPU name against a list of real type IDs.
 
@@ -156,6 +207,65 @@ def resolve_gpu_type(needle: str, candidates: list[str]) -> str:
 
 class CloudProvider(ABC):
     """Interface that every cloud GPU provider must implement."""
+
+    native_search_fields = frozenset({GpuSearchField.GPU_COUNT})
+    local_search_fields = frozenset({
+        GpuSearchField.GPU,
+        GpuSearchField.GPU_COUNT,
+        GpuSearchField.MAX_PRICE,
+        GpuSearchField.REGION,
+        GpuSearchField.SECURE,
+        GpuSearchField.MIN_VRAM,
+    })
+
+    def search_gpus(self, query: GpuSearchQuery) -> list[GpuInfo]:
+        """Search GPUs while refusing constraints the provider cannot honor."""
+        supported = self.native_search_fields | self.local_search_fields
+        unsupported = query.active_fields - supported
+        if unsupported:
+            names = ", ".join(sorted(field.value for field in unsupported))
+            raise UnsupportedSearchFilters(f"unsupported filters: {names}")
+
+        results = self._search_gpus(query)
+        return self._apply_local_search_filters(results, query)
+
+    def _search_gpus(self, query: GpuSearchQuery) -> list[GpuInfo]:
+        return self.list_gpus(gpu_count=query.gpu_count)
+
+    @staticmethod
+    def _apply_local_search_filters(
+        results: list[GpuInfo],
+        query: GpuSearchQuery,
+    ) -> list[GpuInfo]:
+        if query.gpu:
+            needle = normalize_gpu_search(query.gpu)
+            results = [
+                gpu
+                for gpu in results
+                if needle in normalize_gpu_search(gpu.display_name)
+                or needle in normalize_gpu_search(gpu.type_id)
+            ]
+        if query.gpu_count is not None:
+            results = [gpu for gpu in results if gpu.gpu_count == query.gpu_count]
+        if query.max_price is not None:
+            results = [
+                gpu
+                for gpu in results
+                if gpu.on_demand_price is not None
+                and gpu.on_demand_price <= query.max_price
+            ]
+        if query.region:
+            needle = query.region.lower()
+            results = [
+                gpu
+                for gpu in results
+                if any(needle in region.lower() for region in gpu.regions)
+            ]
+        if query.secure_only:
+            results = [gpu for gpu in results if gpu.secure_cloud]
+        if query.min_vram_gb is not None:
+            results = [gpu for gpu in results if gpu.vram_gb >= query.min_vram_gb]
+        return results
 
     @property
     @abstractmethod
