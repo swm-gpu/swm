@@ -85,9 +85,11 @@ Search live GPU availability and pricing across all configured providers. Querie
 |--------|-------------|
 | `-g, --gpu TEXT` | Filter by GPU name (free text: `h200`, `a100`, `rtx4090`) |
 | `-c, --count INTEGER` | GPU count (e.g. `4` for 4×GPU configs) |
-| `--max-price FLOAT` | Max on-demand $/hr per GPU |
+| `--max-price FLOAT` | Max on-demand $/hr for the listed GPU configuration |
+| `--min-vram FLOAT` | Minimum VRAM in GB |
+| `--min-download FLOAT` | Minimum provider-reported download bandwidth in Mbps |
 | `-p, --provider TEXT` | Filter to one provider slug |
-| `--secure` | Only show secure-cloud providers |
+| `--secure` | Only show secure-cloud offers |
 | `-r, --region TEXT` | Filter by region (free text, e.g. `us-east`, `europe`) |
 | `--sort [price\|vram\|provider]` | Sort order (default: `price`) |
 | `-n, --limit INTEGER` | Max rows (default: `20`) |
@@ -100,8 +102,17 @@ swm gpus                          # everything
 swm gpus -g h200 --secure         # h200 on secure clouds only
 swm gpus -g h200 -c 4             # 4×h200 configs
 swm gpus --max-price 4 -p vastai  # under $4/hr on vast.ai
+swm gpus --min-download 500       # at least 500 Mbps download bandwidth
 swm gpus -r us-west               # us-west region only
 ```
+
+Providers apply filters to their native APIs when supported, then perform
+provider-neutral checks locally. A provider is skipped with an explicit
+message when it cannot guarantee a requested filter.
+
+When available, **Up / Down** reports provider-measured upload and download
+bandwidth in Mbps. **Secure** applies to the specific priced offer or cloud tier
+shown in the row, rather than to every offer for the same GPU model.
 
 ## `swm pod`
 
