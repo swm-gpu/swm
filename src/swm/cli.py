@@ -215,6 +215,7 @@ def gpus(
     table.add_column("Stock")
     table.add_column("Min CUDA", justify="right")
     table.add_column("Regions", max_width=30)
+    table.add_column("Up / Down", justify="right", no_wrap=True)
     table.add_column("Secure", justify="center")
 
     stock_styles = {
@@ -230,6 +231,18 @@ def gpus(
             regions_str += f" (+{len(g.regions) - 5})"
         mc = min_cuda_for(g.display_name) or min_cuda_for(g.type_id)
         mc_str = mc if mc else "[dim]—[/dim]"
+        if g.upload_mbps is None and g.download_mbps is None:
+            network_str = "[dim]—[/dim]"
+        else:
+            upload = (
+                f"{g.upload_mbps:,.0f}" if g.upload_mbps is not None else "—"
+            )
+            download = (
+                f"{g.download_mbps:,.0f}"
+                if g.download_mbps is not None
+                else "—"
+            )
+            network_str = f"{upload} / {download} Mbps"
         table.add_row(
             _provider_display(g.provider),
             g.display_name,
@@ -241,6 +254,7 @@ def gpus(
             f"[{ss}]{g.stock_level or '—'}[/{ss}]",
             mc_str,
             regions_str,
+            network_str,
             "[green]✓[/green]" if g.secure_cloud else "[dim]—[/dim]",
         )
 

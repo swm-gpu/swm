@@ -37,6 +37,8 @@ class GpuInfo:
     stock_level: str = ""
     secure_cloud: bool = False
     regions: list[str] = field(default_factory=list)
+    upload_mbps: float | None = None
+    download_mbps: float | None = None
 
 
 class GpuSearchField(str, Enum):

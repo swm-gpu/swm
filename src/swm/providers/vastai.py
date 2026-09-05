@@ -183,6 +183,10 @@ class VastAIProvider(CloudProvider):
                 "eq": query.region.strip().upper(),
             }
         if query.secure_only:
+            # Vast's verified flag only means the host passed machine checks;
+            # Community Cloud machines can be verified too. Secure Cloud is
+            # the certified-datacenter tier, so require both predicates.
+            search_body["datacenter"] = {"eq": True}
             search_body["verified"] = {"eq": True}
         if query.min_vram_gb is not None:
             search_body["gpu_ram"] = {"gte": query.min_vram_gb * 1024}
@@ -190,34 +194,46 @@ class VastAIProvider(CloudProvider):
             search_body["inet_down"] = {"gte": query.min_download_mbps}
 
         data = self._post("bundles/", search_body)
-        seen: dict[tuple[str, int], GpuInfo] = {}
+        # Keep offer-specific properties together. One row represents the
+        # cheapest offer for a GPU/count/region/cloud-tier combination; mixing
+        # the cheapest price with another offer's security or network values
+        # would make the table internally inconsistent.
+        seen: dict[tuple[str, int, str, bool], GpuInfo] = {}
         for offer in data.get("offers", []):
             gpu_name = offer.get("gpu_name", "unknown")
             n = offer.get("num_gpus", 1)
-            key = (gpu_name, n)
             price = offer.get("dph_total")
             geo = offer.get("geolocation", "")
-            if key in seen:
-                existing = seen[key]
-                if price and (
-                    existing.on_demand_price is None
-                    or price < existing.on_demand_price
-                ):
-                    existing.on_demand_price = price
-                if geo and geo not in existing.regions:
-                    existing.regions.append(geo)
-                continue
-            seen[key] = GpuInfo(
+            secure = (
+                offer.get("hosting_type") == 1
+                and offer.get("verification") == "verified"
+            )
+            key = (gpu_name, n, geo, secure)
+            candidate = GpuInfo(
                 provider=self.slug,
                 type_id=gpu_name,
                 display_name=gpu_name,
-                vram_gb=int(offer.get("gpu_ram", 0) / 1024),
+                # Vast reports usable MiB, which is slightly below the
+                # marketed capacity (for example, a 16 GB card reports about
+                # 15.9 GiB). Round to the nearest GB instead of displaying 15.
+                vram_gb=int(round(offer.get("gpu_ram", 0) / 1024)),
                 gpu_count=n,
                 on_demand_price=price,
                 stock_level="available",
-                secure_cloud=offer.get("verification", "") == "verified",
+                secure_cloud=secure,
                 regions=[geo] if geo else [],
+                upload_mbps=offer.get("inet_up"),
+                download_mbps=offer.get("inet_down"),
             )
+            existing = seen.get(key)
+            if existing is None or (
+                price is not None
+                and (
+                    existing.on_demand_price is None
+                    or price < existing.on_demand_price
+                )
+            ):
+                seen[key] = candidate
         return sorted(seen.values(), key=lambda g: (-g.vram_gb, g.gpu_count))
 
     # ── mutations ───────────────────────────────────────────────────
@@ -263,7 +279,8 @@ class VastAIProvider(CloudProvider):
             # can't starve the candidate pool below the rent loop's needs.
             search_body["limit"] = 10 + len(excluded)
         if str(config.cloud_type).upper() == "SECURE":
-            search_body["verification"] = {"eq": "verified"}
+            search_body["datacenter"] = {"eq": True}
+            search_body["verified"] = {"eq": True}
         if config.region:
             # Vast matches two-letter country codes, case-sensitively and
             # uppercase (verified against the live search API). Previously

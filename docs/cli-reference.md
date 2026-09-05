@@ -110,6 +110,10 @@ Providers apply filters to their native APIs when supported, then perform
 provider-neutral checks locally. A provider is skipped with an explicit
 message when it cannot guarantee a requested filter.
 
+When available, **Up / Down** reports provider-measured upload and download
+bandwidth in Mbps. **Secure** applies to the specific priced offer or cloud tier
+shown in the row, rather than to every offer for the same GPU model.
+
 ## `swm pod`
 
 ### `swm pod create`
