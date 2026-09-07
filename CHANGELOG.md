@@ -6,6 +6,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.19] - 2026-09-08
+
+### Fixed
+- **Vast.ai now exposes framework ports directly instead of forcing an SSH
+  tunnel.** `create_instance` used `runtype: "ssh_direct"`, which only
+  auto-provisions port 22; the `--ports` string (e.g. `8188/tcp` for
+  ComfyUI) was silently dropped, so any framework HTTP traffic had to ride
+  a local SSH tunnel (`swm setup start`) with no auto-reconnect — it dropped
+  on idle timeouts and network hiccups, and capped throughput well below
+  what the host's public IP could do. `_docker_port_flags()` translates the
+  ports string into Vast.ai's `-p host:container` docker env-flag mapping,
+  so the instance's public IP maps those ports the same way RunPod's proxy
+  does. Removes the now-stale `pod create` warning claiming `--ports` is
+  ignored on Vast.ai. Live-verified: a freshly created pod exposed
+  `8188 → <host-port>` directly, serving ComfyUI with no tunnel involved.
+
 ## [0.2.18] - 2026-09-03
 
 ### Fixed
