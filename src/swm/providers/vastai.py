@@ -23,6 +23,30 @@ V1_PAGE_LIMIT = 25
 
 DEFAULT_IMAGE = "vastai/pytorch"
 
+
+def _docker_port_flags(ports: str) -> dict[str, str]:
+    """Translate a "port/proto,..." ports string into Vast.ai's docker
+    `-p` env-flag mapping (https://docs.vast.ai/guides/instances/connect/networking),
+    so framework HTTP ports actually get exposed on the instance's public
+    IP instead of staying reachable only via an SSH tunnel.
+
+    Port 22 is skipped: `runtype: "ssh_direct"` already auto-provisions it.
+    """
+    flags: dict[str, str] = {}
+    for entry in (ports or "").split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        port_str = entry.split("/", 1)[0].strip()
+        if not port_str.isdigit():
+            continue
+        port = int(port_str)
+        if port == 22:
+            continue
+        flags[f"-p {port}:{port}"] = "1"
+    return flags
+
+
 _STATUS = {
     "running": InstanceStatus.RUNNING,
     "created": InstanceStatus.PENDING,
@@ -244,6 +268,7 @@ class VastAIProvider(CloudProvider):
                 + (" (after machine blocklist)" if excluded else "")
             )
 
+        env = {**_docker_port_flags(config.ports), **dict(config.env)}
         rent_body = {
             "client_id": "me",
             "image": image,
@@ -251,7 +276,7 @@ class VastAIProvider(CloudProvider):
             "label": config.name,
             "onstart": None,
             "runtype": "ssh_direct",
-            "env": dict(config.env),
+            "env": env,
         }
 
         result = None
