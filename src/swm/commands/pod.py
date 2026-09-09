@@ -241,22 +241,6 @@ def create(
 
     p = get_provider(provider)
 
-    # Vast.ai maps only port 22 plus whatever the image exposes; the
-    # --ports string has no effect there. Warn when the user explicitly
-    # set it so they aren't left wondering why a port never opened.
-    ctx = click.get_current_context(silent=True)
-    if (
-        provider == "vastai"
-        and ctx is not None
-        and ctx.get_parameter_source("ports")
-        == click.core.ParameterSource.COMMANDLINE
-    ):
-        console.print(
-            "[yellow]⚠ --ports is ignored on Vast.ai: only port 22 and "
-            "ports exposed by the image are mapped. Unmapped ports are "
-            "reached via SSH tunnels (swm setup start handles this).[/yellow]"
-        )
-
     try:
         pub_key = read_ssh_public_key()
     except FileNotFoundError as e:
