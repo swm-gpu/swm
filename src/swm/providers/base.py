@@ -25,7 +25,11 @@ STATUS_STYLES: dict[InstanceStatus, str] = {
 
 @dataclass
 class GpuInfo:
-    """Normalized GPU availability info from a provider."""
+    """Normalized GPU availability info from a provider.
+
+    ``on_demand_price`` and ``spot_price`` are hourly totals for the whole
+    ``gpu_count`` configuration, not per-GPU rates.
+    """
 
     provider: str
     type_id: str

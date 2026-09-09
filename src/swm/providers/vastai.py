@@ -41,8 +41,10 @@ class VastAIProvider(CloudProvider):
         GpuSearchField.MAX_PRICE,
         GpuSearchField.REGION,
         GpuSearchField.SECURE,
-        GpuSearchField.MIN_VRAM,
         GpuSearchField.MIN_DOWNLOAD,
+        # MIN_VRAM stays local: Vast reports usable MiB below the marketed
+        # size, so a native gte on min_vram * 1024 would drop cards whose
+        # rounded vram_gb passes the local check.
     })
 
     @property
@@ -188,8 +190,6 @@ class VastAIProvider(CloudProvider):
             # the certified-datacenter tier, so require both predicates.
             search_body["datacenter"] = {"eq": True}
             search_body["verified"] = {"eq": True}
-        if query.min_vram_gb is not None:
-            search_body["gpu_ram"] = {"gte": query.min_vram_gb * 1024}
         if query.min_download_mbps is not None:
             search_body["inet_down"] = {"gte": query.min_download_mbps}
 
@@ -204,8 +204,12 @@ class VastAIProvider(CloudProvider):
             n = offer.get("num_gpus", 1)
             price = offer.get("dph_total")
             geo = offer.get("geolocation", "")
+            # hosting_type >= 1 is the certified-datacenter tier, the same
+            # population the query's datacenter flag selects. A plain == 1
+            # would disagree with that filter if Vast ever adds a value
+            # above 1.
             secure = (
-                offer.get("hosting_type") == 1
+                (offer.get("hosting_type") or 0) >= 1
                 and offer.get("verification") == "verified"
             )
             key = (gpu_name, n, geo, secure)
@@ -216,7 +220,7 @@ class VastAIProvider(CloudProvider):
                 # Vast reports usable MiB, which is slightly below the
                 # marketed capacity (for example, a 16 GB card reports about
                 # 15.9 GiB). Round to the nearest GB instead of displaying 15.
-                vram_gb=int(round(offer.get("gpu_ram", 0) / 1024)),
+                vram_gb=round(offer.get("gpu_ram", 0) / 1024),
                 gpu_count=n,
                 on_demand_price=price,
                 stock_level="available",
@@ -239,9 +243,25 @@ class VastAIProvider(CloudProvider):
     # ── mutations ───────────────────────────────────────────────────
 
     def _gpu_names(self) -> list[str]:
-        """Fetch Vast.ai's complete GPU-name catalog."""
-        data = self._get("gpu_names/unique/")
-        return [str(name) for name in data.get("gpu_names", []) if name]
+        """Fetch Vast.ai's complete GPU-name catalog.
+
+        ``gpu_names/unique/`` is undocumented; the official CLI uses it but
+        treats any failure as non-fatal. It is on the create path via
+        resolve_gpu_type, so an outage must not break provisioning: fall
+        back to deriving names from the offers feed.
+        """
+        try:
+            data = self._get("gpu_names/unique/")
+            names = [str(name) for name in data.get("gpu_names", []) if name]
+            if names:
+                return names
+        except (httpx.HTTPError, ValueError):
+            pass
+        data = self._post("bundles/", {
+            "rentable": {"eq": True},
+            "limit": 10000,
+        })
+        return list({o.get("gpu_name", "") for o in data.get("offers", []) if o.get("gpu_name")})
 
     def _excluded_machines(self) -> set[str]:
         """Machine IDs the user has blocklisted via config.
@@ -279,8 +299,7 @@ class VastAIProvider(CloudProvider):
             # can't starve the candidate pool below the rent loop's needs.
             search_body["limit"] = 10 + len(excluded)
         if str(config.cloud_type).upper() == "SECURE":
-            search_body["datacenter"] = {"eq": True}
-            search_body["verified"] = {"eq": True}
+            search_body["verification"] = {"eq": "verified"}
         if config.region:
             # Vast matches two-letter country codes, case-sensitively and
             # uppercase (verified against the live search API). Previously

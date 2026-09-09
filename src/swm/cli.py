@@ -94,7 +94,7 @@ def _detect_storage_region() -> str | None:
     type=click.Choice(["price", "vram", "provider"], case_sensitive=False),
     help="Sort order (default: price)",
 )
-@click.option("--region", "-r", default=None, help="Filter by region (free text, e.g. us-east, europe)")
+@click.option("--region", "-r", default=None, help="Filter by region (free text, e.g. us-east, europe; Vast.ai matches two-letter country codes only)")
 @click.option("--limit", "-n", default=20, type=int, help="Max rows to show (default: 20)")
 @click.option("--all", "show_all", is_flag=True, help="Show all results (no pagination)")
 def gpus(
