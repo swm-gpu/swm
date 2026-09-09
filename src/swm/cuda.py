@@ -18,6 +18,10 @@ _GPU_MIN_CUDA: tuple[tuple[str, str], ...] = (
     ("b100", "12.8"),
     ("gb200", "12.8"),
     ("rtx 5090", "12.8"),
+    ("rtx 5080", "12.8"),
+    ("rtx 5070", "12.8"),
+    ("rtx 5060", "12.8"),
+    ("rtx 5050", "12.8"),
     ("rtx pro 6000 blackwell", "12.8"),
     ("blackwell", "12.8"),
     # Hopper (compute 9.0)

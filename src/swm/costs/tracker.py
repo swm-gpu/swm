@@ -93,9 +93,15 @@ def _lookup_rate(
         prov = get_provider(provider_slug)
         gpus = prov.list_gpus(gpu_count=gpu_count)
         needle = gpu_type.lower()
-        for g in gpus:
-            if g.type_id.lower() == needle or g.display_name.lower() == needle:
-                return g.on_demand_price
+        prices = [
+            g.on_demand_price
+            for g in gpus
+            if g.on_demand_price is not None
+            and (g.type_id.lower() == needle or g.display_name.lower() == needle)
+        ]
+        # list_gpus() can return several rows per type (one per cloud tier);
+        # quote the cheapest rather than whichever tier sorts first.
+        return min(prices) if prices else None
     except Exception:
         pass
     return None

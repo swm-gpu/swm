@@ -6,6 +6,36 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+- **`swm gpus` search filters.** New `--min-vram` and `--min-download`
+  flags. Providers apply supported constraints to their native APIs
+  (`GpuSearchQuery` / `CloudProvider.search_gpus`) and refuse filters they
+  cannot honor with an explicit skip message instead of silently returning
+  nothing. `GpuInfo` gains `upload_mbps` / `download_mbps`, shown as an
+  Up / Down column where providers report bandwidth.
+- CUDA floor table covers the RTX 5050–5080 consumer Blackwell parts.
+
+### Changed
+- **`list_gpus()` returns one row per offer, not per GPU model.** Vast.ai
+  rows are now keyed by GPU, count, region, and cloud tier (regions are no
+  longer aggregated across offers), and RunPod emits separate Secure and
+  Community rows. Prices, security tier, and bandwidth on a row now always
+  describe the same offer. GPU types with no current offer in a tier are
+  omitted rather than returned with a null price. Code keyed on `type_id`
+  being unique per provider must be revisited.
+- **RunPod prices are totals for the listed GPU count.** `lowestPrice` is a
+  per-GPU rate even when queried with `gpuCount`; it is now multiplied so
+  `GpuInfo.on_demand_price` / `spot_price` are hourly totals for the whole
+  configuration on every provider, matching `--max-price`.
+- Vast.ai Secure classification now requires the certified-datacenter tier
+  (`hosting_type >= 1`) in addition to `verified`; verified Community Cloud
+  offers no longer carry the Secure marker.
+- Vast.ai `--min-vram` is applied locally on the rounded GB value; the
+  native `gpu_ram` filter compared against usable MiB and dropped cards
+  whose displayed VRAM passed.
+- `costs.tracker` rate fallback quotes the cheapest matching offer instead
+  of the first.
+
 ## [0.2.19] - 2026-09-08
 
 ### Fixed

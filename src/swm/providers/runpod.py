@@ -9,6 +9,8 @@ from swm.providers.base import (
     CloudProvider,
     CreateConfig,
     GpuInfo,
+    GpuSearchField,
+    GpuSearchQuery,
     Instance,
     InstanceStatus,
     resolve_gpu_type,
@@ -52,6 +54,20 @@ def _gql_str(value: object) -> str:
 
 
 class RunPodProvider(CloudProvider):
+    native_search_fields = frozenset({
+        GpuSearchField.GPU_COUNT,
+        GpuSearchField.SECURE,
+    })
+    # RunPod pricing is global and rows carry no region list, so a region
+    # constraint cannot be honored; refuse it instead of filtering to zero.
+    local_search_fields = frozenset({
+        GpuSearchField.GPU,
+        GpuSearchField.GPU_COUNT,
+        GpuSearchField.MAX_PRICE,
+        GpuSearchField.SECURE,
+        GpuSearchField.MIN_VRAM,
+    })
+
     @property
     def name(self) -> str:
         return "RunPod"
@@ -103,34 +119,70 @@ class RunPodProvider(CloudProvider):
         return self._to_instance(data["pod"])
 
     def list_gpus(self, gpu_count: int | None = None) -> list[GpuInfo]:
-        n = int(gpu_count or 1)
+        return self._search_gpus(GpuSearchQuery(gpu_count=gpu_count))
+
+    def _search_gpus(self, query: GpuSearchQuery) -> list[GpuInfo]:
+        n = int(query.gpu_count or 1)
+        price_queries = f"""
+            securePrice: lowestPrice(input: {{
+                gpuCount: {n}, secureCloud: true
+            }}) {{
+                minimumBidPrice uninterruptablePrice stockStatus
+            }}
+        """
+        if not query.secure_only:
+            price_queries += f"""
+                communityPrice: lowestPrice(input: {{
+                    gpuCount: {n}, secureCloud: false
+                }}) {{
+                    minimumBidPrice uninterruptablePrice stockStatus
+                }}
+            """
         data = self._gql(f"""
             query {{
                 gpuTypes {{
                     id displayName memoryInGb secureCloud communityCloud
-                    lowestPrice(input: {{ gpuCount: {n} }}) {{
-                        minimumBidPrice uninterruptablePrice stockStatus
-                    }}
+                    {price_queries}
                 }}
             }}
         """)
 
         results = []
         for g in data["gpuTypes"]:
-            lp = g.get("lowestPrice") or {}
-            results.append(
-                GpuInfo(
-                    provider=self.slug,
-                    type_id=g["id"],
-                    display_name=g["displayName"],
-                    vram_gb=g.get("memoryInGb", 0),
-                    gpu_count=n,
-                    on_demand_price=lp.get("uninterruptablePrice"),
-                    spot_price=lp.get("minimumBidPrice"),
-                    stock_level=lp.get("stockStatus", ""),
-                    secure_cloud=bool(g.get("secureCloud")),
+            tiers = [("securePrice", True)]
+            if not query.secure_only:
+                tiers.append(("communityPrice", False))
+            for price_key, secure in tiers:
+                if secure and not g.get("secureCloud"):
+                    continue
+                if not secure and not g.get("communityCloud"):
+                    continue
+                lp = g.get(price_key) or {}
+                # The catalog flags describe possible placement, while a null
+                # lowestPrice means no current offer in that tier. Do not show
+                # a Secure checkmark for theoretical but unavailable capacity.
+                if not lp or not any(value is not None for value in lp.values()):
+                    continue
+                # lowestPrice is the hourly rate for ONE GPU even when the
+                # query passes gpuCount; scale it so the row's price is the
+                # total for the listed configuration, like Vast's dph_total.
+                unit_price = lp.get("uninterruptablePrice")
+                bid_price = lp.get("minimumBidPrice")
+                results.append(
+                    GpuInfo(
+                        provider=self.slug,
+                        type_id=g["id"],
+                        display_name=g["displayName"],
+                        vram_gb=g.get("memoryInGb", 0),
+                        gpu_count=n,
+                        on_demand_price=(
+                            unit_price * n if unit_price is not None else None
+                        ),
+                        spot_price=bid_price * n if bid_price is not None else None,
+                        stock_level=lp.get("stockStatus", ""),
+                        secure_cloud=secure,
+                    )
                 )
-            )
         return sorted(results, key=lambda g: g.vram_gb, reverse=True)
 
     # ── mutations ───────────────────────────────────────────────────
