@@ -176,12 +176,14 @@ class TestRunPodSearch:
         }]}
         assert p.list_gpus() == []
 
-    def test_prices_are_totals_for_gpu_count(self, runpod):
+    def test_prices_pass_through_count_scaled_totals(self, runpod):
+        # lowestPrice already scales with the queried gpuCount (verified
+        # against the live API), so the provider must NOT multiply again.
         rows = runpod.list_gpus(gpu_count=4)
         l40 = next(r for r in rows
                    if r.type_id == "NVIDIA L40" and r.secure_cloud)
-        assert l40.on_demand_price == pytest.approx(0.82 * 4)
-        assert l40.spot_price == pytest.approx(0.40 * 4)
+        assert l40.on_demand_price == pytest.approx(0.82)
+        assert l40.spot_price == pytest.approx(0.40)
 
     def test_secure_only_queries_secure_tier(self):
         queries = []

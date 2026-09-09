@@ -163,11 +163,10 @@ class RunPodProvider(CloudProvider):
                 # a Secure checkmark for theoretical but unavailable capacity.
                 if not lp or not any(value is not None for value in lp.values()):
                     continue
-                # lowestPrice is the hourly rate for ONE GPU even when the
-                # query passes gpuCount; scale it so the row's price is the
-                # total for the listed configuration, like Vast's dph_total.
-                unit_price = lp.get("uninterruptablePrice")
-                bid_price = lp.get("minimumBidPrice")
+                # lowestPrice scales with the queried gpuCount (verified
+                # against the live API: L40S returns 1.09 / 2.18 / 4.36 for
+                # counts 1 / 2 / 4), so the row's price is already the total
+                # for the listed configuration, like Vast's dph_total.
                 results.append(
                     GpuInfo(
                         provider=self.slug,
@@ -175,10 +174,8 @@ class RunPodProvider(CloudProvider):
                         display_name=g["displayName"],
                         vram_gb=g.get("memoryInGb", 0),
                         gpu_count=n,
-                        on_demand_price=(
-                            unit_price * n if unit_price is not None else None
-                        ),
-                        spot_price=bid_price * n if bid_price is not None else None,
+                        on_demand_price=lp.get("uninterruptablePrice"),
+                        spot_price=lp.get("minimumBidPrice"),
                         stock_level=lp.get("stockStatus", ""),
                         secure_cloud=secure,
                     )

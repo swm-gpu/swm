@@ -23,10 +23,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   describe the same offer. GPU types with no current offer in a tier are
   omitted rather than returned with a null price. Code keyed on `type_id`
   being unique per provider must be revisited.
-- **RunPod prices are totals for the listed GPU count.** `lowestPrice` is a
-  per-GPU rate even when queried with `gpuCount`; it is now multiplied so
-  `GpuInfo.on_demand_price` / `spot_price` are hourly totals for the whole
-  configuration on every provider, matching `--max-price`.
+- **Prices are hourly totals for the listed GPU count on every provider.**
+  Vast's `dph_total` always was; RunPod's `lowestPrice` scales with the
+  queried `gpuCount` (verified against the live API), so `GpuInfo`
+  `on_demand_price` / `spot_price` are totals there too, matching
+  `--max-price`.
 - Vast.ai Secure classification now requires the certified-datacenter tier
   (`hosting_type >= 1`) in addition to `verified`; verified Community Cloud
   offers no longer carry the Secure marker.
