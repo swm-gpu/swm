@@ -163,6 +163,19 @@ class TestRunPodSearch:
         # communityCloud is False and communityPrice is null: no community row.
         assert len(a100) == 1 and a100[0].secure_cloud
 
+        # The flag check above runs first; exercise the null-price guard
+        # directly with a tier that is advertised but has no current offer.
+        p = RunPodProvider()
+        p._gql = lambda q: {"gpuTypes": [{
+            "id": "NVIDIA RTX 4090", "displayName": "RTX 4090",
+            "memoryInGb": 24, "secureCloud": False, "communityCloud": True,
+            "securePrice": None,
+            "communityPrice": {"minimumBidPrice": None,
+                               "uninterruptablePrice": None,
+                               "stockStatus": None},
+        }]}
+        assert p.list_gpus() == []
+
     def test_prices_are_totals_for_gpu_count(self, runpod):
         rows = runpod.list_gpus(gpu_count=4)
         l40 = next(r for r in rows

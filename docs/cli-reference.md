@@ -90,7 +90,7 @@ Search live GPU availability and pricing across all configured providers. Querie
 | `--min-download FLOAT` | Minimum provider-reported download bandwidth in Mbps |
 | `-p, --provider TEXT` | Filter to one provider slug |
 | `--secure` | Only show secure-cloud offers |
-| `-r, --region TEXT` | Filter by region (free text, e.g. `us-east`, `europe`) |
+| `-r, --region TEXT` | Filter by region (free text, e.g. `us-east`, `europe`; Vast.ai matches two-letter country codes only) |
 | `--sort [price\|vram\|provider]` | Sort order (default: `price`) |
 | `-n, --limit INTEGER` | Max rows (default: `20`) |
 | `--all` | Show all results (no pagination) |
