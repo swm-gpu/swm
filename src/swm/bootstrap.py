@@ -223,6 +223,14 @@ def _python_link_repair_script() -> str:
     installing 3.11 with "Is a directory (os error 21)". Scan every minor
     slot present, not just the one being installed, and swap any materialized
     copy back to a symlink (idempotent; a healthy layout is untouched).
+
+    A second sync artifact: file symlinks are not preserved at all, so the
+    install's ``bin/python3 -> pythonX.Y`` link comes back missing while the
+    versioned binary survives. Recreate that link first — both because venvs
+    and uv reference ``bin/python3``, and because the validity check below
+    would otherwise reject a healthy install and skip the repair (observed
+    in production: every power-on of a restored workspace failed the
+    framework's Python step until the link was restored by hand).
     """
     # Subshell so the early exit (no .python dir yet — fresh pod) cannot
     # abort the caller's chained uv install.
@@ -234,6 +242,16 @@ def _python_link_repair_script() -> str:
         '  case "$ver" in *.*.*) continue ;; esac; '
         '  plat="${rest#$ver-}"; '
         '  full=$(ls -d "cpython-$ver".*-"$plat" 2>/dev/null | sort -V | tail -1); '
+        # A sync does not preserve file symlinks: the install's
+        # bin/python3 -> pythonX.Y link comes back missing even though the
+        # versioned binary survives. Recreate it so the install is whole
+        # (venvs and uv reference bin/python3), and so the validity check
+        # below has something to find.
+        '  if [ -n "$full" ] && [ ! -e "$full/bin/python3" ] '
+        '     && [ -x "$full/bin/python$ver" ]; then '
+        '    ln -s "python$ver" "$full/bin/python3" '
+        '    && echo "Restored missing interpreter link: $full/bin/python3"; '
+        '  fi; '
         '  if [ -n "$full" ] && [ -x "$full/bin/python3" ]; then '
         '    rm -rf "$d" && ln -s "$full" "$d" '
         '    && echo "Repaired materialized python link: $d -> $full"; '

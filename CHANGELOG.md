@@ -4,6 +4,18 @@ All notable changes to swm are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Framework Python restore after a workspace pull.** The uv minor-version
+  link repair checked for an executable `bin/python3`, but sync does not
+  preserve file symlinks, so a restored install has only `bin/pythonX.Y`.
+  The check rejected the healthy install, the repair never ran, and
+  `uv python install` then failed with "Is a directory (os error 21)",
+  aborting the framework's Python step on every power-on of a restored
+  workspace. The repair now recreates the missing `bin/python3` link and
+  accepts the versioned binary as proof of a healthy install.
+
 ## [0.3.0] - 2026-09-10
 
 ### Added
