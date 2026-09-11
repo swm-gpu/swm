@@ -4,6 +4,18 @@ All notable changes to swm are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Vast.ai create/search accept the city strings `list_gpus` emits.**
+  After 0.3.0, each Vast row carries the live `geolocation` field
+  (`Oregon, US`, `, US`). Search and create uppercased that whole
+  string into `geolocation.eq`, but the bundles API only matches an
+  uppercase two-letter country code (`US` hits every US city; `OREGON,
+  US` and `Oregon, US` return nothing). Both paths now take the
+  trailing ISO code. Unparseable create regions raise instead of
+  searching a predicate that cannot match.
+
 ## [0.3.1] - 2026-09-11
 
 ### Fixed

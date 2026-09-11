@@ -191,7 +191,7 @@ def pod_prune():
     "--region",
     default=None,
     help="RunPod: datacenter ID (e.g. US-CA-2). "
-         "Vast.ai: two-letter country code (e.g. US).",
+         "Vast.ai: country code or city string (US or 'Oregon, US').",
 )
 @click.option(
     "--lifecycle",

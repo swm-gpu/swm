@@ -27,6 +27,29 @@ V1_PAGE_LIMIT = 25
 DEFAULT_IMAGE = "vastai/pytorch"
 
 
+def geolocation_eq(region: str | None) -> str | None:
+    """Map a display region to Vast.ai's ``geolocation.eq`` value.
+
+    The live ``bundles/`` feed stores geolocation as ``City, CC`` or
+    ``, CC`` — never a bare country code. The search predicate only
+    matches an uppercase ISO 3166-1 alpha-2 code: ``eq: "US"`` returns
+    every US city row (including ``, US``); ``eq: "Oregon, US"``,
+    ``eq: "OREGON, US"``, and ``eq: "us"`` all return nothing
+    (verified 2026-09-11). ``list_gpus`` still emits the city string so
+    rows stay distinct; callers that pass ``regions[0]`` back into
+    search or create must go through this helper.
+    """
+    if not region:
+        return None
+    text = str(region).strip()
+    if not text:
+        return None
+    tail = text.rsplit(",", 1)[-1].strip()
+    if len(tail) == 2 and tail.isalpha():
+        return tail.upper()
+    return None
+
+
 def _docker_port_flags(ports: str) -> dict[str, str]:
     """Translate a "port/proto,..." ports string into Vast.ai's docker
     `-p` env-flag mapping (https://docs.vast.ai/guides/instances/connect/networking),
@@ -204,10 +227,9 @@ class VastAIProvider(CloudProvider):
             search_body["gpu_name"] = {"in": matches}
         if query.max_price is not None:
             search_body["dph_total"] = {"lte": query.max_price}
-        if query.region:
-            search_body["geolocation"] = {
-                "eq": query.region.strip().upper(),
-            }
+        geo = geolocation_eq(query.region)
+        if geo:
+            search_body["geolocation"] = {"eq": geo}
         if query.secure_only:
             # Vast's verified flag only means the host passed machine checks;
             # Community Cloud machines can be verified too. Secure Cloud is
@@ -325,10 +347,13 @@ class VastAIProvider(CloudProvider):
         if str(config.cloud_type).upper() == "SECURE":
             search_body["verification"] = {"eq": "verified"}
         if config.region:
-            # Vast matches two-letter country codes, case-sensitively and
-            # uppercase (verified against the live search API). Previously
-            # --region was silently ignored on this provider.
-            search_body["geolocation"] = {"eq": str(config.region).strip().upper()}
+            geo = geolocation_eq(config.region)
+            if geo is None:
+                raise RuntimeError(
+                    "Vast.ai region must be a two-letter country code or "
+                    f"'City, CC' (got {config.region!r})"
+                )
+            search_body["geolocation"] = {"eq": geo}
 
         data = self._post("bundles/", search_body)
         offers = data.get("offers", [])
