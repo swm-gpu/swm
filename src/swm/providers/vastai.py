@@ -26,28 +26,59 @@ V1_PAGE_LIMIT = 25
 
 DEFAULT_IMAGE = "vastai/pytorch"
 
+# Filter vs row are different shapes of the same field (Vast search-offers
+# docs): request ``geolocation`` is an ISO country code; each offer's
+# ``geolocation`` is a display string (documented example ``Atlantis, AT``).
+# ``geolocode`` is country-granular — the same integer for every US city
+# we sampled — so it cannot select a city either. Official CLI launch
+# only accepts continent names or ``[US,CA]`` lists, never cities.
+_COUNTRY_ALIASES = {"UK": "GB"}
+_COUNTRY_SEARCH_LIMIT = 10
+_CITY_SEARCH_LIMIT = 50
 
-def geolocation_eq(region: str | None) -> str | None:
-    """Map a display region to Vast.ai's ``geolocation.eq`` value.
 
-    The live ``bundles/`` feed stores geolocation as ``City, CC`` or
-    ``, CC`` — never a bare country code. The search predicate only
-    matches an uppercase ISO 3166-1 alpha-2 code: ``eq: "US"`` returns
-    every US city row (including ``, US``); ``eq: "Oregon, US"``,
-    ``eq: "OREGON, US"``, and ``eq: "us"`` all return nothing
-    (verified 2026-09-11). ``list_gpus`` still emits the city string so
-    rows stay distinct; callers that pass ``regions[0]`` back into
-    search or create must go through this helper.
+def parse_geolocation(region: str | None) -> tuple[str | None, str]:
+    """Split a Vast.ai region into ``(country_code, locality)``.
+
+    ``Oregon, US`` / ``, US`` / ``us`` → ``("US", "Oregon"|""|"")``.
+    Unparseable input (``europe``, ``us-east``) → ``(None, original)``.
     """
     if not region:
-        return None
+        return None, ""
     text = str(region).strip()
     if not text:
-        return None
-    tail = text.rsplit(",", 1)[-1].strip()
-    if len(tail) == 2 and tail.isalpha():
-        return tail.upper()
-    return None
+        return None, ""
+    if "," in text:
+        locality, tail = (part.strip() for part in text.rsplit(",", 1))
+    else:
+        locality, tail = "", text
+    if len(tail) != 2 or not tail.isalpha():
+        return None, locality or text
+    code = tail.upper()
+    return _COUNTRY_ALIASES.get(code, code), locality
+
+
+def geolocation_eq(region: str | None) -> str | None:
+    """ISO code for ``geolocation.eq`` / ``geolocation.in``."""
+    return parse_geolocation(region)[0]
+
+
+def _prefer_geolocation(offers: list[dict], region: str | None) -> list[dict]:
+    """Keep offers whose display geo matches, else the country pool.
+
+    The API cannot filter by city. After a country ``eq``, pick the
+    clicked ``City, CC`` row when it is still in the fresh results so
+    an Oregon click does not silently rent the cheapest Virginia host.
+    """
+    _, locality = parse_geolocation(region)
+    if not locality or not offers:
+        return offers
+    wanted = str(region).strip().casefold()
+    hits = [
+        offer for offer in offers
+        if str(offer.get("geolocation") or "").strip().casefold() == wanted
+    ]
+    return hits or offers
 
 
 def _docker_port_flags(ports: str) -> dict[str, str]:
@@ -329,6 +360,15 @@ class VastAIProvider(CloudProvider):
         image = config.image or DEFAULT_IMAGE
 
         disk_gb = max(config.container_disk_gb, config.volume_gb)
+        country, locality = parse_geolocation(config.region)
+        if config.region and country is None:
+            raise RuntimeError(
+                "Vast.ai region must be a two-letter country code or "
+                f"'City, CC' (got {config.region!r})"
+            )
+        # City is not a native predicate. Widen the country fetch so the
+        # cheapest Virginia hosts cannot hide the Oregon row the user clicked.
+        limit = _CITY_SEARCH_LIMIT if locality else _COUNTRY_SEARCH_LIMIT
         search_body: dict = {
             "gpu_name": {"eq": gpu_name},
             # eq, not gte: a gte match can rent (and bill) more GPUs than
@@ -337,23 +377,17 @@ class VastAIProvider(CloudProvider):
             "rentable": {"eq": True},
             "disk_space": {"gte": disk_gb},
             "order": [["dph_total", "asc"]],
-            "limit": 10,
+            "limit": limit,
         }
         excluded = self._excluded_machines()
         if excluded:
             # Exclusions filter AFTER the fetch; widen it so a blocklist
             # can't starve the candidate pool below the rent loop's needs.
-            search_body["limit"] = 10 + len(excluded)
+            search_body["limit"] = limit + len(excluded)
         if str(config.cloud_type).upper() == "SECURE":
             search_body["verification"] = {"eq": "verified"}
-        if config.region:
-            geo = geolocation_eq(config.region)
-            if geo is None:
-                raise RuntimeError(
-                    "Vast.ai region must be a two-letter country code or "
-                    f"'City, CC' (got {config.region!r})"
-                )
-            search_body["geolocation"] = {"eq": geo}
+        if country:
+            search_body["geolocation"] = {"eq": country}
 
         data = self._post("bundles/", search_body)
         offers = data.get("offers", [])
@@ -362,6 +396,7 @@ class VastAIProvider(CloudProvider):
             offers = [
                 o for o in offers if str(o.get("machine_id")) not in excluded
             ]
+        offers = _prefer_geolocation(offers, config.region)
 
         if not offers:
             raise RuntimeError(

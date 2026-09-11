@@ -7,14 +7,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Fixed
-- **Vast.ai create/search accept the city strings `list_gpus` emits.**
-  After 0.3.0, each Vast row carries the live `geolocation` field
-  (`Oregon, US`, `, US`). Search and create uppercased that whole
-  string into `geolocation.eq`, but the bundles API only matches an
-  uppercase two-letter country code (`US` hits every US city; `OREGON,
-  US` and `Oregon, US` return nothing). Both paths now take the
-  trailing ISO code. Unparseable create regions raise instead of
-  searching a predicate that cannot match.
+- **Vast.ai create/search honour the documented filter/row split.**
+  The search-offers API takes an ISO country code on `geolocation`
+  (`{"eq": "US"}` / `{"in": ["US", "CA"]}`); each offer row returns a
+  display string (docs example `Atlantis, AT`; live `Oregon, US`).
+  0.3.0 keyed marketplace rows on that display string, then
+  create/search uppercased it into `eq`, which matches nothing.
+  Both paths now parse the trailing ISO code (`UK` → `GB`). Create
+  still cannot filter by city natively (`geolocode` is country-level),
+  so a city click widens the country fetch and prefers an exact
+  display match before falling back to the rest of the country.
+  Unparseable create regions raise instead of searching a predicate
+  that cannot match.
 
 ## [0.3.1] - 2026-09-11
 

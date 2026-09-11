@@ -13,7 +13,11 @@ from __future__ import annotations
 import pytest
 
 from swm.providers.base import CreateConfig, GpuSearchQuery
-from swm.providers.vastai import VastAIProvider, geolocation_eq
+from swm.providers.vastai import (
+    VastAIProvider,
+    geolocation_eq,
+    parse_geolocation,
+)
 
 
 @pytest.mark.parametrize(
@@ -35,7 +39,7 @@ from swm.providers.vastai import VastAIProvider, geolocation_eq
         ("France, FR", "FR"),
         ("Quebec, CA", "CA"),
         ("United Kingdom, GB", "GB"),
-        ("UK", "UK"),  # valid alpha-2 shape; Vast wants GB, not our job here
+        ("UK", "GB"),  # Vast's own Europe list uses GB; eq UK is empty
         ("europe", None),
         ("us-east", None),
         ("Oregon", None),
@@ -46,6 +50,20 @@ from swm.providers.vastai import VastAIProvider, geolocation_eq
 )
 def test_geolocation_eq(raw, expected):
     assert geolocation_eq(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "raw, country, locality",
+    [
+        ("Oregon, US", "US", "Oregon"),
+        (", US", "US", ""),
+        ("US", "US", ""),
+        ("UK", "GB", ""),
+        ("europe", None, "europe"),
+    ],
+)
+def test_parse_geolocation(raw, country, locality):
+    assert parse_geolocation(raw) == (country, locality)
 
 
 def _search_bodies(region: str | None) -> list[dict]:
@@ -86,6 +104,7 @@ class TestSearchSendsCountryCode:
 
 def _create(region: str | None, *, offers=None, sleep=lambda *_: None):
     bodies: list[dict] = []
+    rented: list[str] = []
     p = VastAIProvider()
     p._get = lambda path, params=None: {"gpu_names": ["B200"]}
     p._post = lambda path, body=None: (
@@ -94,7 +113,8 @@ def _create(region: str | None, *, offers=None, sleep=lambda *_: None):
             {"id": 11, "machine_id": "m1", "geolocation": "Oregon, US"},
         ]},
     )[1]
-    p._put = lambda path, body=None: {"new_contract": "42"}
+    p._put = lambda path, body=None: (
+        rented.append(path), {"new_contract": "42"})[1]
     p.list_instances = lambda *a, **k: []
     import swm.providers.vastai as vastai_mod
     orig_sleep = vastai_mod.time.sleep
@@ -106,31 +126,43 @@ def _create(region: str | None, *, offers=None, sleep=lambda *_: None):
         ))
     finally:
         vastai_mod.time.sleep = orig_sleep
-    return inst, bodies
+    return inst, bodies, rented
 
 
 class TestCreateSendsCountryCode:
     def test_city_string_becomes_uppercase_cc(self):
-        inst, bodies = _create("Oregon, US")
+        inst, bodies, _ = _create("Oregon, US")
         assert inst.id == "42"
         assert bodies[0]["geolocation"] == {"eq": "US"}
 
     def test_empty_city_becomes_uppercase_cc(self):
-        _, bodies = _create(", US")
+        _, bodies, _ = _create(", US")
         assert bodies[0]["geolocation"] == {"eq": "US"}
 
     def test_lowercase_cc(self):
-        _, bodies = _create("us")
+        _, bodies, _ = _create("us")
         assert bodies[0]["geolocation"] == {"eq": "US"}
 
+    def test_uk_alias_is_gb(self):
+        _, bodies, _ = _create("UK")
+        assert bodies[0]["geolocation"] == {"eq": "GB"}
+
     def test_does_not_uppercase_the_whole_city_string(self):
-        _, bodies = _create("Virginia, US")
+        _, bodies, _ = _create("Virginia, US")
         assert bodies[0]["geolocation"] == {"eq": "US"}
         assert bodies[0]["geolocation"] != {"eq": "VIRGINIA, US"}
 
     def test_no_region_omits_filter(self):
-        _, bodies = _create(None)
+        _, bodies, _ = _create(None)
         assert "geolocation" not in bodies[0]
+
+    def test_city_widens_search_limit(self):
+        _, bodies, _ = _create("Oregon, US")
+        assert bodies[0]["limit"] == 50
+
+    def test_country_keeps_default_limit(self):
+        _, bodies, _ = _create("US")
+        assert bodies[0]["limit"] == 10
 
     def test_unparseable_region_raises_before_search(self):
         with pytest.raises(RuntimeError, match="City, CC"):
@@ -139,6 +171,19 @@ class TestCreateSendsCountryCode:
     def test_empty_offers_still_mentions_original_region(self):
         with pytest.raises(RuntimeError, match="Oregon, US"):
             _create("Oregon, US", offers=[])
+
+    def test_prefers_clicked_city_over_cheaper_country_sibling(self):
+        _, _, rented = _create("Oregon, US", offers=[
+            {"id": 1, "machine_id": "va", "geolocation": "Virginia, US"},
+            {"id": 2, "machine_id": "or", "geolocation": "Oregon, US"},
+        ])
+        assert rented == ["asks/2/"]
+
+    def test_falls_back_to_country_pool_if_city_gone(self):
+        _, _, rented = _create("Oregon, US", offers=[
+            {"id": 1, "machine_id": "va", "geolocation": "Virginia, US"},
+        ])
+        assert rented == ["asks/1/"]
 
     def test_does_not_call_put_when_region_is_unparseable(self):
         p = VastAIProvider()
