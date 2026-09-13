@@ -14,8 +14,11 @@ from swm.sync.paths import (
     AUTO_LOG,
     AUTO_PID,
     AUTO_SCRIPT,
+    AUTOSYNC_FAIL_STREAK,
+    AUTOSYNC_FAILING,
     PUSH_STAMP,
     TRANSFER_LOCK,
+    TRANSFER_LOCK_HOLDER_TAG,
     WATCH_EXCLUDES,
     WATCH_LOG,
     WATCHER_EXCLUDES_FILE,
@@ -92,6 +95,9 @@ def _render_daemon_script(
         "__SWM_PUSH_STAMP__": PUSH_STAMP,
         "__SWM_AUTO_LOG__": AUTO_LOG,
         "__SWM_TRANSFER_LOCK__": TRANSFER_LOCK,
+        "__SWM_LOCK_TAG__": TRANSFER_LOCK_HOLDER_TAG,
+        "__SWM_FAILING_MARKER__": AUTOSYNC_FAILING,
+        "__SWM_FAIL_STREAK__": str(AUTOSYNC_FAIL_STREAK),
         "__SWM_WATCHER_EXCLUDES_FILE__": WATCHER_EXCLUDES_FILE,
         "__SWM_WATCHER_EXCLUDES__": "|".join(WATCH_EXCLUDES),
         "__SWM_ENV_FILE__": AUTO_ENV,
@@ -248,10 +254,34 @@ def start_autosync(
     return _pid_alive(session)
 
 
-def stop_autosync(session: RemoteSession) -> None:
-    """Stop the background auto-sync daemon and remove its credentials."""
+def stop_autosync(session: RemoteSession, drain_seconds: int = 120) -> None:
+    """Stop the auto-sync daemon, draining its in-flight cycle, and remove
+    its credentials.
+
+    SIGTERM asks the daemon to finish the current transfer and exit; the
+    remote loop polls every 2 s for up to *drain_seconds*, then SIGKILLs
+    the daemon's whole process group (it is a ``setsid`` leader) so no
+    orphaned s5cmd keeps running. ``drain_seconds=0`` kills immediately.
+    The transfer lock is removed only when the daemon (or a dead PID)
+    holds it, never while a live manual push does. Everything runs in a
+    single remote command: ``RemoteSession.exec`` has no timeout, and one
+    bounded loop beats many SSH round trips.
+    """
+    polls = (max(0, int(drain_seconds)) + 1) // 2
     session.exec(
-        f"test -f {AUTO_PID} && kill $(cat {AUTO_PID}) 2>/dev/null; "
+        f"pid=$(cat {AUTO_PID} 2>/dev/null); "
+        'if [ -n "$pid" ]; then '
+        'kill -TERM "$pid" 2>/dev/null; '
+        f'i=0; while [ "$i" -lt {polls} ] && kill -0 "$pid" 2>/dev/null; '
+        'do sleep 2; i=$((i + 1)); done; '
+        'if kill -0 "$pid" 2>/dev/null; then '
+        'kill -9 -- "-$pid" 2>/dev/null; pkill -9 -P "$pid" 2>/dev/null; '
+        'kill -9 "$pid" 2>/dev/null; fi; '
+        f'holder=$(cat {TRANSFER_LOCK} 2>/dev/null); '
+        'if [ -n "$holder" ] && { [ "$holder" = "$pid" ] '
+        '|| ! kill -0 "$holder" 2>/dev/null; }; then '
+        f"rm -f {TRANSFER_LOCK}; fi; "
+        "fi; "
         f"rm -f {AUTO_PID} {AUTO_ENV}",
         stream=False,
     )

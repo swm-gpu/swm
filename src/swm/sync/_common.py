@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import shlex
 
-from swm.bootstrap import _privileged, _step
+from swm.bootstrap import _privileged, _step, console
 from swm.remote.ssh import RemoteSession
 from swm.sync.paths import staging_dir_for
 
@@ -75,7 +75,7 @@ def clear_staged_files(session: RemoteSession, staging: str) -> None:
     """
     q = shlex.quote(staging)
     session.exec(
-        f"[ -d {q} ] && find {q} -type f -delete 2>/dev/null; true",
+        f"[ -d {q} ] && find {q} \\( -type f -o -type l \\) -delete 2>/dev/null; true",
         stream=False,
     )
 
@@ -91,6 +91,14 @@ def stage_hardlinks(session: RemoteSession, filelist: str, src: str) -> str:
     ``cp`` used to duplicate the workspace onto the container overlay
     and could upload partial files as corrupt objects.
 
+    A symlink is never linked as itself: GNU ``ln`` would stage the link
+    inode, whose relative target dangles inside the staging tree, and
+    s5cmd (which follows symlinks) then aborts the walk of that whole
+    top-level entry. Instead the resolved target file is linked under the
+    link's name — the same object a follow-symlinks upload produced — and
+    links that resolve to nothing, to a directory, or across filesystems
+    are skipped and counted.
+
     Returns the staging directory path. Raises ``RuntimeError`` if
     staging could not be completed.
     """
@@ -98,18 +106,40 @@ def stage_hardlinks(session: RemoteSession, filelist: str, src: str) -> str:
     q = shlex.quote(staging)
     clear_staged_files(session, staging)
     exit_code, out, _ = session.exec(
-        f"mkdir -p {q} && fail=0; "
+        f"mkdir -p {q} && fail=0; links=0; skipped=0; "
         f"while IFS= read -r f; do "
-        f"  [ -f \"$f\" ] || continue; "
+        f"  if [ -L \"$f\" ]; then "
+        f"    t=$(readlink -f -- \"$f\" 2>/dev/null); "
+        f"    if [ -z \"$t\" ] || [ ! -f \"$t\" ] || [ -L \"$t\" ]; then "
+        f"      skipped=$((skipped+1)); continue; fi; "
+        f"  elif [ -f \"$f\" ]; then t=\"$f\"; "
+        f"  else continue; fi; "
         f"  rel=\"${{f#{src}/}}\"; "
         f"  mkdir -p \"{staging}/$(dirname \"$rel\")\" "
         f"    || {{ echo \"SWM_STAGE_FAIL(mkdir): $rel\"; fail=1; break; }}; "
-        f"  ln -f \"$f\" \"{staging}/$rel\" "
-        f"    || {{ echo \"SWM_STAGE_FAIL(ln): $f\"; fail=1; break; }}; "
+        f"  if [ -L \"$f\" ]; then "
+        f"    if ln -f -- \"$t\" \"{staging}/$rel\" 2>/dev/null; "
+        f"      then links=$((links+1)); else skipped=$((skipped+1)); fi; "
+        f"  else "
+        f"    ln -f -- \"$t\" \"{staging}/$rel\" "
+        f"      || {{ echo \"SWM_STAGE_FAIL(ln): $f\"; fail=1; break; }}; "
+        f"  fi; "
         f"done < {shlex.quote(filelist)}; "
+        f"echo \"SWM_STAGE_LINKS: $links $skipped\"; "
         f"exit $fail",
         stream=False,
     )
+    links = skipped = 0
+    for line in out.splitlines():
+        if line.startswith("SWM_STAGE_LINKS:"):
+            links, skipped = (int(n) for n in line.split()[1:3])
+    if links:
+        console.print(f"  [dim]{links} symlink(s) materialised as their target files[/dim]")
+    if skipped:
+        console.print(
+            f"  [dim]skipped {skipped} symlink(s) that cannot be materialised "
+            f"(dangling, directory, or cross-device)[/dim]"
+        )
     if exit_code != 0:
         clear_staged_files(session, staging)
         detail = next(

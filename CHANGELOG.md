@@ -4,6 +4,54 @@ All notable changes to swm are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3] - 2026-09-13
+
+### Fixed
+- **A symlink could wedge auto-sync for good.** Staging hardlinked a
+  symlink's own inode, whose relative target dangles inside the staging
+  tree; s5cmd (which follows symlinks) errored on it and stopped walking
+  that top-level entry, silently skipping every file after it, and the
+  cleanup (`find -type f -delete`) never removed the link, so every later
+  cycle failed the same way. One production pod repeated this 223 times
+  over nine hours. Staging now materialises a symlink as its target file
+  under the link's name and skips (and reports) links that resolve to
+  nothing, to a directory, or across filesystems; cleanup removes links;
+  the daemon sweeps stale links from both staging trees at start; every
+  `s5cmd cp` runs with `--no-follow-symlinks` and every `s5cmd rm` with
+  `--raw`.
+- **A failing daemon looked like a busy user.** The on-pod guard counted
+  any transfer-lock file and any `s5cmd` process as activity, so a daemon
+  that could not make progress kept the idle clock at zero and auto-down
+  never fired. After five consecutive failed cycles the daemon writes
+  `/workspace/.swm_autosync.failing` (streak, last errors) and slows to
+  ten times its interval; the guard stops counting the daemon's lock and
+  processes as activity while that marker exists, and reports
+  `autosync_failing` / `autosync_error` in its status. A stale lock (dead
+  or unrecognised PID) is never activity either.
+- **The transfer lock did not protect manual pushes.** The lock held the
+  PID of an already-exited SSH shell, so the daemon could start a cycle
+  in the middle of a push's staging, and the push then failed with
+  "A transfer is already running" after it had consumed the watcher's
+  change log, losing recorded deletions. A manual transfer now runs a
+  tagged holder process for its whole duration (installed with an
+  exclusive create; the daemon writes its lock with `noclobber`), waits
+  for an in-flight daemon cycle instead of failing, and re-queues the
+  change-log snapshot on any error. `--force` interrupts the daemon's
+  transfer rather than killing the daemon.
+- **Stale-lock cleanup deleted user files.** It ran
+  `find /workspace ... -regex '.*\.[a-z]*[0-9]{9,}$' -delete`, which
+  matches names such as `dump.sql1694567890`. Removed.
+- **`--force` no longer stamps a failed first push (or tar push) as synced.**
+  Files s5cmd skipped keep their old mtimes, so a stamp would hide them
+  from every later incremental push. A nonzero first push is retried once
+  with `-n` (missing objects only); if that still fails, no stamp is
+  written.
+- **Stopping the daemon drains it.** `stop_autosync` sends SIGTERM, lets
+  the in-flight upload finish (bounded, default 120 s), then kills the
+  process group; the daemon releases only a lock it owns. Watcher
+  restarts (including the one this release's exclude-list change causes)
+  carry pending change-log entries across instead of discarding them.
+
 ## [0.3.2] - 2026-09-11
 
 ### Fixed

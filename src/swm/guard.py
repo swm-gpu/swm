@@ -12,7 +12,13 @@ import click
 
 from swm import config as cfg
 from swm.bootstrap import console
-from swm.sync.paths import WATCH_LOG as _WATCH_LOG
+from swm.sync.paths import (
+    AUTO_SCRIPT as _AUTO_SCRIPT,
+    AUTOSYNC_FAILING as _AUTOSYNC_FAILING,
+    TRANSFER_LOCK as _TRANSFER_LOCK,
+    TRANSFER_LOCK_HOLDER_TAG as _LOCK_HOLDER_TAG,
+    WATCH_LOG as _WATCH_LOG,
+)
 from swm.commands._helpers import _instance_for
 from swm.providers import resolve_instance
 from swm.providers.base import Instance, InstanceStatus
@@ -25,6 +31,7 @@ _GUARD_PID = "/tmp/.swm_guard.pid"
 _GUARD_LOG = "/tmp/.swm_guard.log"
 _GPU_ACTIVE_THRESHOLD = 10.0
 _REMINDER_COOLDOWN_SECONDS = 30 * 60
+_AUTOSYNC_SCRIPT_NAME = os.path.basename(_AUTO_SCRIPT)
 
 _WATCHER_SOURCE = f"""#!/usr/bin/env python3
 import json
@@ -38,7 +45,11 @@ GUARD_DIR = "{_GUARD_DIR}"
 STATUS_PATH = "{_GUARD_STATUS}"
 PID_PATH = "{_GUARD_PID}"
 WATCH_LOG = "{_WATCH_LOG}"
-TRANSFER_LOCK = "/tmp/.swm_transfer.lock"
+# Env overrides let the helpers below be unit-tested against temp paths.
+TRANSFER_LOCK = os.environ.get("SWM_GUARD_LOCK", "{_TRANSFER_LOCK}")
+AUTOSYNC_FAILING = os.environ.get("SWM_GUARD_AUTOSYNC_FAILING", "{_AUTOSYNC_FAILING}")
+LOCK_HOLDER_TAG = "{_LOCK_HOLDER_TAG}"
+AUTOSYNC_SCRIPT_NAME = "{_AUTOSYNC_SCRIPT_NAME}"
 POLL = int(sys.argv[1]) if len(sys.argv) > 1 else 60
 GPU_THRESHOLD = float(sys.argv[2]) if len(sys.argv) > 2 else {_GPU_ACTIVE_THRESHOLD}
 stop_requested = False
@@ -98,8 +109,52 @@ def recent_fs_write(now: float) -> bool:
     return bool(out.strip())
 
 
+def _lock_holder_cmdline() -> str:
+    try:
+        with open(TRANSFER_LOCK, "r", encoding="utf-8") as f:
+            pid = int(f.read().strip() or "0")
+    except (OSError, ValueError):
+        return ""
+    if pid <= 0:
+        return ""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return ""
+    except OSError:
+        pass
+    try:
+        with open("/proc/%d/cmdline" % pid, "rb") as f:
+            return f.read().replace(b"\\0", b" ").decode("utf-8", "replace")
+    except OSError:
+        return ""
+
+
+def autosync_failing() -> bool:
+    return os.path.exists(AUTOSYNC_FAILING)
+
+
+def autosync_error() -> str:
+    try:
+        with open(AUTOSYNC_FAILING, "r", encoding="utf-8", errors="replace") as f:
+            lines = [ln.strip() for ln in f.read().splitlines() if ln.strip()]
+    except OSError:
+        return ""
+    return lines[-1][:200] if lines else ""
+
+
 def transfer_locked() -> bool:
-    return os.path.exists(TRANSFER_LOCK)
+    # A lock is user activity only while its holder is live AND recognised:
+    # a manual push holder, or the autosync daemon while it is actually
+    # making progress. A stale lock, or a daemon wedged on failing cycles,
+    # must not keep the idle clock from advancing (that cost ~9 h of B200
+    # billing once).
+    cmdline = _lock_holder_cmdline()
+    if not cmdline:
+        return False
+    if LOCK_HOLDER_TAG in cmdline:
+        return True
+    return AUTOSYNC_SCRIPT_NAME in cmdline and not autosync_failing()
 
 
 def busy_processes() -> list[str]:
@@ -107,7 +162,10 @@ def busy_processes() -> list[str]:
         "pgrep -af 'pip install|huggingface-cli download|hf download|s5cmd |tar czf|scp -r|rsync|uv pip install' "
         "| grep -v swm_guard | head -5"
     )
-    return [line for line in out.splitlines() if line.strip()]
+    lines = [line for line in out.splitlines() if line.strip()]
+    if autosync_failing():
+        lines = [line for line in lines if "s5cmd" not in line]
+    return lines
 
 
 def loadavg() -> float:
@@ -144,6 +202,7 @@ while not stop_requested:
     recent_write = recent_fs_write(now)
     locked = transfer_locked()
     busy = busy_processes()
+    failing = autosync_failing()
     load = loadavg()
     active = bool(ssh or locked or busy or recent_write or gpu >= GPU_THRESHOLD)
     if active:
@@ -159,6 +218,8 @@ while not stop_requested:
             "recent_fs_write": recent_write,
             "transfer_locked": locked,
             "busy_processes": busy,
+            "autosync_failing": failing,
+            "autosync_error": autosync_error() if failing else "",
             "loadavg": load,
             "poll_interval_seconds": POLL,
             "gpu_active_threshold": GPU_THRESHOLD,

@@ -52,13 +52,27 @@ AUTO_SCRIPT = "/tmp/.swm_autosync.sh"
 AUTO_ENV = "/tmp/.swm_autosync.env"
 
 # Shared across manual push + auto-sync so they don't clobber each other.
+# The file holds the PID of a LIVE holder: the daemon itself during a cycle,
+# or a background holder process (argv tagged with TRANSFER_LOCK_HOLDER_TAG)
+# that a manual push starts for its whole duration. A PID that is dead or
+# whose cmdline is neither is a stale lock, never a busy one.
 TRANSFER_LOCK = "/tmp/.swm_transfer.lock"
+TRANSFER_LOCK_HOLDER_TAG = "swm-transfer-lock"
+
+# Written by the daemon after AUTOSYNC_FAIL_STREAK consecutive failed cycles
+# (first line: "count=<n> since=<utc>", then the last error lines), removed on
+# the next clean cycle. The on-pod guard and swm-cloud read it: a daemon that
+# cannot make progress is not user activity and must be surfaced, not hidden
+# behind "transfer in progress".
+AUTOSYNC_FAILING = "/workspace/.swm_autosync.failing"
+AUTOSYNC_FAIL_STREAK = 5
 
 # Default regex excludes used by the inotify watcher.
 WATCH_EXCLUDES: tuple[str, ...] = (
     r"\.swm_changes\.log",
     r"\.swm_last_push",
     r"\.swm_watcher\.pid",
+    r"\.swm_autosync\.(log|failing)",
     r"\.swm_workspace\.tar\.(gz|zst)",
     # Push/autosync staging lives inside the synced tree (same filesystem,
     # so hardlinks work) and must never sync itself. The daemon and tier-1

@@ -14,6 +14,11 @@ from swm.sync.paths import (
     WATCHER_SCRIPT,
 )
 
+# Pending change-log entries are parked here across a watcher restart: the
+# start script truncates WATCH_LOG, and losing in-flight paths/deletions on
+# every swm upgrade that changes WATCH_EXCLUDES is not acceptable.
+_WATCH_CARRY = "/tmp/.swm_watch_carry"
+
 
 def _current_excludes_regex() -> str:
     return "|".join(WATCH_EXCLUDES)
@@ -55,7 +60,12 @@ def start_watcher(session: RemoteSession, src: str = "/workspace") -> bool:
     if _pid_alive(session) and _excludes_fingerprint_matches(session):
         return True
 
-    if _pid_alive(session):
+    restarting = _pid_alive(session)
+    if restarting:
+        session.exec(
+            f"cp -f {WATCH_LOG} {_WATCH_CARRY} 2>/dev/null || : > {_WATCH_CARRY}",
+            stream=False,
+        )
         stop_watcher(session)
 
     _, has_cmd, _ = session.exec(
@@ -85,6 +95,11 @@ def start_watcher(session: RemoteSession, src: str = "/workspace") -> bool:
         f"chmod +x {WATCHER_SCRIPT} && bash {WATCHER_SCRIPT}",
         stream=False,
     )
+    if restarting:
+        session.exec(
+            f"cat {_WATCH_CARRY} >> {WATCH_LOG} 2>/dev/null; rm -f {_WATCH_CARRY}",
+            stream=False,
+        )
 
     time.sleep(1)
     return _pid_alive(session)

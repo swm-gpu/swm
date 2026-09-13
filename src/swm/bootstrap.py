@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import shlex
 import subprocess
-
+import time
+from contextlib import contextmanager
 
 from rich.console import Console
 
@@ -422,6 +424,7 @@ _WS_MARKER_NAMES = (
     ".swm_workspace.tar.gz",
     ".swm_workspace.tar.zst",
     ".swm_autosync.log",
+    ".swm_autosync.failing",
     ".swm_guard",
     ".swm_watcher.pid",
     ".swm_staging",
@@ -582,47 +585,234 @@ def bootstrap_workspace_on_pod(
     return failed
 
 
-def _acquire_transfer_lock(session: RemoteSession, force: bool = False) -> None:
-    """Check for an existing transfer and acquire the lock.
+# ── transfer lock ──────────────────────────────────────────────────
+#
+# TRANSFER_LOCK names a LIVE holder: the autosync daemon during a cycle, or a
+# tagged background process a manual transfer starts for its whole duration.
+# Any other PID (dead, or recycled by an unrelated process) is stale and is
+# removed without waiting on it or signalling it.
 
-    If a lock exists with a live PID, raises unless *force* is True
-    (which kills the stale process first).
+_LOCK_POLL_SECONDS = 5
+_LOCK_HOLDER_TTL_MINUTES = 180
+_AUTOSYNC_INTERRUPT_WAIT_SECONDS = 30
+# `$pid` must be set by the enclosing snippet. /proc is authoritative on
+# Linux; ps covers hosts without it.
+_CMDLINE = "{ tr '\\0' ' ' < /proc/$pid/cmdline || ps -o args= -p \"$pid\"; } 2>/dev/null"
+_LOCK_STATES = ("FREE", "STALE", "AUTOSYNC", "MANUAL")
+
+
+def _lock_pid_snippet() -> str:
+    from swm.sync.paths import TRANSFER_LOCK
+
+    return f"$(tr -d '[:space:]' < {TRANSFER_LOCK} 2>/dev/null)"
+
+
+def lock_owner(session: RemoteSession) -> tuple[str | None, str]:
+    """Classify the transfer lock: ``("autosync" | "manual", pid)`` when a
+    live holder owns it, ``(None, pid)`` when it was stale (and has just been
+    removed), ``(None, "")`` when free."""
+    from swm.sync.paths import (
+        AUTO_SCRIPT,
+        TRANSFER_LOCK,
+        TRANSFER_LOCK_HOLDER_TAG,
+    )
+
+    daemon_script = AUTO_SCRIPT.rsplit("/", 1)[-1]
+    _, out, _ = session.exec(
+        f"pid={_lock_pid_snippet()}; "
+        f"if [ -z \"$pid\" ]; then echo FREE; "
+        f"elif ! kill -0 \"$pid\" 2>/dev/null; then echo \"STALE $pid\"; "
+        f"else case \"$({_CMDLINE})\" in "
+        f"*{daemon_script}*) echo \"AUTOSYNC $pid\";; "
+        f"*{TRANSFER_LOCK_HOLDER_TAG}*) echo \"MANUAL $pid\";; "
+        f"*) echo \"STALE $pid\";; esac; fi",
+        stream=False,
+    )
+    state, pid = "FREE", ""
+    for line in out.splitlines():
+        words = line.split()
+        if words and words[0] in _LOCK_STATES:
+            state, pid = words[0], (words[1] if len(words) > 1 else "")
+            break
+    if state == "AUTOSYNC":
+        return "autosync", pid
+    if state == "MANUAL":
+        return "manual", pid
+    if state == "STALE":
+        console.print(f"  [dim]Removing stale transfer lock (PID {pid})[/dim]")
+        session.exec(
+            f"[ \"{_lock_pid_snippet()}\" = {shlex.quote(pid)} ] "
+            f"&& rm -f {TRANSFER_LOCK}; true",
+            stream=False,
+        )
+    return None, pid
+
+
+def _start_lock_holder(session: RemoteSession) -> int:
+    """Start the detached holder process and publish its PID in TRANSFER_LOCK.
+
+    The tag lives in the holder's ``bash -c`` string rather than in argv[0]
+    (``exec -a``): argv[0] tricks break busybox applet dispatch and would be
+    lost the moment bash exec'd the sleep, while a multi-command ``-c``
+    string keeps bash resident with the tag visible for its whole life. The
+    holder writes its own PID so the result does not depend on whether
+    setsid had to fork; that file then becomes the lock via an exclusive
+    ``ln``. Returns 0 when the lock was taken by someone else meanwhile.
+    """
+    from swm.sync.paths import TRANSFER_LOCK, TRANSFER_LOCK_HOLDER_TAG
+
+    tag = TRANSFER_LOCK_HOLDER_TAG
+    holder = (
+        f"echo \\$\\$ > \\\"$tmp\\\"; "
+        f"for _ in \\$(seq {_LOCK_HOLDER_TTL_MINUTES}); do sleep 60; done # {tag}"
+    )
+    _, out, _ = session.exec(
+        f"tmp={TRANSFER_LOCK}.$$; rm -f \"$tmp\"; "
+        f"command -v setsid >/dev/null 2>&1 && SETSID=setsid || SETSID=; "
+        f"$SETSID bash -c \"{holder}\" </dev/null >/dev/null 2>&1 & "
+        f"for _ in $(seq 50); do [ -s \"$tmp\" ] && break; sleep 0.1; done; "
+        f"pid=$(tr -d '[:space:]' < \"$tmp\" 2>/dev/null); "
+        f"if [ -z \"$pid\" ] || ! {_CMDLINE} | grep -q {tag}; then "
+        f"  [ -n \"$pid\" ] && kill \"$pid\" 2>/dev/null; rm -f \"$tmp\"; "
+        f"  echo HOLDER_FAIL; exit 1; fi; "
+        # Exclusive create (ln fails on an existing target): if the daemon
+        # took the lock since it was classified free, this holder loses
+        # and the caller goes back to waiting instead of both proceeding.
+        f"if ln \"$tmp\" {TRANSFER_LOCK} 2>/dev/null; then rm -f \"$tmp\"; "
+        f"echo \"HOLDER $pid\"; else kill \"$pid\" 2>/dev/null; rm -f \"$tmp\"; "
+        f"echo HOLDER_BUSY; fi",
+        stream=False,
+    )
+    for line in out.splitlines():
+        words = line.split()
+        if words[:1] == ["HOLDER"] and len(words) == 2 and words[1].isdigit():
+            return int(words[1])
+        if words[:1] == ["HOLDER_BUSY"]:
+            return 0
+    raise RuntimeError(
+        "Could not start the transfer lock holder on the pod; "
+        "check that bash, setsid and /tmp are usable there."
+    )
+
+
+def _interrupt_autosync_cycle(session: RemoteSession, pid: str) -> None:
+    """Stop the daemon's in-flight transfer, never the daemon: it re-queues
+    the interrupted work itself and releases the lock."""
+    console.print(
+        f"  [yellow]⚠ Interrupting the auto-sync cycle (PID {pid}) so this "
+        f"transfer can start[/yellow]"
+    )
+    session.exec(f"pkill -TERM -P {pid} 2>/dev/null; true", stream=False)
+    deadline = time.monotonic() + _AUTOSYNC_INTERRUPT_WAIT_SECONDS
+    while time.monotonic() < deadline:
+        owner, current = lock_owner(session)
+        if owner != "autosync" or current != pid:
+            return
+        time.sleep(1)
+    raise RuntimeError(
+        "Auto-sync did not release the transfer lock within "
+        f"{_AUTOSYNC_INTERRUPT_WAIT_SECONDS}s after its transfer was "
+        "interrupted; retry later."
+    )
+
+
+def _acquire_transfer_lock(
+    session: RemoteSession,
+    force: bool = False,
+    wait_seconds: int = 600,
+) -> bool:
+    """Take the transfer lock for this session; True if this call took it.
+
+    Re-entrant per session (False when already held here). An autosync
+    holder is waited on — its cycle is short and interrupting it would only
+    re-queue the same work — unless *force*, which interrupts the cycle.
+    Another manual transfer is an error unless *force*, which kills it.
     """
     from swm.sync.paths import TRANSFER_LOCK
 
-    code, out, _ = session.exec(
-        f"cat {TRANSFER_LOCK} 2>/dev/null", stream=False,
-    )
-    old_pid = out.strip()
+    if getattr(session, "_swm_transfer_lock_pid", None):
+        return False
 
-    if old_pid:
-        _, alive, _ = session.exec(
-            f"kill -0 {old_pid} 2>/dev/null && echo alive || echo dead",
-            stream=False,
-        )
-        if "alive" in alive:
+    started = time.monotonic()
+    announced = False
+    while True:
+        owner, pid = lock_owner(session)
+        if owner == "autosync":
+            if force:
+                _interrupt_autosync_cycle(session, pid)
+                continue
+            waited = time.monotonic() - started
+            if waited >= wait_seconds:
+                raise RuntimeError(
+                    f"Auto-sync has held the transfer lock for {int(waited)}s; "
+                    "retry later or use --force"
+                )
+            if not announced:
+                console.print(
+                    "  [dim]Waiting for the auto-sync cycle to finish before "
+                    "starting the transfer[/dim]"
+                )
+                announced = True
+            time.sleep(min(_LOCK_POLL_SECONDS, wait_seconds - waited))
+            continue
+        if owner == "manual":
             if not force:
                 raise RuntimeError(
-                    f"A transfer is already running (PID {old_pid}). "
+                    f"A transfer is already running (PID {pid}). "
                     "Use --force to kill it and start a new one."
                 )
             console.print(
-                f"  [yellow]⚠ Killing existing transfer (PID {old_pid})[/yellow]"
+                f"  [yellow]⚠ Killing existing transfer (PID {pid})[/yellow]"
             )
-            session.exec(f"kill -9 {old_pid} 2>/dev/null; sleep 1", stream=False)
+            # The holder was started with setsid, so its PID is also its
+            # process group.
+            session.exec(
+                f"kill -9 -- -{pid} 2>/dev/null; kill -9 {pid} 2>/dev/null; "
+                f"sleep 1; [ \"{_lock_pid_snippet()}\" = {pid} ] "
+                f"&& rm -f {TRANSFER_LOCK}; true",
+                stream=False,
+            )
+            continue
+        pid = _start_lock_holder(session)
+        if not pid:
+            time.sleep(1)
+            continue
+        session._swm_transfer_lock_pid = pid
+        return True
 
-        # Stale lock — clean up temp files left behind
-        console.print("  [dim]Cleaning up stale temp files…[/dim]")
-        _, cleanup_out, _ = session.exec(
-            "find /workspace -maxdepth 5 -type f -regex '.*\\.[a-z]*[0-9]\\{9,\\}$' "
-            "-delete -print 2>/dev/null | wc -l",
-            stream=False,
-        )
-        n = cleanup_out.strip()
-        if n and n != "0":
-            console.print(f"  [dim]Removed {n} orphaned temp files[/dim]")
 
-    session.exec(f"echo $$ > {TRANSFER_LOCK}", stream=False)
+def _release_transfer_lock(session: RemoteSession) -> None:
+    """Stop this session's holder and remove the lock if it is still ours."""
+    from swm.sync.paths import TRANSFER_LOCK, TRANSFER_LOCK_HOLDER_TAG
+
+    pid = getattr(session, "_swm_transfer_lock_pid", None)
+    if not pid:
+        return
+    session._swm_transfer_lock_pid = None
+    session.exec(
+        f"pid={pid}; case \"$({_CMDLINE})\" in *{TRANSFER_LOCK_HOLDER_TAG}*) "
+        f"kill -- -{pid} 2>/dev/null; kill {pid} 2>/dev/null;; esac; "
+        f"[ \"{_lock_pid_snippet()}\" = {pid} ] && rm -f {TRANSFER_LOCK}; true",
+        stream=False,
+    )
+
+
+@contextmanager
+def transfer_lock(
+    session: RemoteSession,
+    force: bool = False,
+    wait_seconds: int = 600,
+):
+    """Hold the transfer lock across a whole operation; nested
+    ``_s5cmd_transfer`` calls then reuse it instead of re-acquiring."""
+    acquired = _acquire_transfer_lock(
+        session, force=force, wait_seconds=wait_seconds,
+    )
+    try:
+        yield
+    finally:
+        if acquired:
+            _release_transfer_lock(session)
 
 
 def _s5cmd_transfer(
@@ -633,24 +823,19 @@ def _s5cmd_transfer(
 ) -> int:
     """Run an s5cmd transfer with output streamed directly to the terminal.
 
-    Acquires a lock file on the pod, wraps the command in a shell trap
-    for guaranteed cleanup (even on SSH disconnect), and streams
-    s5cmd's native ``--show-progress`` output to the terminal.
+    Holds the transfer lock for the duration (unless the caller already
+    holds it via ``transfer_lock``) and streams s5cmd's native
+    ``--show-progress`` output to the terminal.
 
     Returns the process exit code.
     """
-    from swm.sync.paths import TRANSFER_LOCK
-
     console.print(f"\n[bold cyan]▸ {label}[/bold cyan]")
-    _acquire_transfer_lock(session, force=force)
-
-    wrapped = (
-        f"trap 'rm -f {TRANSFER_LOCK}' EXIT; "
-        f"echo $$ > {TRANSFER_LOCK}; "
-        f"{s5cmd_cmd}"
-    )
-    cmd = session._ssh_cmd() + [wrapped]
-    code = subprocess.call(cmd)
+    acquired = _acquire_transfer_lock(session, force=force)
+    try:
+        code = subprocess.call(session._ssh_cmd() + [s5cmd_cmd])
+    finally:
+        if acquired:
+            _release_transfer_lock(session)
 
     if code != 0:
         console.print(f"  [yellow]⚠ Transfer finished with warnings (exit {code})[/yellow]")
