@@ -170,7 +170,7 @@ def download(instance_id: str | None, remote_path: str | None, local_dir: str):
     try:
         with session_from_instance(inst) as sess:
             with console.status("Checking remote path…", spinner="dots"):
-                is_dir = sess.is_directory(remote_path)
+                is_dir, total, compress = sess.stat_path(remote_path)
 
             local_dir = str(Path(local_dir).expanduser())
 
@@ -192,10 +192,10 @@ def download(instance_id: str | None, remote_path: str | None, local_dir: str):
                     f"[bold]Downloading directory[/bold] "
                     f"{inst.provider}:{inst.id}:{remote_path} → {final_dest}"
                 )
-                console.print("  [dim]Using tar stream (compressed)[/dim]")
-
-                with console.status("Counting files…", spinner="dots"):
-                    total = sess.file_count(remote_path)
+                console.print(
+                    "  [dim]Using tar stream "
+                    f"({'compressed' if compress else 'uncompressed: media/model files'})[/dim]"
+                )
 
                 from rich.progress import (
                     Progress, SpinnerColumn, BarColumn,
@@ -224,7 +224,9 @@ def download(instance_id: str | None, remote_path: str | None, local_dir: str):
                                 progress.advance(task)
                                 progress.update(task, description=Path(name).name[:40])
 
-                        sess.download_dir(remote_path, tmpdir, progress_callback=_on_member)
+                        sess.download_dir(remote_path, tmpdir,
+                                          progress_callback=_on_member,
+                                          compress=compress)
 
                     extracted = Path(tmpdir) / base_name
                     extracted.rename(final_dest)

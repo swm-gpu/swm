@@ -13,7 +13,31 @@ _SSH_OPTS = [
     "-o", "StrictHostKeyChecking=no",
     "-o", "UserKnownHostsFile=/dev/null",
     "-o", "LogLevel=ERROR",
+    # Multiplex every ssh/scp we spawn over one TCP+SSH connection per host.
+    # A download used to pay three full handshakes (probe, stat, transfer) —
+    # 3–4 s each on a 360 ms RTT path. Falls back to a fresh connection when
+    # the server refuses a second channel. Short path: sun_path is 104 bytes.
+    "-o", "ControlMaster=auto",
+    "-o", "ControlPath=/tmp/swm-ssh-%C",
+    "-o", "ControlPersist=60",
 ]
+
+# Already-compressed formats: gzip on the pod only burns CPU (single-threaded
+# gzip -6 caps ~60–100 MB/s) and measured ~30 % slower on a slow path.
+_INCOMPRESSIBLE_EXT = frozenset({
+    ".mp4", ".mkv", ".webm", ".mov", ".avi", ".mp3", ".flac", ".ogg", ".aac",
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".heic",
+    ".zip", ".gz", ".tgz", ".bz2", ".xz", ".zst", ".7z", ".rar",
+    ".safetensors", ".ckpt", ".pt", ".pth", ".bin", ".gguf", ".onnx",
+    ".npz", ".parquet", ".pdf",
+})
+# Extensions the remote `find` counts as incompressible (same set, as a grep
+# alternation; keep in sync with _INCOMPRESSIBLE_EXT).
+_INCOMPRESSIBLE_GREP = "|".join(sorted(e.lstrip(".") for e in _INCOMPRESSIBLE_EXT))
+
+
+def worth_compressing(path: str) -> bool:
+    return not path.lower().endswith(tuple(_INCOMPRESSIBLE_EXT))
 
 def _sh_quote(s: str) -> str:
     """Shell-quote a string using $'...' syntax to handle all special chars."""
@@ -270,8 +294,10 @@ class RemoteSession:
         *,
         recursive: bool = False,
     ) -> None:
-        """Download a file from the remote via scp with compression."""
-        cmd = self._scp_base() + ["-C"]
+        """Download a file via scp, compressing only when the format allows."""
+        cmd = self._scp_base()
+        if worth_compressing(remote_path):
+            cmd.append("-C")
         cmd.extend([f"{self.user}@{self.host}:{remote_path}", local_path])
         proc = subprocess.run(cmd, stdin=subprocess.DEVNULL)
         if proc.returncode != 0:
@@ -287,17 +313,43 @@ class RemoteSession:
         except ValueError:
             return 0
 
+    def stat_path(self, remote_path: str) -> tuple[bool, int, bool]:
+        """One round trip: (is_directory, regular-file count, compress?).
+
+        ``compress`` is False when most of the first 500 files are formats
+        that gzip cannot shrink (media, model weights, archives)."""
+        q = _sh_quote(remote_path)
+        _, out, _ = self.exec(
+            f"if test -d {q}; then "
+            f"n=$(find {q} -type f | wc -l); "
+            f"i=$(find {q} -type f | head -500 | grep -Eic '\\.({_INCOMPRESSIBLE_GREP})$'); "
+            f"echo DIR $n $i; else echo FILE; fi",
+            stream=False,
+        )
+        parts = out.strip().split()
+        if not parts or parts[0] != "DIR":
+            return False, 0, worth_compressing(remote_path)
+        try:
+            total, incompressible = int(parts[1]), int(parts[2])
+        except (IndexError, ValueError):
+            return True, 0, True
+        sampled = min(total, 500)
+        return True, total, not (sampled and incompressible * 2 >= sampled)
+
     def download_dir(
         self,
         remote_path: str,
         local_dir: str,
         progress_callback: "Callable[[str], None] | None" = None,
+        *,
+        compress: bool = True,
     ) -> None:
         """Stream a remote directory to *local_dir* via tar-over-SSH.
 
         Significantly faster than ``scp -r`` because it transfers a single
-        compressed stream instead of one negotiated sub-channel per file.
-        The tar archive is never written to disk on either side.
+        stream instead of one negotiated sub-channel per file. The tar
+        archive is never written to disk on either side. ``compress=False``
+        skips gzip for trees of already-compressed files.
 
         *progress_callback* is called with each member name as it is extracted.
         """
@@ -317,7 +369,8 @@ class RemoteSession:
         # full absolute path — this makes extraction predictable.
         parent = remote_path.rstrip("/").rsplit("/", 1)[0] or "/"
         name = remote_path.rstrip("/").rsplit("/", 1)[-1]
-        ssh_cmd.append(f"tar czf - -C '{parent}' '{name}'")
+        flags = "czf" if compress else "cf"
+        ssh_cmd.append(f"tar {flags} - -C '{parent}' '{name}'")
 
         with subprocess.Popen(
             ssh_cmd,
@@ -326,7 +379,7 @@ class RemoteSession:
         ) as proc:
             assert proc.stdout is not None
             try:
-                with tarfile.open(fileobj=proc.stdout, mode="r|gz") as tf:
+                with tarfile.open(fileobj=proc.stdout, mode="r|*") as tf:
                     for member in tf:
                         tf.extract(member, local_dir)
                         if progress_callback:
