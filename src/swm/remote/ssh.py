@@ -44,6 +44,22 @@ def _sh_quote(s: str) -> str:
     return "'" + s.replace("'", "'\\''") + "'"
 
 
+# How much of a spooled remote stderr to quote back in an error. A flooding
+# remote can write megabytes of repeated warnings; the tail carries the
+# failure that actually stopped the transfer.
+_STDERR_TAIL_BYTES = 8192
+
+
+def _stderr_tail(fileobj, limit: int = _STDERR_TAIL_BYTES) -> str:
+    """Last *limit* bytes of a spooled stderr file, for an error message."""
+    try:
+        size = fileobj.seek(0, 2)
+        fileobj.seek(max(0, size - limit))
+        return fileobj.read().decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
 _ANSI_RE = re.compile(
     r"\x1b\[\??[0-9;]*[a-zA-Z]"
     r"|\x1b\][^\x07]*\x07"
@@ -355,6 +371,7 @@ class RemoteSession:
         """
         import os
         import tarfile
+        import tempfile
 
         os.makedirs(local_dir, exist_ok=True)
 
@@ -370,12 +387,17 @@ class RemoteSession:
         parent = remote_path.rstrip("/").rsplit("/", 1)[0] or "/"
         name = remote_path.rstrip("/").rsplit("/", 1)[-1]
         flags = "czf" if compress else "cf"
-        ssh_cmd.append(f"tar {flags} - -C '{parent}' '{name}'")
+        ssh_cmd.append(f"tar {flags} - -C {_sh_quote(parent)} {_sh_quote(name)}")
 
-        with subprocess.Popen(
+        # Remote stderr is spooled to a file, never a pipe. Remote tar warns
+        # per entry on a live workspace (files changing under it, sockets,
+        # unreadable paths); once an undrained stderr pipe fills, the remote
+        # blocks on it, stops producing stdout, and the extract below waits on
+        # that forever — a hang indistinguishable from a slow transfer.
+        with tempfile.TemporaryFile() as errfile, subprocess.Popen(
             ssh_cmd,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=errfile,
         ) as proc:
             assert proc.stdout is not None
             try:
@@ -386,7 +408,7 @@ class RemoteSession:
                             progress_callback(member.name)
             except Exception as exc:
                 proc.kill()
-                stderr = proc.stderr.read().decode("utf-8", errors="replace") if proc.stderr else ""
+                stderr = _stderr_tail(errfile)
                 raise RuntimeError(
                     f"tar stream failed: {exc}"
                     + (f"\nSSH stderr: {stderr}" if stderr.strip() else "")
@@ -394,7 +416,7 @@ class RemoteSession:
 
             proc.wait()
             if proc.returncode not in (0, None):
-                stderr = proc.stderr.read().decode("utf-8", errors="replace") if proc.stderr else ""
+                stderr = _stderr_tail(errfile)
                 raise RuntimeError(
                     f"SSH tar exited {proc.returncode}"
                     + (f": {stderr.strip()}" if stderr.strip() else "")
