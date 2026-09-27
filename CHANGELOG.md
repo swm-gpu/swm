@@ -4,6 +4,21 @@ All notable changes to swm are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`swm setup start <framework> --tunnel`.** Serves the framework through a
+  Cloudflare quick tunnel and prints its `trycloudflare.com` URL, for pods
+  whose direct IP path is slow. A Virginia Vast.ai host measured 46 MB/s
+  upstream from the pod, yet served its mapped ComfyUI port to a client in
+  India at 30 KB/s over a route dropping 20 % of packets; the same file came
+  through a quick tunnel at 1.8 MB/s. `cloudflared` is used from `PATH` or
+  downloaded for the pod's architecture into `/usr/local/bin`. The tunnel is
+  tracked by a per-framework PID file under `/tmp`, reused when already
+  running on the same port, replaced on a port change, and closed by
+  `swm setup stop`. A PID file naming some other process (left from before a
+  container restart) is never reused or killed.
+
 ## [0.3.5] - 2026-09-27
 
 ### Fixed

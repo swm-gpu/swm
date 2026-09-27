@@ -305,10 +305,13 @@ Start a framework in the background.
 | `-p, --port INTEGER` | Override the default listen port |
 | `--model TEXT` | vLLM only: HuggingFace model id (writes `/workspace/vllm/model.txt` before launch) |
 | `--extra-args TEXT` | Additional launch flags appended to the framework command (shell-quoted) |
+| `--tunnel` | Also serve the framework through a Cloudflare quick tunnel and print its `trycloudflare.com` URL. Reuses a tunnel already running on the same port. Not available for frameworks without an HTTP port |
+
+`--tunnel` routes traffic through Cloudflare's network instead of the pod's public IP, which helps when the direct path to the pod is slow or lossy. The URL is public with no login and changes whenever the tunnel restarts. Quick tunnels allow 200 requests in flight and do not stream Server-Sent Events; WebSockets and streamed POST responses work.
 
 ### `swm setup stop <framework> [id]`
 
-Stop a running framework.
+Stop a running framework, and close its Cloudflare tunnel if one was opened with `--tunnel`.
 
 ### `swm setup storage [id]`
 

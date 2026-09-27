@@ -850,6 +850,8 @@ _RE_EXPORTS: dict[str, str] = {
     "install_framework": "swm.bootstrap_frameworks",
     "start_framework": "swm.bootstrap_frameworks",
     "stop_framework": "swm.bootstrap_frameworks",
+    "open_quick_tunnel": "swm.bootstrap_frameworks",
+    "close_quick_tunnel": "swm.bootstrap_frameworks",
     "link_models_to_comfyui": "swm.bootstrap_frameworks",
     "wait_for_ssh": "swm.bootstrap_ssh",
     "next_workspace_name": "swm.bootstrap_ssh",

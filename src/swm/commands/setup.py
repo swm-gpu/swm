@@ -288,12 +288,18 @@ def setup_install(framework_name: str, instance_id: str):
     default=None,
     help="Additional arguments appended to the framework launch command",
 )
+@click.option(
+    "--tunnel",
+    is_flag=True,
+    help="Also serve the framework through a Cloudflare quick tunnel (public trycloudflare.com URL, no login)",
+)
 def setup_start(
     framework_name: str,
     instance_id: str,
     port: int | None,
     model: str | None,
     extra_args: str | None,
+    tunnel: bool,
 ):
     """Start a framework on a running instance.
 
@@ -303,10 +309,11 @@ def setup_start(
       swm setup start swarmui runpod:abc123 --port 8888
       swm setup start vllm runpod:abc123 --model Qwen/Qwen3-8B
       swm setup start comfyui runpod:abc123 --extra-args "--use-sage-attention"
+      swm setup start comfyui vastai:12345678 --tunnel
     """
     import shlex
 
-    from swm.bootstrap import start_framework
+    from swm.bootstrap import open_quick_tunnel, start_framework
     from swm.frameworks import get_framework
     from swm.remote.ssh import session_from_instance
 
@@ -325,8 +332,15 @@ def setup_start(
             shlex.split(extra_args)
         except ValueError as exc:
             raise click.UsageError(f"invalid --extra-args: {exc}") from exc
+    if tunnel and not fw.ports:
+        raise click.UsageError(
+            f"--tunnel needs a framework with an HTTP port; {fw.label} has none"
+        )
 
     inst = _instance_for(instance_id)
+    listen_port = port or (next(iter(fw.ports)) if fw.ports else None)
+    tunnel_result: tuple[str, bool] | None = None
+    tunnel_error: str | None = None
 
     with session_from_instance(inst) as sess:
         if model is not None:
@@ -347,8 +361,13 @@ def setup_start(
             )
         except RuntimeError as e:
             raise click.ClickException(str(e))
+        if tunnel:
+            with console.status("Opening Cloudflare tunnel…", spinner="dots"):
+                try:
+                    tunnel_result = open_quick_tunnel(sess, fw.name, listen_port)
+                except RuntimeError as e:
+                    tunnel_error = str(e)
 
-    listen_port = port or (next(iter(fw.ports)) if fw.ports else None)
     if listen_port:
         url = _framework_url(inst, listen_port)
         if not url:
@@ -368,6 +387,28 @@ def setup_start(
             else:
                 console.print(f"  [dim]URL: {url} (not reachable yet — framework may still be loading)[/dim]")
 
+    if tunnel_error:
+        raise click.ClickException(f"Cloudflare tunnel failed:\n{tunnel_error}")
+    if tunnel_result:
+        import time
+
+        tunnel_url, reused = tunnel_result
+        with console.status("Checking tunnel reachability…", spinner="dots"):
+            if not reused:
+                # Cloudflare publishes a new hostname a few seconds after
+                # issuing it; a lookup before that caches NXDOMAIN for the
+                # zone's 60 s negative TTL, so wait, and probe past that TTL.
+                time.sleep(10)
+            reachable = _probe_url(tunnel_url, timeout=75)
+        note = "already running" if reused else "public, no login; changes when the tunnel restarts"
+        if reachable:
+            console.print(f"  [green]✓[/green] Tunnel: {tunnel_url} [dim]({note})[/dim]")
+        else:
+            console.print(
+                f"  [dim]Tunnel: {tunnel_url} (not reachable yet — a new "
+                f"trycloudflare.com host can take a minute)[/dim]"
+            )
+
 
 @setup.command(name="stop")
 @click.argument("framework_name")
@@ -375,11 +416,14 @@ def setup_start(
 def setup_stop(framework_name: str, instance_id: str):
     """Stop a framework on a running instance.
 
+    Also closes the framework's Cloudflare tunnel if one was opened with
+    `swm setup start --tunnel`.
+
     \b
     Examples:
       swm setup stop comfyui runpod:abc123
     """
-    from swm.bootstrap import stop_framework
+    from swm.bootstrap import close_quick_tunnel, stop_framework
     from swm.frameworks import get_framework
     from swm.remote.ssh import session_from_instance
 
@@ -391,6 +435,8 @@ def setup_stop(framework_name: str, instance_id: str):
 
     with session_from_instance(inst) as sess:
         stop_framework(sess, framework_name, console=console)
+        if close_quick_tunnel(sess, framework_name):
+            console.print("  [green]✓ Cloudflare tunnel closed[/green]")
 
 
 @setup.command(name="list")

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import re
 import shlex
 import time
 
@@ -205,6 +207,105 @@ def stop_framework(
     with _con.status(f"Stopping {fw.label}…", spinner="dots"):
         session.exec(fw.stop_cmd, stream=False)
     _con.print(f"  [green]✓ {fw.label} stopped[/green]")
+
+
+# ── Cloudflare quick tunnel ─────────────────────────────────────────
+
+# Outside /workspace so autosync never ships tunnel state to storage.
+_TUNNEL_STATE_PREFIX = "/tmp/swm-tunnel-"
+_TUNNEL_WAIT_SECONDS = 30
+_TUNNEL_RESULT_RE = re.compile(r"SWM_TUNNEL_(STARTED|REUSED) (https://\S+)")
+
+
+def _tunnel_script_header(name: str) -> str:
+    pid_file = f"{_TUNNEL_STATE_PREFIX}{name}.pid"
+    log_file = f"{_TUNNEL_STATE_PREFIX}{name}.log"
+    return (
+        f"PID_FILE={shlex.quote(pid_file)}\n"
+        f"LOG_FILE={shlex.quote(log_file)}\n"
+        # Check the recorded PID's own argv instead of `pkill -f`: a pattern
+        # also matches the SSH shell running this script, and a PID file
+        # left from before a container restart may now name any process.
+        'ours() { [ -n "$1" ] && ps -o args= -p "$1" 2>/dev/null '
+        '| grep -q -- "tunnel --no-autoupdate --url "; }\n'
+        'pid=$(cat "$PID_FILE" 2>/dev/null)\n'
+    )
+
+
+def _quick_tunnel_open_script(name: str, port: int) -> str:
+    target = f"http://127.0.0.1:{int(port)}"
+    return _tunnel_script_header(name) + f"""TARGET={target}
+url() {{ grep -oE 'https://[a-z0-9-]+\\.trycloudflare\\.com' "$LOG_FILE" 2>/dev/null | head -1; }}
+if ours "$pid"; then
+  if ps -o args= -p "$pid" | grep -q -- "--url $TARGET\\$" && [ -n "$(url)" ]; then
+    echo "SWM_TUNNEL_REUSED $(url)"
+    exit 0
+  fi
+  kill "$pid" 2>/dev/null
+fi
+rm -f "$PID_FILE" "$LOG_FILE"
+CF=$(command -v cloudflared)
+if [ -z "$CF" ]; then
+  case "$(uname -m)" in
+    x86_64|amd64) ARCH=amd64 ;;
+    aarch64|arm64) ARCH=arm64 ;;
+    *) echo "SWM_TUNNEL_ERROR unsupported CPU architecture: $(uname -m)"; exit 1 ;;
+  esac
+  CF=/usr/local/bin/cloudflared
+  if ! curl -fsSL -o "$CF.part" "https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-$ARCH"; then
+    rm -f "$CF.part"
+    echo "SWM_TUNNEL_ERROR could not download cloudflared for linux-$ARCH"
+    exit 1
+  fi
+  chmod +x "$CF.part" && mv "$CF.part" "$CF"
+fi
+nohup bash -c 'echo $$ > "$0"; exec "$1" tunnel --no-autoupdate --url "$2"' \\
+  "$PID_FILE" "$CF" "$TARGET" > "$LOG_FILE" 2>&1 < /dev/null &
+for _ in $(seq {_TUNNEL_WAIT_SECONDS}); do
+  sleep 1
+  u=$(url)
+  if [ -n "$u" ]; then echo "SWM_TUNNEL_STARTED $u"; exit 0; fi
+  ours "$(cat "$PID_FILE" 2>/dev/null)" || break
+done
+echo "SWM_TUNNEL_ERROR no trycloudflare.com URL in $LOG_FILE"
+tail -n 15 "$LOG_FILE" 2>/dev/null
+exit 1
+"""
+
+
+def _quick_tunnel_close_script(name: str) -> str:
+    return _tunnel_script_header(name) + """if ours "$pid"; then
+  kill "$pid" 2>/dev/null && echo SWM_TUNNEL_CLOSED
+fi
+rm -f "$PID_FILE" "$LOG_FILE"
+"""
+
+
+def _run_tunnel_script(session: RemoteSession, script: str) -> str:
+    payload = base64.b64encode(script.encode("utf-8")).decode("ascii")
+    _, out, _ = session.exec(f"echo {payload} | base64 -d | bash", stream=False)
+    return out
+
+
+def open_quick_tunnel(session: RemoteSession, name: str, port: int) -> tuple[str, bool]:
+    """Serve ``127.0.0.1:<port>`` on the pod through a Cloudflare quick tunnel.
+
+    Returns ``(url, reused)``. A tunnel already running for *name* on the
+    same port is reused; one on another port is replaced. Raises
+    ``RuntimeError`` carrying the tunnel log tail when no URL comes up.
+    """
+    out = _run_tunnel_script(session, _quick_tunnel_open_script(name, port))
+    m = _TUNNEL_RESULT_RE.search(out)
+    if m:
+        return m.group(2), m.group(1) == "REUSED"
+    detail = out.replace("SWM_TUNNEL_ERROR ", "").strip()
+    raise RuntimeError(detail or "cloudflared produced no output")
+
+
+def close_quick_tunnel(session: RemoteSession, name: str) -> bool:
+    """Stop the tunnel ``open_quick_tunnel`` started for *name*; True if one was running."""
+    out = _run_tunnel_script(session, _quick_tunnel_close_script(name))
+    return "SWM_TUNNEL_CLOSED" in out
 
 
 # ── symlinks ────────────────────────────────────────────────────────
