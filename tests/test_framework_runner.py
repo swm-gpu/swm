@@ -163,6 +163,11 @@ def test_a_persistent_failure_rebuilds_the_environment(fake_time):
     assert pod.ran("rm -rf /workspace/.cache/swm-rebuild/comfyui-venv") >= 1
     # The rebuild's steps run under the time budget.
     assert pod.ran("timeout -k 30 ") >= 1
+    # Custom nodes' dependencies are reinstalled into the rebuilt venv
+    # before it launches.
+    rebuild_at = next(i for i, s in enumerate(steps.steps) if s.startswith("Rebuilding"))
+    after = steps.steps[rebuild_at:]
+    assert after.index("Installing custom-node requirements") < after.index("Starting ComfyUI")
 
 
 def test_a_failed_rebuild_restores_the_previous_environment():

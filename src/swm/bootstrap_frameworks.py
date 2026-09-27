@@ -334,11 +334,17 @@ class _Runner:
 
     def attempt(self, port: int | None, extra_args: str | None, *,
                 install: bool, repair: str | None = None,
-                deadline: float | None = None) -> _Failure | None:
+                deadline: float | None = None,
+                repair_after: bool = False) -> _Failure | None:
         try:
             if repair is not None:
                 self.targeted_repair(repair)
             self.prepare(install=install, deadline=deadline)
+            if repair_after:
+                # A rebuilt venv has only what the install steps put in it;
+                # custom nodes' dependencies lived in the old one.
+                for step in self.fw.repair:
+                    self.step(step.label, step, deadline=deadline)
             self.stop()
             self.launch(port, extra_args)
         except _Failure as failure:
@@ -358,7 +364,8 @@ class _Runner:
             f"if [ -d {fw.venv} ]; then mv {fw.venv} {aside} && echo MOVED; fi",
             stream=False)
         moved = "MOVED" in out
-        failure = self.attempt(port, extra_args, install=True, deadline=deadline)
+        failure = self.attempt(port, extra_args, install=True, deadline=deadline,
+                               repair_after=True)
         if failure is None:
             self.session.exec(f"rm -rf {aside}", stream=False)
             return None
