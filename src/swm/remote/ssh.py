@@ -51,6 +51,27 @@ _DETACHED_START_WITHIN = 30.0
 # one line ending.
 _LINE_ENDS = re.compile(r"(?<=\n)|(?<=\r)(?!\n)")
 
+# What an interactive-only relay (RunPod's ssh.runpod.io) answers a command
+# run without a PTY. Retrying cannot change it.
+_RELAY_REFUSAL = re.compile(r"doesn.t support PTY", re.IGNORECASE)
+
+
+class SSHUnavailableError(RuntimeError):
+    """SSH to a pod could not be established; the message says why."""
+
+
+def is_relay_refusal(output: str) -> bool:
+    return bool(_RELAY_REFUSAL.search(output))
+
+
+def relay_only_message(user: str, host: str) -> str:
+    return (
+        f"{user}@{host} is an SSH relay that accepts interactive shells "
+        "only, so swm cannot run commands through it. swm needs the pod's "
+        "public SSH port (22/tcp), which the provider has not exposed; the "
+        "container may not have started yet (check `swm pod status`)."
+    )
+
 
 def worth_compressing(path: str) -> bool:
     return not path.lower().endswith(tuple(_INCOMPRESSIBLE_EXT))
@@ -127,6 +148,7 @@ class RemoteSession:
         probe_cmd.append(f"{self.user}@{self.host}")
         probe_cmd.append("echo __SWM_OK__")
 
+        last_error = ""
         for attempt in range(retries):
             try:
                 proc = subprocess.Popen(
@@ -138,16 +160,24 @@ class RemoteSession:
                 out, _ = proc.communicate(timeout=30)
                 if b"__SWM_OK__" in out:
                     return self
+                text = out.decode("utf-8", errors="replace")
+                if is_relay_refusal(text):
+                    raise SSHUnavailableError(relay_only_message(self.user, self.host))
+                lines = [ln.strip() for ln in text.splitlines()
+                         if ln.strip()]
+                last_error = lines[-1][:200] if lines else f"exit {proc.returncode}"
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait()
-            except OSError:
-                pass
+                last_error = "no response within 30s"
+            except OSError as exc:
+                last_error = str(exc)
             if attempt < retries - 1:
                 time.sleep(delay)
-        raise RuntimeError(
+        raise SSHUnavailableError(
             f"SSH to {self.user}@{self.host}:{self.port} "
             f"failed after {retries} attempts"
+            + (f": {last_error}" if last_error else "")
         )
 
     def exec(

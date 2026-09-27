@@ -39,6 +39,8 @@ POD_FIELDS = """
 
 SSH_RELAY_HOST = "ssh.runpod.io"
 
+NOT_STARTED = "RunPod has not started the container yet"
+
 _CLOUD_TYPES = ("SECURE", "COMMUNITY", "ALL")
 
 
@@ -277,13 +279,22 @@ class RunPodProvider(CloudProvider):
         ssh_host = SSH_RELAY_HOST if pod_host_id else None
         ssh_user = pod_host_id
 
+        # desiredStatus is what was asked for; runtime exists only once the
+        # container is up. Until then (an image pull, or a host that never
+        # starts it) nothing on the pod can answer, yet billing has begun.
+        status = _STATUS.get(pod.get("desiredStatus", ""), InstanceStatus.UNKNOWN)
+        detail = None
+        if status == InstanceStatus.RUNNING and not pod.get("runtime"):
+            status, detail = InstanceStatus.PENDING, NOT_STARTED
+
         return Instance(
             provider=self.slug,
             id=pod["id"],
             name=pod.get("name", ""),
             gpu_type=machine.get("gpuDisplayName", "unknown"),
             gpu_count=pod.get("gpuCount", 1),
-            status=_STATUS.get(pod.get("desiredStatus", ""), InstanceStatus.UNKNOWN),
+            status=status,
+            status_detail=detail,
             cost_per_hr=pod.get("costPerHr"),
             uptime_seconds=runtime.get("uptimeInSeconds"),
             ip_address=ip,

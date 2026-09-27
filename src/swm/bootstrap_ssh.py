@@ -8,8 +8,29 @@ import time
 
 from swm.providers.base import Instance, InstanceStatus
 from swm.redact import SafeConsole
+from swm.remote.ssh import is_relay_refusal, relay_only_message
 
 console = SafeConsole()
+
+
+def _fetch(provider, instance_id: str) -> Instance | None:
+    if hasattr(provider, "get_instance"):
+        return provider.get_instance(instance_id)
+    return next((i for i in provider.list_instances() if i.id == instance_id), None)
+
+
+def _probe_argv(user: str, host: str, port: int, key) -> list[str]:
+    argv = [
+        "ssh",
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "ConnectTimeout=5",
+        "-o", "LogLevel=ERROR",
+        "-p", str(port),
+    ]
+    if key:
+        argv.extend(["-i", str(key)])
+    return [*argv, f"{user}@{host}", "echo __SWM_OK__"]
 
 
 def _has_direct_ssh(inst: Instance) -> bool:
@@ -66,11 +87,7 @@ def wait_for_ssh(
     # Phase 1: wait for the instance to be RUNNING with an SSH endpoint.
     while time.time() - start < timeout:
         try:
-            if hasattr(provider, "get_instance"):
-                inst = provider.get_instance(instance_id)
-            else:
-                instances = provider.list_instances()
-                inst = next((i for i in instances if i.id == instance_id), None)
+            inst = _fetch(provider, instance_id)
 
             if inst:
                 status = inst.status.value
@@ -116,9 +133,12 @@ def wait_for_ssh(
             f" Last provider error: {last_poll_error}"
             if last_poll_error else ""
         )
+        state = last_status or "unknown"
+        if last_detail:
+            state += f" ({last_detail})"
         raise TimeoutError(
             f"Pod not running after {timeout}s for instance {instance_id}. "
-            f"Last status: {last_status or 'unknown'}.{suffix}"
+            f"Last status: {state}.{suffix}"
         )
 
     # Phase 2: pick the best SSH path — direct mapped port always wins.
@@ -142,36 +162,49 @@ def wait_for_ssh(
     # Phase 3: probe until SSH actually responds — on its own clock, so a
     # slow boot in phase 1 can't starve it of attempts.
     console.print(f"  Probing SSH (up to {probe_timeout}s)…  ({_elapsed()})")
-    probe = [
-        "ssh",
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
-        "-o", "ConnectTimeout=5",
-        "-o", "LogLevel=ERROR",
-        "-p", str(port),
-    ]
     key = _cfg.get(f"{provider.slug}.ssh_key") or _cfg.get("ssh.key_path")
-    if key:
-        probe.extend(["-i", str(key)])
-    probe.extend([f"{ssh_user}@{ssh_target}", "echo __SWM_OK__"])
+    probe = _probe_argv(ssh_user, ssh_target, port, key)
 
     probe_start = time.time()
     last_probe_error = ""
+    relay_only = False
     while time.time() - probe_start < probe_timeout:
         try:
             result = subprocess.run(probe, capture_output=True, timeout=15)
             if b"__SWM_OK__" in result.stdout:
                 console.print(f"  [green]✓ SSH ready[/green]  ({_elapsed()})")
                 return inst
-            err = (result.stdout + b"\n" + result.stderr).decode(
+            text = (result.stdout + b"\n" + result.stderr).decode(
                 "utf-8", errors="replace"
-            ).strip().splitlines()
+            )
+            err = text.strip().splitlines()
             if err and err[-1] != last_probe_error:
                 last_probe_error = err[-1]
+            if is_relay_refusal(text):
+                # The relay runs no commands, so probing it again is
+                # pointless; the public port is published separately and
+                # can still appear.
+                relay_only = True
+                try:
+                    fresh = _fetch(provider, instance_id)
+                except Exception:
+                    fresh = None
+                if fresh is not None and _has_direct_ssh(fresh):
+                    inst = fresh
+                    ssh_target, port, ssh_user = fresh.ip_address, fresh.ports[22], "root"
+                    console.print(f"  Direct SSH: {ssh_target}:{port}")
+                    probe = _probe_argv(ssh_user, ssh_target, port, key)
+                    relay_only = False
+                    continue
         except (subprocess.TimeoutExpired, OSError):
             pass
         time.sleep(5)
 
+    if relay_only:
+        raise TimeoutError(
+            f"SSH not reachable after {probe_timeout}s for instance "
+            f"{instance_id}: {relay_only_message(ssh_user, ssh_target)}"
+        )
     suffix = f" Last SSH error: {last_probe_error}" if last_probe_error else ""
     raise TimeoutError(
         f"SSH not reachable after {probe_timeout}s of probing "

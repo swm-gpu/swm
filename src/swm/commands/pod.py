@@ -516,6 +516,10 @@ def create(
     console.print(
         f"\n  Shut down:  [bold]swm pod down {inst.qualified_id}[/bold]"
     )
+    if not ssh_ok:
+        # Non-zero so `swm pod create … && swm setup start …` stops here
+        # instead of running the next step against a pod it cannot reach.
+        raise SystemExit(1)
 
 
 @pod.command()
@@ -660,6 +664,10 @@ def status(instance_id: str):
     console.print(f"  Provider:   {provider.name}")
     console.print(f"  GPU:        {inst.gpu_type} × {inst.gpu_count}")
     console.print(f"  Status:     {inst.status_rich}")
+    if inst.status_detail:
+        from rich.markup import escape
+
+        console.print(f"  Detail:     {escape(inst.status_detail)}")
     if inst.cost_per_hr:
         console.print(f"  Cost:       ${inst.cost_per_hr:.2f}/hr")
     console.print(f"  Uptime:     {inst.uptime_display}")

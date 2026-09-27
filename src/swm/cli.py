@@ -11,8 +11,19 @@ from swm.providers import (
     ALL_PROVIDERS,
 )
 from swm.redact import install_error_redaction
+from swm.remote.ssh import SSHUnavailableError
 
 install_error_redaction()
+
+
+class _Main(click.Group):
+    def invoke(self, ctx):
+        try:
+            return super().invoke(ctx)
+        except SSHUnavailableError as exc:
+            # A pod that cannot be reached is an outcome to report in one
+            # line, not a crash; other exceptions keep their tracebacks.
+            raise click.ClickException(str(exc)) from None
 
 _WORKFLOW_EPILOG = """\b
 Workflow:
@@ -32,7 +43,7 @@ Workflow:
 """
 
 
-@click.group(epilog=_WORKFLOW_EPILOG)
+@click.group(cls=_Main, epilog=_WORKFLOW_EPILOG)
 @click.version_option(__version__, prog_name="swm")
 def main():
     """swm — Cloud GPU workflow manager across 10 providers.
