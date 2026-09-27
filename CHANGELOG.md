@@ -4,6 +4,49 @@ All notable changes to swm are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.8] - 2026-09-27
+
+### Changed
+- **Framework starts repair themselves.** A workspace has to start on
+  whatever pod it lands on, so `swm setup start` (and every client of
+  `start_framework`) now runs a ladder until the framework answers:
+  1. install anything missing, run the start steps, launch, and wait for the
+     port; a failed step is retried twice when it looks transient or failed
+     quickly;
+  2. on failure, reinstall PyTorch as the build this GPU and driver can run
+     (for GPU errors), run the framework's own repairs (custom-node
+     requirements for ComfyUI), rerun every step, and relaunch;
+  3. if it still fails, rebuild the framework's venv from its steps within a
+     20-minute budget, restoring the previous venv if the rebuild fails too.
+  Out of memory and a port held by another process stop the ladder at once;
+  no reinstall fixes them. The new `ensure_framework_running` returns which
+  repairs ran and raises `FrameworkStartError` with a one-line reason.
+- **"Started" means answering.** A framework used to count as started the
+  first time its process was seen, three seconds after launch, so one that
+  crashed on import a moment later, or never bound its port, read as running.
+  Readiness now requires the port to answer within a per-framework timeout
+  (10 minutes for ComfyUI's custom nodes, 30 for vLLM's model load).
+- **Every GPU framework matches PyTorch to the pod.** ComfyUI's driver- and
+  architecture-aware build selection moved to `swm.frameworks._gpu` and now
+  covers vLLM, Axolotl, H2O LLM Studio, and SwarmUI. vLLM, Axolotl, and LLM
+  Studio install with `uv --torch-backend` for this pod's CUDA and keep their
+  pinned torch version when repairing; LLM Studio no longer hardcodes the
+  cu126 index, which newer GPUs such as the B200 cannot use. ComfyUI now
+  swaps only the CUDA build of its installed torch when that build exists,
+  before falling back to the newest.
+- **SwarmUI's ComfyUI backend has its own venv.** It ran on the image's
+  system Python via plain `pip`; it now gets a workspace-owned uv venv,
+  which SwarmUI picks up on its own, with the same GPU handling as ComfyUI.
+  Existing installs migrate on their next start.
+
+### Fixed
+- Axolotl's environment setup sourced its venv unconditionally, so every
+  step failed whenever the venv was absent (a fresh install, or a rebuild).
+- SwarmUI exported the standalone ComfyUI's NVIDIA libraries instead of its
+  own backend's.
+- Shell-driven frameworks (Axolotl) are prepared on start instead of having
+  their training CLI launched without a config and reported as crashed.
+
 ## [0.3.7] - 2026-09-27
 
 ### Fixed
