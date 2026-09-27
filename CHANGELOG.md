@@ -4,6 +4,54 @@ All notable changes to swm are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.9] - 2026-09-28
+
+### Fixed
+- **Long remote commands survive a dropped SSH connection.** Some hosts'
+  sshd (`ClientAliveInterval 10`, `ClientAliveCountMax 2`) drops a connection
+  within ~25 s once other SSH sessions are active, and a command on that
+  connection died at its next write. Measured on a Vast.ai V100: a 60 s
+  command alone finished 2/2 times; with other sessions active it was cut at
+  20–28 s 4/4 times, with or without connection sharing. A 59 GB restore came
+  back after 51 s as "finished with warnings", and a PyTorch reinstall was
+  killed after uninstalling the old build. `RemoteSession.exec_detached` runs
+  the command under `setsid nohup` with its output in a file on the pod,
+  follows it over short SSH calls that reconnect on a drop, and reads the exit
+  code from a status file; an interrupted caller stops the remote command.
+  Bootstrap steps, framework steps, and every s5cmd transfer now use it.
+- **An unfinished restore is resumed, never taken as done.** `workspace_pull`
+  resumes a transfer that exited non-zero up to twice (`--if-size-differ`
+  into a fresh pod, so a file cut off mid-download is re-fetched;
+  `--no-clobber` into existing data, so local edits survive) and raises when
+  it still has not completed. Tar downloads retry the same way.
+- **A rebuilt framework venv gets its custom-node requirements back** before
+  it launches; they lived in the venv the rebuild replaced.
+- **Failure reasons say what failed.** A failed setup step no longer reads
+  "it exited or never answered"; the reason names the step and quotes the
+  error line, e.g. `a setup step failed (Installing Python requirements
+  failed (exit 2): error: File not found: requirements.txt)`.
+- **A RunPod pod whose container has not started is `pending`, not
+  `running`.** RunPod reports the requested state until the container is up;
+  a B200 whose host never started it showed `running` for 40 minutes while
+  billing. `pod create` now waits on it and times out saying "RunPod has not
+  started the container yet", and `pod status` shows that detail at once
+  instead of probing SSH for two minutes.
+- **An SSH relay that runs no commands is named as the problem.** RunPod's
+  `ssh.runpod.io` accepts interactive shells only; when it was the only
+  endpoint, every command retried 12 times (up to 8 minutes) and ended in
+  "Your SSH client doesn't support PTY" or a traceback. `pod create` now
+  switches to the public port as soon as it appears and otherwise explains
+  the relay; `connect()` stops at the first refusal. Failed connections raise
+  `SSHUnavailableError` (a `RuntimeError`) carrying the last SSH error, and
+  the CLI prints it as one `Error:` line with exit code 1.
+- **`pod create` exits 1 when SSH never came up**, so
+  `swm pod create … && swm setup start …` stops at the create.
+- **Connection-sharing notices no longer corrupt command output** (since
+  0.3.6). When the shared connection refuses another session (sshd
+  `MaxSessions`), ssh falls back to a fresh connection but prints two notices
+  into the output; `stat_path` then read a directory as a file. They are
+  dropped from the head of `exec` and `exec_pipe` output.
+
 ## [0.3.8] - 2026-09-27
 
 ### Changed
