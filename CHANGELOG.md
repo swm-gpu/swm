@@ -4,6 +4,30 @@ All notable changes to swm are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.7] - 2026-09-27
+
+### Fixed
+- **Workspaces synced before 0.3.5 restore with a working Python again.**
+  uv installs Python and every package by unpacking into a temporary
+  directory and renaming it into place, and autosync before 0.3.5 did not
+  carry renames to storage. A workspace set up then comes back from storage
+  with `/workspace/.python/cpython-<x.y.z>-<platform>/` but no
+  `bin/python<x.y>`, and with packages whose `*.dist-info` survived while
+  their code did not. uv refused the first ("Missing expected Python
+  executable") and reported the second as installed ("Checked N packages"),
+  so every framework failed to start: one production workspace was missing
+  4,666 files, among them `aiohttp`, `certifi`, and the interpreter itself.
+  Two repairs now run on every install, start, and restore:
+  - `ensure_python` removes an install whose interpreter is missing or will
+    not start in isolated mode, so `uv python install` reinstalls it. A
+    minor-version link to another healthy patch is kept.
+  - `repair_venv` checks each package's `RECORD` against the files on disk
+    (ignoring paths the sync never stores) and reinstalls the incomplete
+    ones at the same version with `--no-deps`: from the default index, from
+    the recorded git commit or archive URL, or, for local builds such as
+    `torch==2.14.0+cu130`, from the matching PyTorch index. Editable and
+    local-directory installs are reported for a manual reinstall.
+
 ## [0.3.6] - 2026-09-27
 
 ### Added
