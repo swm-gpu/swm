@@ -55,9 +55,41 @@ _LINE_ENDS = re.compile(r"(?<=\n)|(?<=\r)(?!\n)")
 # run without a PTY. Retrying cannot change it.
 _RELAY_REFUSAL = re.compile(r"doesn.t support PTY", re.IGNORECASE)
 
+# OpenSSH's notices when the shared connection refuses another session (sshd
+# MaxSessions) and ssh falls back to a fresh connection. The command still
+# runs; the notices arrive on stderr, which exec merges into its output,
+# ahead of it — where they would corrupt anything parsing that output.
+_MUX_NOTICE = re.compile(
+    r"^(?:mux_client_\w+|muxclient): "
+    r"|^ControlSocket .+ already exists, disabling multiplexing"
+)
+
 
 class SSHUnavailableError(RuntimeError):
     """SSH to a pod could not be established; the message says why."""
+
+
+class _MuxNoticeFilter:
+    """Drops ``_MUX_NOTICE`` lines from the head of a command's output, where
+    ssh prints them before the session starts; later lines are the command's
+    own and always kept."""
+
+    def __init__(self) -> None:
+        self._leading = True
+        self._drop_lf = False
+
+    def keep(self, line: str) -> bool:
+        if not self._leading:
+            return True
+        if self._drop_lf and line == "\n":
+            # The "\n" of a dropped notice's "\r\n", split off by exec.
+            self._drop_lf = False
+            return False
+        if _MUX_NOTICE.match(line):
+            self._drop_lf = line.endswith("\r")
+            return False
+        self._leading = False
+        return True
 
 
 def is_relay_refusal(output: str) -> bool:
@@ -164,7 +196,7 @@ class RemoteSession:
                 if is_relay_refusal(text):
                     raise SSHUnavailableError(relay_only_message(self.user, self.host))
                 lines = [ln.strip() for ln in text.splitlines()
-                         if ln.strip()]
+                         if ln.strip() and not _MUX_NOTICE.match(ln)]
                 last_error = lines[-1][:200] if lines else f"exit {proc.returncode}"
             except subprocess.TimeoutExpired:
                 proc.kill()
@@ -207,6 +239,7 @@ class RemoteSession:
         )
 
         out_parts: list[str] = []
+        notices = _MuxNoticeFilter()
 
         assert proc.stdout is not None
         buf = b""
@@ -231,14 +264,15 @@ class RemoteSession:
                 if raw_line == b"\n" and out_parts and out_parts[-1].endswith("\r\n"):
                     continue
                 line = raw_line.decode("utf-8", errors="replace")
+                if not notices.keep(line):
+                    continue
                 out_parts.append(line)
                 if line_callback:
                     line_callback(line)
                 elif stream:
                     sys.stdout.write(line)
                     sys.stdout.flush()
-        if buf:
-            line = buf.decode("utf-8", errors="replace")
+        if buf and notices.keep(line := buf.decode("utf-8", errors="replace")):
             out_parts.append(line)
             if line_callback:
                 line_callback(line)
@@ -389,8 +423,11 @@ class RemoteSession:
             stderr=subprocess.STDOUT,
         )
         assert proc.stdout is not None
+        notices = _MuxNoticeFilter()
         while raw_line := proc.stdout.readline():
             line = raw_line.decode("utf-8", errors="replace")
+            if not notices.keep(line):
+                continue
             if line_callback:
                 line_callback(line)
         proc.wait()
