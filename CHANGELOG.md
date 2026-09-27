@@ -4,7 +4,7 @@ All notable changes to swm are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.6] - 2026-09-27
 
 ### Added
 - **`swm setup start <framework> --tunnel`.** Serves the framework through a
@@ -18,6 +18,27 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   running on the same port, replaced on a port change, and closed by
   `swm setup stop`. A PID file naming some other process (left from before a
   container restart) is never reused or killed.
+
+### Changed
+- **`swm download` is faster on slow links.** Every `ssh` and `scp` swm
+  spawns now shares one multiplexed connection per host
+  (`ControlMaster=auto`, `ControlPersist=60`); a download used to pay three
+  full handshakes (probe, directory check, file count) at 3–4 s each on a
+  360 ms path. The path's type, file count, and compressibility now come
+  back in one round trip, and media, weights, and archives are no longer
+  gzipped on the pod: `scp -C` is used only for compressible single files,
+  and plain `tar cf` for directories that are mostly already compressed. A
+  6.2 MB video from a Vast.ai B200 in Virginia went from 51.9 s to 25.0 s.
+
+### Fixed
+- **`swm download` of a directory could hang forever.** Remote `tar` warns
+  once per entry on a live workspace (files changing under it, sockets,
+  unreadable paths), and its stderr sat on a pipe nothing drained. Once the
+  pipe filled, the remote blocked, stopped writing the archive, and the
+  local extract waited indefinitely, which looked like a slow transfer.
+  Stderr now goes to a temporary file, and errors quote its last 8 KiB.
+  Paths are shell-quoted, so a directory name containing a single quote no
+  longer breaks the remote command.
 
 ## [0.3.5] - 2026-09-27
 
