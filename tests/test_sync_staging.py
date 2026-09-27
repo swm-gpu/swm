@@ -12,6 +12,8 @@ import os
 import re
 from pathlib import Path
 
+import pytest
+
 from swm.sync._common import clear_staged_files, stage_hardlinks
 
 
@@ -90,3 +92,46 @@ def test_clear_staged_files_removes_symlinks_and_keeps_skeleton(session, tmp_pat
     assert staging.is_dir() and (staging / "sub").is_dir()
     assert _files_under(staging) == []
     assert not os.path.lexists(staging / "dangling")
+
+
+# A quota that charges every hardlink its full size (MooseFS network volumes)
+# refuses to stage a large new file even though it fits on the volume once.
+
+
+def test_stage_hardlinks_lists_quota_refused_files_for_in_place_upload(
+    session, tmp_path, fake_ln,
+):
+    ws = tmp_path / "ws"
+    (ws / "models").mkdir(parents=True)
+    (ws / "a.txt").write_text("a")
+    (ws / "models" / "big.bin").write_text("big")
+    (ws / "big_link").symlink_to("models/big.bin")
+    filelist = tmp_path / "files"
+    filelist.write_text(f"{ws}/a.txt\n{ws}/models/big.bin\n{ws}/big_link\n")
+    in_place = tmp_path / "in_place"
+    in_place.write_text("stale entry from an earlier push\n")
+    fake_ln("big.bin")
+
+    staging = Path(stage_hardlinks(session, str(filelist), str(ws), str(in_place)))
+
+    assert _files_under(staging) == [Path("a.txt")]
+    assert in_place.read_text() == (
+        f"{ws}/models/big.bin\tmodels/big.bin\n"
+        f"{ws}/models/big.bin\tbig_link\n"
+    )
+
+
+def test_stage_hardlinks_other_link_failures_abort_with_the_real_error(
+    session, tmp_path, fake_ln,
+):
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    (ws / "a.txt").write_text("a")
+    filelist = tmp_path / "files"
+    filelist.write_text(f"{ws}/a.txt\n")
+    fake_ln("a.txt", "Operation not permitted")
+
+    with pytest.raises(RuntimeError, match=r"a\.txt.*Operation not permitted"):
+        stage_hardlinks(session, str(filelist), str(ws), str(tmp_path / "in_place"))
+
+    assert _files_under(ws / ".swm_staging" / "push") == []

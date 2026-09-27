@@ -93,6 +93,35 @@ def s5cmd_shim(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> S5cmdShim:
     return S5cmdShim(log, monkeypatch)
 
 
+FAKE_LN = """#!/bin/bash
+# Fake ln: refuse (with $SWM_FAKE_LN_ERROR, as coreutils words it) any link
+# whose source path contains $SWM_FAKE_LN_MATCH; pass everything else on.
+src="${@: -2:1}"
+if [ -n "${SWM_FAKE_LN_MATCH:-}" ] && [[ "$src" == *"$SWM_FAKE_LN_MATCH"* ]]; then
+  echo "ln: failed to create hard link '${@: -1}': $SWM_FAKE_LN_ERROR" >&2
+  exit 1
+fi
+exec /bin/ln "$@"
+"""
+
+
+@pytest.fixture
+def fake_ln(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Returns refuse(name, error) that makes ``ln`` fail for sources matching name."""
+    bin_dir = tmp_path / "lnbin"
+    bin_dir.mkdir()
+    shim = bin_dir / "ln"
+    shim.write_text(FAKE_LN)
+    shim.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+
+    def refuse(name: str, error: str = "Disk quota exceeded") -> None:
+        monkeypatch.setenv("SWM_FAKE_LN_MATCH", name)
+        monkeypatch.setenv("SWM_FAKE_LN_ERROR", error)
+
+    return refuse
+
+
 @pytest.fixture
 def wide_console(monkeypatch: pytest.MonkeyPatch) -> None:
     """Stop Rich from wrapping console lines so tests can match whole messages."""
@@ -116,6 +145,7 @@ def pod_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]
         "_FINDLIST": str(state / "push_find_files"),
         "_WATCH_SNAP": str(state / "push_watch_snap"),
         "_CYCLE_MARK": str(state / "push_cycle_mark"),
+        "_IN_PLACE": str(state / "push_in_place"),
     }
     for name, value in mapping.items():
         monkeypatch.setattr(push, name, value)

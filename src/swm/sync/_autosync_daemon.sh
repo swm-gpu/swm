@@ -52,6 +52,32 @@ run_bg() {
   return "$rc"
 }
 
+quota_refused() {
+  # Some network volumes (MooseFS) charge every hardlink its file's full
+  # size, so a large new file that fits on the volume once cannot be staged.
+  case "$1" in *"Disk quota exceeded"*) return 0 ;; esac
+  return 1
+}
+
+upload_in_place() {
+  # Upload the "<file>\t<key>" entries staging could not link, each read
+  # from where it lives. One that changed mid-upload fails the cycle so it
+  # is re-queued; staging's hardlinks never froze contents either.
+  local path rel before
+  while IFS=$'\t' read -r path rel; do
+    [ "$STOP" -eq 1 ] && return 1
+    [ -e "$path" ] || continue
+    before=$(stat -c '%s %y' -- "$path") || return 1
+    log "uploading $rel in place (it does not fit the volume's staging quota)"
+    run_bg s5cmd --log error cp --no-follow-symlinks "$path" "s3://$BUCKET/$WORKSPACE/$rel" \
+      >> "$S5_OUT" 2>&1 || return 1
+    if [ "$(stat -c '%s %y' -- "$path" 2>/dev/null)" != "$before" ]; then
+      s5note "WARN: $rel changed while uploading in place; re-queueing"
+      return 1
+    fi
+  done < "$1"
+}
+
 lock_held() {
   [ -f "$TRANSFER_LOCK" ] || return 1
   local pid cmdline
@@ -244,9 +270,13 @@ sync_once() {
     # bare-path inotify events that evade the excludes and poison
     # delete-reconciliation with nonexistent S3 keys.
     local staging="${SRC%/}/.swm_staging/autosync"
+    # On the container overlay: once staged links exhaust the volume quota,
+    # even appending to a list under $SRC fails.
+    local in_place="/tmp/.swm_autosync_in_place"
     mkdir -p "$staging"
     find "$staging" \( -type f -o -type l \) -delete 2>/dev/null
-    local stage_rc=0 n_staged=0 n_skipped=0 target
+    : > "$in_place"
+    local stage_rc=0 n_staged=0 n_skipped=0 target err
     while IFS= read -r f; do
       rel="${f#$SRC/}"
       if [ -L "$f" ]; then
@@ -256,9 +286,14 @@ sync_once() {
         # survived the regular-files-only cleanup, wedging every cycle.
         target=$(readlink -f -- "$f" 2>/dev/null)
         if [ -n "$target" ] && [ -f "$target" ] && [ ! -L "$target" ] \
-          && mkdir -p "$staging/$(dirname "$rel")" 2>/dev/null \
-          && ln -f -- "$target" "$staging/$rel" 2>/dev/null; then
-          n_staged=$((n_staged + 1))
+          && mkdir -p "$staging/$(dirname "$rel")" 2>/dev/null; then
+          if err=$(LC_ALL=C ln -f -- "$target" "$staging/$rel" 2>&1); then
+            n_staged=$((n_staged + 1))
+          elif quota_refused "$err"; then
+            printf '%s\t%s\n' "$target" "$rel" >> "$in_place"
+          else
+            n_skipped=$((n_skipped + 1))
+          fi
         else
           n_skipped=$((n_skipped + 1))
         fi
@@ -266,8 +301,15 @@ sync_once() {
       fi
       [ -f "$f" ] || continue
       mkdir -p "$staging/$(dirname "$rel")" || { stage_rc=1; break; }
-      ln -f -- "$f" "$staging/$rel" \
-        || { s5note "WARN: hardlink staging failed for $f"; stage_rc=1; break; }
+      if ! err=$(LC_ALL=C ln -f -- "$f" "$staging/$rel" 2>&1); then
+        if quota_refused "$err"; then
+          printf '%s\t%s\n' "$f" "$rel" >> "$in_place"
+          continue
+        fi
+        s5note "WARN: hardlink staging failed for $f: $err"
+        stage_rc=1
+        break
+      fi
       n_staged=$((n_staged + 1))
     done < "$uploads"
     if [ "$n_skipped" -gt 0 ]; then
@@ -280,6 +322,10 @@ sync_once() {
       cp_rc=$?
     fi
     find "$staging" \( -type f -o -type l \) -delete 2>/dev/null
+    if [ "$cp_rc" -eq 0 ] && [ -s "$in_place" ]; then
+      upload_in_place "$in_place" || cp_rc=1
+    fi
+    rm -f "$in_place"
   fi
 
   if [ "$n_del" -gt 0 ]; then

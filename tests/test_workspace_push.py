@@ -8,6 +8,7 @@ here it only has to be held at the right moments.
 from __future__ import annotations
 
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -15,6 +16,10 @@ import pytest
 
 import swm.sync.push as push
 from swm.sync.paths import TRANSFER_LOCK_HOLDER_TAG
+
+linux_only = pytest.mark.skipif(
+    sys.platform != "linux", reason="in-place uploads stat files with GNU stat -c",
+)
 
 
 @pytest.fixture
@@ -122,6 +127,80 @@ def test_find_tier_stages_symlinks_and_uploads_without_following(
     assert "1 symlink(s) materialised" in out
     assert "skipped 1 symlink(s)" in out
     assert Path(pod_paths["PUSH_STAMP"]).stat().st_mtime > time.time() - 30
+
+
+# ── quota-refused staging links upload in place ────────────────────
+
+
+def _watcher_alive(monkeypatch) -> None:
+    monkeypatch.setattr(push, "start_watcher", lambda session, src: True)
+    monkeypatch.setattr(push, "is_watcher_alive", lambda session: True)
+
+
+@linux_only
+def test_watcher_push_uploads_a_quota_refused_file_in_place(
+    session, workspace, pod_paths, monkeypatch, s5cmd_shim, fake_ln,
+):
+    _write_stamp(pod_paths)
+    _watcher_alive(monkeypatch)
+    (workspace / "a.txt").write_text("a")
+    (workspace / "models").mkdir()
+    (workspace / "models" / "big.bin").write_text("big")
+    Path(pod_paths["WATCH_LOG"]).write_text(
+        f"{workspace}/a.txt\n{workspace}/models/big.bin\n")
+    fake_ln("big.bin")
+
+    rc = push.workspace_push(session, "b2", "bucket", "ws", src=str(workspace))
+
+    assert rc == 0
+    staged_copy, in_place = s5cmd_shim.calls
+    assert f"{workspace}/.swm_staging/push/*" in staged_copy
+    assert "--no-follow-symlinks" in in_place
+    assert in_place.endswith(
+        f"{workspace}/models/big.bin s3://bucket/ws/models/big.bin")
+    assert Path(pod_paths["PUSH_STAMP"]).stat().st_mtime > time.time() - 30
+
+
+@linux_only
+def test_push_with_every_file_quota_refused_skips_the_empty_staged_copy(
+    session, workspace, pod_paths, monkeypatch, s5cmd_shim, fake_ln,
+):
+    _write_stamp(pod_paths)
+    _watcher_alive(monkeypatch)
+    (workspace / "big.bin").write_text("big")
+    Path(pod_paths["WATCH_LOG"]).write_text(f"{workspace}/big.bin\n")
+    fake_ln("big.bin")
+
+    rc = push.workspace_push(session, "b2", "bucket", "ws", src=str(workspace))
+
+    assert rc == 0
+    assert len(s5cmd_shim.calls) == 1
+    assert s5cmd_shim.calls[0].endswith(f"{workspace}/big.bin s3://bucket/ws/big.bin")
+
+
+@linux_only
+def test_in_place_upload_of_a_file_that_changed_meanwhile_fails_the_push(
+    session, workspace, pod_paths, no_watcher, monkeypatch, s5cmd_shim, fake_ln,
+):
+    _write_stamp(pod_paths)
+    big = workspace / "big.bin"
+    big.write_text("big")
+    fake_ln("big.bin")
+    real_transfer = push._s5cmd_transfer
+
+    def transfer_while_writing(session, label, cmd, force=False):
+        rc = real_transfer(session, label, cmd, force=force)
+        if "big.bin s3://" in cmd:
+            with big.open("a") as f:
+                f.write(" and more")
+        return rc
+
+    monkeypatch.setattr(push, "_s5cmd_transfer", transfer_while_writing)
+
+    rc = push.workspace_push(session, "b2", "bucket", "ws", src=str(workspace))
+
+    assert rc != 0
+    assert not Path(pod_paths["PUSH_STAMP"]).stat().st_mtime > time.time() - 30
 
 
 # ── tier 3 ─────────────────────────────────────────────────────────

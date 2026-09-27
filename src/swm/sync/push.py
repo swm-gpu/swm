@@ -6,7 +6,7 @@ import shlex
 
 from swm.bootstrap import _s3_env, _s5cmd_transfer, console, transfer_lock
 from swm.remote.ssh import RemoteSession
-from swm.sync._common import clear_staged_files, ensure_pigz, stage_hardlinks
+from swm.sync._common import PUSH_IN_PLACE, clear_staged_files, ensure_pigz, stage_hardlinks
 from swm.sync.paths import (
     DELETED_LIST,
     PUSH_STAMP,
@@ -22,6 +22,7 @@ _FILELIST = "/tmp/.swm_push_files"
 _FINDLIST = "/tmp/.swm_push_find_files"
 _WATCH_SNAP = "/tmp/.swm_push_watch_snap"
 _CYCLE_MARK = "/tmp/.swm_push_cycle_mark"
+_IN_PLACE = PUSH_IN_PLACE
 
 
 def _touch_cycle_mark(session: RemoteSession) -> None:
@@ -36,9 +37,80 @@ def _stamp_to_cycle_mark(session: RemoteSession) -> None:
 
 def _cleanup_incremental_files(session: RemoteSession) -> None:
     session.exec(
-        f"rm -f {_FILELIST} {_FINDLIST} {_WATCH_SNAP} {_CYCLE_MARK}",
+        f"rm -f {_FILELIST} {_FINDLIST} {_WATCH_SNAP} {_CYCLE_MARK} {_IN_PLACE}",
         stream=False,
     )
+
+
+def _file_signature(session: RemoteSession, path: str) -> str | None:
+    """Size and mtime of *path*, or None if it no longer exists."""
+    q = shlex.quote(path)
+    code, out, err = session.exec(
+        f"[ -e {q} ] || exit 3; stat -c '%s %y' -- {q}", stream=False,
+    )
+    if code == 3:
+        return None
+    if code != 0 or not out.strip():
+        raise RuntimeError(f"Could not stat {path}: {(err or out).strip()}")
+    return out.strip()
+
+
+def _push_in_place(
+    session: RemoteSession, env: str, bucket: str, workspace: str, force: bool,
+) -> int:
+    """Upload the files the volume quota refused to stage, each read from
+    where it lives. One that changed mid-upload fails the push so it is
+    retried; staging's hardlinks never froze contents either."""
+    _, out, _ = session.exec(f"cat {shlex.quote(_IN_PLACE)} 2>/dev/null", stream=False)
+    entries = [line.split("\t", 1) for line in out.splitlines() if "\t" in line]
+    if not entries:
+        return 0
+    console.print(
+        f"  [dim]{len(entries)} file(s) do not fit the volume's staging quota; "
+        f"uploading them in place[/dim]"
+    )
+    for path, rel in entries:
+        before = _file_signature(session, path)
+        if before is None:
+            continue
+        dest = shlex.quote(f"s3://{bucket}/{workspace}/{rel}")
+        rc = _s5cmd_transfer(
+            session,
+            f"Pushing {rel} in place",
+            f"{env} s5cmd cp --no-follow-symlinks --show-progress "
+            f"{shlex.quote(path)} {dest}",
+            force=force,
+        )
+        if rc != 0:
+            return rc
+        if _file_signature(session, path) != before:
+            console.print(f"  [yellow]⚠ {rel} changed while uploading; it will be pushed again[/yellow]")
+            return 1
+    return 0
+
+
+def _push_staged(
+    session: RemoteSession, staging: str, env: str, bucket: str, workspace: str,
+    label: str, force: bool,
+) -> int:
+    """Copy the staging tree, then whatever had to be uploaded in place.
+    An empty tree skips its copy: s5cmd fails a wildcard matching nothing."""
+    _, first, _ = session.exec(
+        f"find {shlex.quote(staging)} -type f -print -quit", stream=False,
+    )
+    rc = 0
+    if first.strip():
+        rc = _s5cmd_transfer(
+            session,
+            label,
+            f"{env} s5cmd cp --no-follow-symlinks --show-progress "
+            f"'{staging}/*' 's3://{bucket}/{workspace}/'",
+            force=force,
+        )
+    clear_staged_files(session, staging)
+    if rc == 0:
+        rc = _push_in_place(session, env, bucket, workspace, force)
+    return rc
 
 
 def _find_excludes(src: str, extra_excludes: list[str] | None) -> str:
@@ -280,15 +352,12 @@ def _push_watcher_snapshot(
 
     rc = 0
     if changed > 0:
-        staging = stage_hardlinks(session, _FILELIST, src)
-        rc = _s5cmd_transfer(
-            session,
+        staging = stage_hardlinks(session, _FILELIST, src, _IN_PLACE)
+        rc = _push_staged(
+            session, staging, env, bucket, workspace,
             f"Pushing {changed} changed file(s) → {workspace}/ on s3://{bucket}",
-            f"{env} s5cmd cp --no-follow-symlinks --show-progress "
-            f"'{staging}/*' 's3://{bucket}/{workspace}/'",
-            force=force,
+            force,
         )
-        clear_staged_files(session, staging)
 
     if rc == 0 and deleted_count > 0:
         _sync_deletions(session, storage_slug, bucket, workspace, src)
@@ -344,18 +413,15 @@ def _push_find_tier(
         return 0
 
     try:
-        staging = stage_hardlinks(session, _FILELIST, src)
+        staging = stage_hardlinks(session, _FILELIST, src, _IN_PLACE)
     except RuntimeError:
         _cleanup_incremental_files(session)
         raise
-    rc = _s5cmd_transfer(
-        session,
+    rc = _push_staged(
+        session, staging, env, bucket, workspace,
         f"Pushing {changed} changed file(s) → {workspace}/ on s3://{bucket}",
-        f"{env} s5cmd cp --no-follow-symlinks --show-progress "
-        f"'{staging}/*' 's3://{bucket}/{workspace}/'",
-        force=force,
+        force,
     )
-    clear_staged_files(session, staging)
     if rc == 0:
         _stamp_to_cycle_mark(session)
     else:
@@ -478,22 +544,16 @@ def _push_tree_symlinks(
         f"  [dim]{found} symlink(s) in the tree — materialising those that "
         f"resolve to files[/dim]"
     )
-    staging = stage_hardlinks(session, _FILELIST, src)
+    staging = stage_hardlinks(session, _FILELIST, src, _IN_PLACE)
     _, staged_out, _ = session.exec(
         f"find {shlex.quote(staging)} -type f | wc -l", stream=False,
     )
     staged = int(staged_out.strip() or "0")
-    if staged == 0:
-        return 0
-    rc = _s5cmd_transfer(
-        session,
+    return _push_staged(
+        session, staging, env, bucket, workspace,
         f"Pushing {staged} materialised symlink(s) → {workspace}/",
-        f"{env} s5cmd cp --no-follow-symlinks --show-progress "
-        f"'{staging}/*' 's3://{bucket}/{workspace}/'",
-        force=force,
+        force,
     )
-    clear_staged_files(session, staging)
-    return rc
 
 
 def workspace_push(

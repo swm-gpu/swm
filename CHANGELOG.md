@@ -4,6 +4,28 @@ All notable changes to swm are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.4] - 2026-09-27
+
+### Fixed
+- **A quota that charges hardlinks could wedge auto-sync and block
+  power-off.** Staging hardlinks each changed file into
+  `/workspace/.swm_staging` before uploading, which costs nothing on an
+  ordinary filesystem. Some network volumes (RunPod's MooseFS) charge every
+  hardlink its file's full size against the volume quota, so a batch of
+  large new files that fit on the volume once could not be staged: `ln`
+  failed with "Disk quota exceeded" and every retry replayed the same
+  batch. One production pod failed 16 cycles in a row on a 17.5 GB model,
+  and its final push failed the same way, so it stayed on. A link the quota
+  refuses is now uploaded in place from its real path, with its size and
+  mtime checked before and after; a file that changed mid-upload fails the
+  cycle and is re-queued. Every other link failure still aborts. Applies to
+  the auto-sync daemon and to `swm sync push`, including the final push
+  before power-off.
+- **Staging errors named the wrong cause.** `ln`'s own message was
+  discarded, so a quota refusal read as "permissions, immutable, or
+  hardlink limit". The real error now appears in push failures and in the
+  daemon's failure marker.
+
 ## [0.3.3] - 2026-09-13
 
 ### Fixed

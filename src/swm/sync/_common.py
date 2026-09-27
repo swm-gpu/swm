@@ -80,7 +80,12 @@ def clear_staged_files(session: RemoteSession, staging: str) -> None:
     )
 
 
-def stage_hardlinks(session: RemoteSession, filelist: str, src: str) -> str:
+PUSH_IN_PLACE = "/tmp/.swm_push_in_place"
+
+
+def stage_hardlinks(
+    session: RemoteSession, filelist: str, src: str, in_place: str = PUSH_IN_PLACE,
+) -> str:
     """Create a staging tree of hardlinks for only the changed files.
 
     Each file in *filelist* (absolute paths under *src*) gets a hardlink
@@ -90,6 +95,13 @@ def stage_hardlinks(session: RemoteSession, filelist: str, src: str) -> str:
     A link failure on an existing file aborts: silently falling back to
     ``cp`` used to duplicate the workspace onto the container overlay
     and could upload partial files as corrupt objects.
+
+    The one exception is a link the volume's quota refuses. Some network
+    volumes (MooseFS) charge every hardlink its file's full size, so a
+    large new file that fits on the volume once cannot be staged. Those
+    are written to *in_place* as ``<file>\\t<relative key>`` lines for the
+    caller to upload from where they live. The list sits on the container
+    overlay because, with the quota exhausted, writes under *src* fail too.
 
     A symlink is never linked as itself: GNU ``ln`` would stage the link
     inode, whose relative target dangles inside the staging tree, and
@@ -104,9 +116,10 @@ def stage_hardlinks(session: RemoteSession, filelist: str, src: str) -> str:
     """
     staging = staging_dir_for(src)
     q = shlex.quote(staging)
+    qi = shlex.quote(in_place)
     clear_staged_files(session, staging)
     exit_code, out, _ = session.exec(
-        f"mkdir -p {q} && fail=0; links=0; skipped=0; "
+        f"mkdir -p {q} && : > {qi} && fail=0; links=0; skipped=0; "
         f"while IFS= read -r f; do "
         f"  if [ -L \"$f\" ]; then "
         f"    t=$(readlink -f -- \"$f\" 2>/dev/null); "
@@ -117,12 +130,14 @@ def stage_hardlinks(session: RemoteSession, filelist: str, src: str) -> str:
         f"  rel=\"${{f#{src}/}}\"; "
         f"  mkdir -p \"{staging}/$(dirname \"$rel\")\" "
         f"    || {{ echo \"SWM_STAGE_FAIL(mkdir): $rel\"; fail=1; break; }}; "
-        f"  if [ -L \"$f\" ]; then "
-        f"    if ln -f -- \"$t\" \"{staging}/$rel\" 2>/dev/null; "
-        f"      then links=$((links+1)); else skipped=$((skipped+1)); fi; "
+        f"  if err=$(LC_ALL=C ln -f -- \"$t\" \"{staging}/$rel\" 2>&1); then "
+        f"    [ -L \"$f\" ] && links=$((links+1)); "
         f"  else "
-        f"    ln -f -- \"$t\" \"{staging}/$rel\" "
-        f"      || {{ echo \"SWM_STAGE_FAIL(ln): $f\"; fail=1; break; }}; "
+        f"    case \"$err\" in "
+        f"      *'Disk quota exceeded'*) printf '%s\\t%s\\n' \"$t\" \"$rel\" >> {qi} ;; "
+        f"      *) if [ -L \"$f\" ]; then skipped=$((skipped+1)); "
+        f"         else echo \"SWM_STAGE_FAIL(ln): $f: $err\"; fail=1; break; fi ;; "
+        f"    esac; "
         f"  fi; "
         f"done < {shlex.quote(filelist)}; "
         f"echo \"SWM_STAGE_LINKS: $links $skipped\"; "
@@ -147,10 +162,7 @@ def stage_hardlinks(session: RemoteSession, filelist: str, src: str) -> str:
             "unknown file",
         )
         raise RuntimeError(
-            f"Hardlink staging failed ({detail}). Staging lives inside "
-            f"{src} so links never cross filesystems; a failure here "
-            f"means the file is unlinkable (permissions, immutable, or "
-            f"hardlink limit) and the push was aborted rather than "
-            f"silently copying data."
+            f"Hardlink staging failed ({detail}). The push was aborted "
+            f"rather than silently copying data."
         )
     return staging

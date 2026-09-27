@@ -477,3 +477,88 @@ def test_script_parses_and_has_no_placeholders(daemon: Daemon):
     body = daemon.script.read_text()
     assert not re.search(r"__SWM_[A-Z_]+__", body)
     assert subprocess.run(["bash", "-n", str(daemon.script)], check=False).returncode == 0
+
+
+# ── a quota that charges each staging hardlink its full size ──────────────
+
+_FAKE_LN = r'''#!/bin/bash
+src="${@: -2:1}"
+if [ -n "${SWM_FAKE_LN_MATCH:-}" ] && [[ "$src" == *"$SWM_FAKE_LN_MATCH"* ]]; then
+  echo "ln: failed to create hard link '${@: -1}': $SWM_FAKE_LN_ERROR" >&2
+  exit 1
+fi
+exec /bin/ln "$@"
+'''
+
+
+def _refuse_links(d: Daemon, name: str, error: str = "Disk quota exceeded") -> None:
+    ln = d.tmp / "bin" / "ln"
+    ln.write_text(_FAKE_LN)
+    ln.chmod(0o755)
+    d.env.update(SWM_FAKE_LN_MATCH=name, SWM_FAKE_LN_ERROR=error)
+
+
+@linux_only
+def test_quota_refused_links_upload_in_place_and_the_cycle_completes(daemon: Daemon):
+    ws = daemon.ws
+    (ws / "a.txt").write_text("a")
+    (ws / "models").mkdir()
+    (ws / "models" / "big.bin").write_text("big")
+    (ws / "big_link").symlink_to("models/big.bin")
+    _refuse_links(daemon, "big.bin")
+
+    result = daemon.run_once()
+
+    assert result.returncode == 0, result.stderr
+    log = daemon.log_text()
+    assert "cycle complete" in log
+    assert "uploading models/big.bin in place" in log
+    staged_copy, *in_place = _cp_lines(daemon)
+    assert f"{ws}/.swm_staging/autosync/*" in staged_copy
+    assert set(in_place) == {
+        f"--log error cp --no-follow-symlinks {ws}/models/big.bin s3://bucket/ws/models/big.bin",
+        f"--log error cp --no-follow-symlinks {ws}/models/big.bin s3://bucket/ws/big_link",
+    }
+    assert set(daemon.snapshots()[0]) == {"a.txt"}
+    assert not daemon.marker.exists()
+
+
+@linux_only
+def test_in_place_upload_of_a_file_that_changes_meanwhile_is_requeued(daemon: Daemon):
+    big = daemon.ws / "big.bin"
+    big.write_text("big")
+    daemon.watch_log.write_text(f"{big}\n")
+    _refuse_links(daemon, "big.bin")
+    shim = daemon.tmp / "bin" / "s5cmd"
+    real = shim.with_name("s5cmd.real")
+    shim.rename(real)
+    shim.write_text(
+        f'#!/bin/bash\n"{real}" "$@"; rc=$?\n'
+        f'case "$*" in *"big.bin s3://"*) echo more >> "{big}" ;; esac\n'
+        f'exit $rc\n'
+    )
+    shim.chmod(0o755)
+    before = daemon.push_stamp.stat().st_mtime
+
+    result = daemon.run_once()
+
+    assert result.returncode == 0, result.stderr
+    log = daemon.log_text()
+    assert "big.bin changed while uploading in place" in log
+    assert "re-queueing entries" in log
+    assert str(big) in daemon.watch_log.read_text()
+    assert daemon.push_stamp.stat().st_mtime == before
+
+
+@linux_only
+def test_other_link_failures_fail_the_cycle_with_the_real_error(daemon: Daemon):
+    (daemon.ws / "a.txt").write_text("a")
+    _refuse_links(daemon, "a.txt", "Operation not permitted")
+
+    result = daemon.run_once()
+
+    assert result.returncode == 0, result.stderr
+    log = daemon.log_text()
+    assert re.search(r"hardlink staging failed for \S*a\.txt: .*Operation not permitted", log)
+    assert "re-queueing entries" in log
+    assert _cp_lines(daemon) == []
