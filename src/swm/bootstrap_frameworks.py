@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 
 from rich.console import Console
 
-from swm.bootstrap import WORKSPACE_UV, StepFailed, _step
+from swm.bootstrap import WORKSPACE_UV, StepFailed, _step, run_long
 from swm.redact import SafeConsole
 from swm.remote.ssh import RemoteSession
 
@@ -119,10 +119,39 @@ class FrameworkStartError(RuntimeError):
 
 
 class _Failure(Exception):
-    def __init__(self, what: str, output: str = "") -> None:
+    def __init__(self, what: str, output: str = "", *, step: bool = False) -> None:
         super().__init__(what)
         self.what = what
         self.output = output
+        # A setup step failed, as opposed to the launched framework.
+        self.step = step
+
+
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+_EVIDENCE = re.compile(
+    r"\b(?:error|exception|traceback|not found|no such file|failed|denied)\b",
+    re.IGNORECASE)
+
+
+def _evidence(output: str) -> str:
+    """The last line of *output* that says what went wrong, for a reason."""
+    for line in reversed(output[-8000:].splitlines()):
+        line = _ANSI.sub("", line).strip()
+        if line and _EVIDENCE.search(line):
+            return line[:200]
+    return ""
+
+
+def _describe(failure: _Failure) -> str:
+    kind = classify_failure(failure.output)
+    if kind != "unknown":
+        cause = _KIND_TEXT[kind]
+    elif failure.step:
+        cause = "a setup step failed"
+    else:
+        cause = _KIND_TEXT["unknown"]
+    evidence = _evidence(failure.output)
+    return f"{cause} ({failure.what}{': ' + evidence if evidence else ''})"
 
 
 def _self_safe(pattern: str) -> str:
@@ -170,22 +199,22 @@ class _Runner:
             if deadline is not None:
                 left = int(deadline - _clock())
                 if left <= 0:
-                    raise _Failure("the rebuild time budget ran out")
+                    raise _Failure("the rebuild time budget ran out", step=True)
                 command_now = f"timeout -k 30 {left} bash -c {shlex.quote(command)}"
             else:
                 command_now = command
             started = _clock()
-            code, out, _ = self.session.exec(command_now)
+            code, out, _ = run_long(self.session, command_now)
             if code == 0:
                 return out
             if deadline is not None and code == 124:
-                raise _Failure(f"{label} ran past the rebuild time budget", out)
+                raise _Failure(f"{label} ran past the rebuild time budget", out, step=True)
             if self._retryable(attempt, started, out, deadline):
                 delay = _RETRY_DELAYS[attempt]
                 self.note(f"{label} failed (exit {code}); retrying in {delay}s")
                 _sleep(delay)
                 continue
-            raise _Failure(f"{label} failed (exit {code})", out)
+            raise _Failure(f"{label} failed (exit {code})", out, step=True)
         raise AssertionError("unreachable")
 
     def step(self, label: str, step, *, deadline: float | None = None) -> None:
@@ -211,7 +240,7 @@ class _Runner:
                     self.note(f"{exc.label} failed; retrying in {delay}s")
                     _sleep(delay)
                     continue
-                raise _Failure(str(exc), exc.output) from exc
+                raise _Failure(str(exc), exc.output, step=True) from exc
 
     def prepare(self, *, install: bool, deadline: float | None = None) -> None:
         from swm.bootstrap import ensure_workspace_python, repair_venv
@@ -385,9 +414,8 @@ class _Runner:
 
 
 def _failed(fw, failure: _Failure, *, after: str = "") -> FrameworkStartError:
-    kind = classify_failure(failure.output)
-    reason = f"{fw.label} could not start{after}: {_KIND_TEXT[kind]} ({failure.what})"
-    return FrameworkStartError(reason, failure.output[-4000:])
+    return FrameworkStartError(f"{fw.label} could not start{after}: {_describe(failure)}",
+                               failure.output[-4000:])
 
 
 def ensure_framework_running(
@@ -438,7 +466,7 @@ def ensure_framework_running(
         return runner.started(port, qualified_id, [])
 
     kind = classify_failure(failure.output)
-    runner.note(f"{fw.label} did not start: {failure.what}. Likely cause: {_KIND_TEXT[kind]}")
+    runner.note(f"{fw.label} did not start: {_describe(failure)}")
     if kind in _TERMINAL_KINDS:
         runner.stop()
         raise _failed(fw, failure)

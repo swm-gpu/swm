@@ -205,6 +205,21 @@ def test_a_crash_before_the_process_is_ever_seen_is_still_caught():
     assert "it exited or never answered" in exc.value.reason
 
 
+def test_a_failed_setup_step_is_named_with_its_error():
+    """The canary case: a restore that lost files fails a setup step, and the
+    reason must say which step and why, not that the framework "exited"."""
+    missing = (2, "Using Python 3.11.15\nerror: File not found: `requirements.txt`")
+    pod = FakePod([], fail={"-r requirements.txt": [missing] * 20})
+    with pytest.raises(bf.FrameworkStartError) as exc:
+        _start(pod, rebuild_budget=0)
+    assert "a setup step failed" in exc.value.reason
+    # The repair rung reran the install steps, so the last failure named is
+    # the install step, not the start step that failed first.
+    assert "Installing Python requirements failed (exit 2)" in exc.value.reason
+    assert "error: File not found: `requirements.txt`" in exc.value.reason
+    assert pod.launched == []
+
+
 def test_rebuild_can_be_disabled():
     crash = "ImportError: cannot import name 'x'"
     pod = FakePod([crash, crash])
