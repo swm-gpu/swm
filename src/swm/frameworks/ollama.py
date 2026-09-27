@@ -38,6 +38,7 @@ FRAMEWORK = Framework(
         f"{_OLLAMA_BIN} serve"
     ),
     ports={11434: "http"},
+    ready_timeout=120,
     category="llm",
     consumes=frozenset({"ollama", "llm-gguf"}),
     # install_dir is only the model home; the binary is the real presence

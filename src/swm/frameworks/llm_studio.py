@@ -6,12 +6,15 @@ from swm.bootstrap import (
     WORKSPACE_UV,
 )
 from swm.frameworks import Framework, Step, nvidia_ld_exports
+from swm.frameworks._gpu import cuda_index, torch_check, torch_install
 
 _VENV = "/workspace/h2o-llmstudio/venv"
 _PYTHON = f"{_VENV}/bin/python"
 _PIP_CACHE = "/workspace/.cache/pip"
-_TORCH_INDEX = "https://download.pytorch.org/whl/cu126"
 _UV_PIP = f"{WORKSPACE_UV} pip install --python {_PYTHON}"
+# Its requirements pin torch; --torch-backend fetches that pin as the CUDA
+# build this pod can run (a fixed cu126 index cannot serve Blackwell GPUs).
+_INSTALL_REQS = f"{_UV_PIP} --torch-backend {cuda_index(_PYTHON)} -r requirements.txt"
 
 FRAMEWORK = Framework(
     name="llm-studio",
@@ -19,6 +22,7 @@ FRAMEWORK = Framework(
     repo="https://github.com/h2oai/h2o-llmstudio.git",
     install_dir="/workspace/h2o-llmstudio",
     venv=_VENV,
+    gpu_torch="keep",
     launch_cmd="make llmstudio",
     ports={10101: "http"},
     category="training",
@@ -44,7 +48,7 @@ FRAMEWORK = Framework(
         ),
         Step(
             label="Installing LLM Studio",
-            command=f"{_UV_PIP} --extra-index-url {_TORCH_INDEX} -r requirements.txt",
+            command=_INSTALL_REQS,
         ),
     ],
     post_install=[
@@ -58,9 +62,14 @@ FRAMEWORK = Framework(
             label="Ensuring Python venv",
             command=(
                 f"{WORKSPACE_UV} venv --python {PYTHON_DEFAULT_MINOR} --seed {_VENV} "
-                f"&& {_UV_PIP} --extra-index-url {_TORCH_INDEX} -r requirements.txt"
+                f"&& {_INSTALL_REQS}"
             ),
             check=f"[ -x {_PYTHON} ] && {_PYTHON} -c 'import llm_studio' 2>/dev/null",
+        ),
+        Step(
+            label="Ensuring PyTorch matches GPU driver",
+            command=torch_install(_PYTHON, _UV_PIP, keep_version=True),
+            check=torch_check(_PYTHON),
         ),
     ],
 )

@@ -6,6 +6,7 @@ from swm.bootstrap import (
     WORKSPACE_UV,
 )
 from swm.frameworks import Framework, Step, nvidia_ld_exports
+from swm.frameworks._gpu import torch_check, torch_install
 from swm.frameworks._model_store import (
     DIFFUSION_BUCKETS,
     DIFFUSION_CONSUMES,
@@ -23,81 +24,8 @@ _PIP_CACHE = "/workspace/.cache/pip"
 # 10-100x faster and avoids any get-pip bootstrap dance.
 _UV_PIP = f"{WORKSPACE_UV} pip install --python {_PYTHON}"
 
-# A CUDA op is the only check that catches every mismatch class at once:
-# missing kernels for this GPU's architecture (e.g. a cu124 build on
-# sm_100 Blackwell), a torch runtime newer than the driver, or a wedged
-# install.  Any failure exits non-zero and triggers _TORCH_INSTALL.
-_TORCH_CHECK = (
-    f"{_PYTHON} -c 'import torch; "
-    "torch.zeros(1,device=\"cuda\").add(1); torch.cuda.synchronize()' "
-    "2>/dev/null"
-)
-
-# GPU-aware wheel-index selection.  Detection queries NVML via ctypes
-# (the approach used by WheelNext's nvidia-variant-provider) and falls
-# back to the kernel-provided /proc file — never the nvidia-smi CLI,
-# which marketplace hosts sometimes replace with broken wrapper scripts.
-# Selection honours both constraints that decide whether a wheel runs:
-#   * the driver's max supported CUDA bounds how new the index may be;
-#   * the GPU architecture bounds it below — PyTorch dropped pre-Turing
-#     (< sm_75) from cu128+ wheels, so those cards stay on the cu126
-#     legacy tier (kept through torch 2.14).
-_CUDA_IDX_SNIPPET = """\
-import ctypes, re
-drv = cc = None
-try:
-    l = ctypes.CDLL("libnvidia-ml.so.1")
-    if getattr(l, "nvmlInit_v2", l.nvmlInit)() == 0:
-        try:
-            v = ctypes.c_int(0)
-            get_ver = getattr(l, "nvmlSystemGetCudaDriverVersion_v2", l.nvmlSystemGetCudaDriverVersion)
-            if get_ver(ctypes.byref(v)) == 0 and v.value > 0:
-                drv = (v.value // 1000, v.value % 1000 // 10)
-            h = ctypes.c_void_p()
-            get_h = getattr(l, "nvmlDeviceGetHandleByIndex_v2", l.nvmlDeviceGetHandleByIndex)
-            ma, mi = ctypes.c_int(0), ctypes.c_int(0)
-            if get_h(0, ctypes.byref(h)) == 0 and l.nvmlDeviceGetCudaComputeCapability(h, ctypes.byref(ma), ctypes.byref(mi)) == 0:
-                cc = (ma.value, mi.value)
-        finally:
-            l.nvmlShutdown()
-except Exception:
-    pass
-if drv is None:
-    try:
-        m = re.search(r"Module\\s+(\\d+)\\.", open("/proc/driver/nvidia/version").read())
-        if m:
-            d = int(m.group(1))
-            drv = (13, 0) if d >= 580 else (12, 8) if d >= 570 else (12, 6) if d >= 560 else (12, 4) if d >= 550 else (12, 1) if d >= 530 else (11, 8)
-    except Exception:
-        pass
-pre_turing = cc is not None and cc < (7, 5)
-if drv is None:
-    idx = "cu128"
-elif not pre_turing and drv >= (13, 0):
-    idx = "cu130"
-elif not pre_turing and drv >= (12, 8):
-    idx = "cu128"
-elif drv >= (12, 6):
-    idx = "cu126"
-elif drv >= (12, 4):
-    idx = "cu124"
-elif drv >= (12, 1):
-    idx = "cu121"
-else:
-    idx = "cu118"
-print(idx)
-"""
-
-_TORCH_INSTALL = (
-    f"if ! {_TORCH_CHECK}; then "
-    f"IDX=$({_PYTHON} -c '{_CUDA_IDX_SNIPPET}' 2>/dev/null); "
-    'IDX="${IDX:-cu128}"; '
-    'echo "Installing PyTorch wheels ($IDX) (force-reinstall)"; '
-    f"{_UV_PIP} --force-reinstall "
-    "--index-url https://download.pytorch.org/whl/$IDX "
-    "torch torchvision torchaudio; "
-    "fi"
-)
+_TORCH_CHECK = torch_check(_PYTHON)
+_TORCH_INSTALL = torch_install(_PYTHON, _UV_PIP, keep_version=False)
 
 FRAMEWORK = Framework(
     name="comfyui",
@@ -105,6 +33,9 @@ FRAMEWORK = Framework(
     repo="https://github.com/comfyanonymous/ComfyUI.git",
     install_dir="/workspace/ComfyUI",
     venv=_VENV,
+    # Custom nodes import at startup; a large set takes minutes.
+    ready_timeout=600,
+    gpu_torch="flexible",
     launch_cmd=f"{_PYTHON} main.py --listen 0.0.0.0 --port 8188",
     ports={8188: "http"},
     category="inference",
@@ -190,6 +121,19 @@ FRAMEWORK = Framework(
             label="Ensuring model directory symlinks",
             command=_LINK_COMFYUI,
             check="[ -L /workspace/ComfyUI/models/checkpoints ]",
+        ),
+    ],
+    repair=[
+        Step(
+            label="Installing custom-node requirements",
+            # Best effort per node: one node's unsatisfiable pin must not
+            # block the rest of the repair.
+            command=(
+                "for r in /workspace/ComfyUI/custom_nodes/*/requirements.txt; do "
+                '[ -f "$r" ] || continue; echo "  $r"; '
+                f'{_UV_PIP} -r "$r" || echo "  warning: could not install $r"; '
+                "done"
+            ),
         ),
     ],
 )

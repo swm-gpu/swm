@@ -23,6 +23,7 @@ from swm.bootstrap import (
     WORKSPACE_UV,
 )
 from swm.frameworks import Framework, Step, Usage, nvidia_ld_exports
+from swm.frameworks._gpu import cuda_index, torch_check, torch_install
 
 _INSTALL_DIR = "/workspace/vllm"
 _VENV = f"{_INSTALL_DIR}/venv"
@@ -34,6 +35,9 @@ _MODEL_FILE = f"{_INSTALL_DIR}/model.txt"
 _DEFAULT_MODEL = "Qwen/Qwen3-8B"
 _LAUNCHER = f"{_INSTALL_DIR}/start.sh"
 _UV_PIP = f"{WORKSPACE_UV} pip install --python {_PYTHON}"
+# vLLM pins torch exactly; --torch-backend fetches that pin as the CUDA
+# build this pod's driver and GPU can run instead of PyPI's default.
+_INSTALL_VLLM = f"{_UV_PIP} --torch-backend {cuda_index(_PYTHON)} vllm"
 
 # Migrate ``_HF_CACHE`` to a symlink pointing at the unified store at
 # ``/workspace/models/hf`` so ``swm models`` writes show up here automatically.
@@ -82,6 +86,9 @@ FRAMEWORK = Framework(
     repo="https://github.com/vllm-project/vllm",
     install_dir=_INSTALL_DIR,
     venv=_VENV,
+    # The port opens only after the model is downloaded and loaded.
+    ready_timeout=1800,
+    gpu_torch="keep",
     description="Fast multi-GPU inference — tensor parallelism, tools, thinking",
     launch_cmd=f"bash {_LAUNCHER}",
     ports={8000: "http"},
@@ -138,7 +145,7 @@ FRAMEWORK = Framework(
         ),
         Step(
             label="Installing vLLM",
-            command=f"{_UV_PIP} vllm",
+            command=_INSTALL_VLLM,
         ),
         Step(
             label=f"Setting default model ({_DEFAULT_MODEL})",
@@ -187,8 +194,13 @@ FRAMEWORK = Framework(
         ),
         Step(
             label="Ensuring vLLM is installed",
-            command=f"{_UV_PIP} vllm",
+            command=_INSTALL_VLLM,
             check=f"[ -x {_VENV}/bin/vllm ]",
+        ),
+        Step(
+            label="Ensuring PyTorch matches GPU driver",
+            command=torch_install(_PYTHON, _UV_PIP, keep_version=True),
+            check=torch_check(_PYTHON),
         ),
         Step(
             label="Ensuring launcher script exists",

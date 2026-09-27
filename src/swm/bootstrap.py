@@ -68,12 +68,23 @@ def _humanize(n: int | float) -> str:
     return f"{v:.1f} PB"
 
 
+class StepFailed(RuntimeError):
+    """A remote step exited non-zero. Carries the step's output so callers
+    can tell a transient network error from a broken install."""
+
+    def __init__(self, label: str, code: int, output: str = "") -> None:
+        super().__init__(f"Step failed (exit {code}): {label}")
+        self.label = label
+        self.code = code
+        self.output = output
+
+
 def _step(session: RemoteSession, label: str, command: str) -> tuple[int, str, str]:
     """Run a labelled step on the remote, streaming output to the terminal."""
     console.print(f"\n[bold cyan]▸ {label}[/bold cyan]")
     code, stdout, stderr = session.exec(command, stream=True)
     if code != 0:
-        raise RuntimeError(f"Step failed (exit {code}): {label}")
+        raise StepFailed(label, code, stdout)
     return code, stdout, stderr
 
 

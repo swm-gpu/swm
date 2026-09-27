@@ -37,6 +37,8 @@ FRAMEWORK = Framework(
         f"{_VENV}/bin/open-webui serve --host 0.0.0.0 --port 8080"
     ),
     ports={8080: "http"},
+    # First boot runs database migrations before it serves.
+    ready_timeout=600,
     category="llm",
     stop_cmd="pkill -f 'open-webui serve' 2>/dev/null; true",
     process_pattern="open-webui serve",

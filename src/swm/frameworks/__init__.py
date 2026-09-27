@@ -77,8 +77,25 @@ class Framework:
     # Absolute path to the Python venv this framework owns, or None for
     # frameworks that don't need a venv (e.g. Go binaries like Ollama).
     # When set, swm will ensure workspace-owned Python + uv exist and
-    # repair the venv on host changes before any install/start step.
+    # repair the venv on host changes before any install/start step, and a
+    # start that repairs cannot fix rebuilds this venv from the steps.
     venv: str | None = None
+
+    # Seconds after launch for the first port to answer before the start
+    # counts as failed. A process that is merely alive is not "started": it
+    # may still crash on import or never bind. 0 means no port to probe, so
+    # staying alive for a few seconds is the only signal.
+    ready_timeout: int = 300
+
+    # How the venv's torch stack may change when it cannot use the GPU:
+    # "flexible" takes the newest build for this driver when the installed
+    # version has none; "keep" never changes the version (the framework pins
+    # torch exactly), so only a rebuild can fix it. "" = no torch.
+    gpu_torch: str = ""
+
+    # Targeted repairs a failed start runs before rebuilding (e.g. installing
+    # custom-node requirements). Always run; never guarded by a check.
+    repair: list[Step] = field(default_factory=list)
 
     @property
     def launch_workdir(self) -> str:

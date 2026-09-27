@@ -1,6 +1,14 @@
-"""SwarmUI framework definition."""
+"""SwarmUI framework definition.
 
+SwarmUI runs its ComfyUI backend with ``<backend>/venv/bin/python3`` when
+that exists and the system ``python3`` otherwise (NetworkBackendUtils.
+ConfigurePythonExeFor), so the backend gets its own workspace-owned uv venv
+and the same GPU handling as the standalone ComfyUI framework.
+"""
+
+from swm.bootstrap import PYTHON_DEFAULT_MINOR, UV_ENV_EXPORTS, WORKSPACE_UV
 from swm.frameworks import Framework, Step, nvidia_ld_exports
+from swm.frameworks._gpu import torch_check, torch_install
 from swm.frameworks._model_store import (
     DIFFUSION_BUCKETS,
     DIFFUSION_CONSUMES,
@@ -10,17 +18,22 @@ from swm.frameworks._model_store import (
 _DOTNET_DIR = "/workspace/.dotnet"
 _NUGET_DIR = "/workspace/.nuget"
 _PIP_CACHE = "/workspace/.cache/pip"
-_COMFY_VENV = "/workspace/ComfyUI/venv"
 
 _BUNDLED_COMFY = "/workspace/SwarmUI/dlbackend/ComfyUI"
+_BACKEND_VENV = f"{_BUNDLED_COMFY}/venv"
+_BACKEND_PY = f"{_BACKEND_VENV}/bin/python"
+_UV_PIP = f"{WORKSPACE_UV} pip install --python {_BACKEND_PY}"
+_TORCH_CHECK = torch_check(_BACKEND_PY)
+_TORCH_INSTALL = torch_install(_BACKEND_PY, _UV_PIP, keep_version=False)
 
 _LINK_SWARMUI = link_store_script(f"{_BUNDLED_COMFY}/models", DIFFUSION_BUCKETS)
 _ENV = (
+    f"{UV_ENV_EXPORTS} && "
     f"export PATH={_DOTNET_DIR}:$PATH "
     f"DOTNET_ROOT={_DOTNET_DIR} "
     f"NUGET_PACKAGES={_NUGET_DIR} "
     f"PIP_CACHE_DIR={_PIP_CACHE} && "
-    f"{nvidia_ld_exports(_COMFY_VENV)}"
+    f"{nvidia_ld_exports(_BACKEND_VENV)}"
 )
 
 FRAMEWORK = Framework(
@@ -28,6 +41,10 @@ FRAMEWORK = Framework(
     label="SwarmUI",
     repo="https://github.com/mcmonkeyprojects/SwarmUI.git",
     install_dir="/workspace/SwarmUI",
+    venv=_BACKEND_VENV,
+    # The launcher may build SwarmUI before it serves, then starts ComfyUI.
+    ready_timeout=900,
+    gpu_torch="flexible",
     launch_cmd="bash launch-linux.sh --launch_mode none --port 7801 --host 0.0.0.0",
     ports={7801: "http"},
     category="inference",
@@ -73,9 +90,21 @@ FRAMEWORK = Framework(
             workdir="/workspace/SwarmUI/dlbackend/ComfyUI",
         ),
         Step(
+            label="Creating ComfyUI backend virtual environment",
+            command=f"{WORKSPACE_UV} venv --python {PYTHON_DEFAULT_MINOR} --seed {_BACKEND_VENV}",
+            check=f"[ -x {_BACKEND_PY} ]",
+            workdir=_BUNDLED_COMFY,
+        ),
+        Step(
+            label="Installing PyTorch matching GPU driver",
+            command=_TORCH_INSTALL,
+            check=_TORCH_CHECK,
+            workdir=_BUNDLED_COMFY,
+        ),
+        Step(
             label="Installing ComfyUI requirements",
-            command="pip install --no-cache-dir -r requirements.txt",
-            workdir="/workspace/SwarmUI/dlbackend/ComfyUI",
+            command=f"{_UV_PIP} -r requirements.txt",
+            workdir=_BUNDLED_COMFY,
         ),
         Step(
             label="Installing ComfyUI Manager",
@@ -139,9 +168,34 @@ FRAMEWORK = Framework(
             check="[ -d /workspace/SwarmUI/dlbackend/ComfyUI ] || [ -L /workspace/SwarmUI/dlbackend/comfyui ]",
         ),
         Step(
+            label="Ensuring ComfyUI backend virtual environment",
+            command=f"[ ! -d {_BUNDLED_COMFY} ] || {WORKSPACE_UV} venv --python {PYTHON_DEFAULT_MINOR} --seed {_BACKEND_VENV}",
+            check=f"[ ! -d {_BUNDLED_COMFY} ] || [ -x {_BACKEND_PY} ]",
+        ),
+        Step(
+            label="Ensuring PyTorch matches GPU driver",
+            command=f"[ ! -x {_BACKEND_PY} ] || {{ {_TORCH_INSTALL}; }}",
+            check=f"[ ! -x {_BACKEND_PY} ] || {_TORCH_CHECK}",
+        ),
+        Step(
+            label="Updating ComfyUI backend dependencies",
+            command=f"[ ! -x {_BACKEND_PY} ] || {_UV_PIP} -r {_BUNDLED_COMFY}/requirements.txt",
+        ),
+        Step(
             label="Ensuring model directory symlinks",
             command=_LINK_SWARMUI,
             check=f"[ -L {_BUNDLED_COMFY}/models/checkpoints ]",
+        ),
+    ],
+    repair=[
+        Step(
+            label="Installing custom-node requirements",
+            command=(
+                f"for r in {_BUNDLED_COMFY}/custom_nodes/*/requirements.txt; do "
+                '[ -f "$r" ] || continue; echo "  $r"; '
+                f'{_UV_PIP} -r "$r" || echo "  warning: could not install $r"; '
+                "done"
+            ),
         ),
     ],
 )
