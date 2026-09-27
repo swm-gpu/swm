@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import shlex
 import subprocess
+import sys
 import time
 from contextlib import contextmanager
 
@@ -79,10 +80,19 @@ class StepFailed(RuntimeError):
         self.output = output
 
 
+def run_long(session, command: str, **kwargs) -> tuple[int, str, str]:
+    """Run a command that may take minutes, surviving a dropped connection
+    when the session supports it (RemoteSession.exec_detached)."""
+    detached = getattr(session, "exec_detached", None)
+    if detached is not None:
+        return detached(command, **kwargs)
+    return session.exec(command, **kwargs)
+
+
 def _step(session: RemoteSession, label: str, command: str) -> tuple[int, str, str]:
     """Run a labelled step on the remote, streaming output to the terminal."""
     console.print(f"\n[bold cyan]▸ {label}[/bold cyan]")
-    code, stdout, stderr = session.exec(command, stream=True)
+    code, stdout, stderr = run_long(session, command, stream=True)
     if code != 0:
         raise StepFailed(label, code, stdout)
     return code, stdout, stderr
@@ -985,6 +995,11 @@ def transfer_lock(
             _release_transfer_lock(session)
 
 
+def _to_terminal(line: str) -> None:
+    sys.stdout.write(line)
+    sys.stdout.flush()
+
+
 def _s5cmd_transfer(
     session: RemoteSession,
     label: str,
@@ -1002,7 +1017,12 @@ def _s5cmd_transfer(
     console.print(f"\n[bold cyan]▸ {label}[/bold cyan]")
     acquired = _acquire_transfer_lock(session, force=force)
     try:
-        code = subprocess.call(session._ssh_cmd() + [s5cmd_cmd])
+        # Detached, never on one live connection: a transfer ran under
+        # `ssh -tt`, so a dropped connection SIGHUP'd s5cmd mid-restore and
+        # a truncated workspace came back as "finished with warnings". Its
+        # progress goes to this process's terminal, not a job log.
+        code, _, _ = run_long(session, s5cmd_cmd, stream=False,
+                              line_callback=_to_terminal)
     finally:
         if acquired:
             _release_transfer_lock(session)

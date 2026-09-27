@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import base64
 import re
 import subprocess
 import sys
 import time
+import uuid
 from typing import Callable
 
 from swm import config as cfg
@@ -34,6 +36,20 @@ _INCOMPRESSIBLE_EXT = frozenset({
 # Extensions the remote `find` counts as incompressible (same set, as a grep
 # alternation; keep in sync with _INCOMPRESSIBLE_EXT).
 _INCOMPRESSIBLE_GREP = "|".join(sorted(e.lstrip(".") for e in _INCOMPRESSIBLE_EXT))
+
+
+# Detached remote commands (RemoteSession.exec_detached). Outside /workspace
+# so nothing here is ever synced.
+_DETACHED_ROOT = "/tmp/swm-run"
+_DETACHED_MARK = "@@SWM-DETACHED@@"
+_DETACHED_LAUNCH_ATTEMPTS = 5
+_DETACHED_POLL_MAX = 2.0
+_DETACHED_LOST_AFTER = 600.0
+# A launch whose process has not written its pid by now never started.
+_DETACHED_START_WITHIN = 30.0
+# Split after "\n", or after a bare "\r" (a progress-bar redraw); "\r\n" stays
+# one line ending.
+_LINE_ENDS = re.compile(r"(?<=\n)|(?<=\r)(?!\n)")
 
 
 def worth_compressing(path: str) -> bool:
@@ -202,6 +218,120 @@ class RemoteSession:
 
         exit_code = proc.wait()
         return exit_code, "".join(out_parts), ""
+
+    def exec_detached(
+        self,
+        command: str,
+        stream: bool = True,
+        line_callback: "Callable[[str], None] | None" = None,
+        *,
+        lost_after: float = _DETACHED_LOST_AFTER,
+    ) -> tuple[int, str, str]:
+        """Run *command* so that it survives a dropped SSH connection, with
+        the same streaming and return contract as :meth:`exec`.
+
+        A long command on one SSH connection dies with it: some hosts' sshd
+        (``ClientAliveCountMax 2``) drops a connection within ~25 s once
+        other SSH sessions are active, and the command is killed at its next
+        write (a truncated restore, a half-installed PyTorch). Here the command
+        runs under ``setsid nohup`` with its output in a file on the pod,
+        followed over short SSH calls that reconnect on a drop; the exit code
+        comes from a status file. Returns 255 only when the pod stays
+        unreachable for *lost_after* seconds (the command may still run).
+        """
+        run = f"{_DETACHED_ROOT}/{uuid.uuid4().hex[:16]}"
+        script = base64.b64encode(command.encode()).decode()
+        # mkdir is the once-only guard, so a retried launch whose first
+        # attempt did start (its reply lost) never starts a second copy.
+        launch = (
+            f"mkdir -p {_DETACHED_ROOT} && if mkdir {run} 2>/dev/null; then "
+            f"echo {script} | base64 -d > {run}/cmd.sh && : > {run}/out && "
+            # setsid makes it a process group we can stop; without it (a
+            # minimal image), nohup alone still detaches it from the session.
+            f"SID=$(command -v setsid || true); "
+            f"($SID nohup bash -c 'echo $$ > {run}/pid; "
+            f"bash {run}/cmd.sh >> {run}/out 2>&1 < /dev/null; "
+            f"echo $? > {run}/rc.tmp && mv {run}/rc.tmp {run}/rc' "
+            f">/dev/null 2>&1 < /dev/null &); fi; echo {_DETACHED_MARK}"
+        )
+        for attempt in range(_DETACHED_LAUNCH_ATTEMPTS):
+            code, out, _ = self.exec(launch, stream=False)
+            if code == 0 and _DETACHED_MARK in out:
+                break
+            time.sleep(2 * (attempt + 1))
+        else:
+            return 255, "", ""
+
+        emit = line_callback
+        if emit is None and stream:
+            def emit(line: str) -> None:
+                sys.stdout.write(line)
+                sys.stdout.flush()
+
+        try:
+            return self._follow_detached(run, emit, lost_after)
+        except BaseException:
+            # Interrupted here (Ctrl-C, a cancelled job): stop it there too,
+            # or it would outlive the caller's locks and reporting.
+            self.exec(f"kill -TERM -- -$(cat {run}/pid 2>/dev/null) 2>/dev/null; "
+                      f"rm -rf {run}", stream=False)
+            raise
+
+    def _follow_detached(self, run: str, emit, lost_after: float) -> tuple[int, str, str]:
+        offset = 0
+        pending = ""
+        collected: list[str] = []
+        delay = 0.3
+        unreachable_since: float | None = None
+        launched_at = time.monotonic()
+        # Status before size: once rc exists the output is complete, so the
+        # size read after it is final and no trailing bytes are missed.
+        while True:
+            poll = (
+                f"[ -d {run} ] || {{ echo '{_DETACHED_MARK} GONE'; exit 0; }}; "
+                f"R=$(cat {run}/rc 2>/dev/null); "
+                f"[ -e {run}/pid ] && P=1 || P=0; "
+                f"S=$(wc -c < {run}/out 2>/dev/null | tr -d ' '); S=${{S:-0}}; "
+                f"[ \"$S\" -gt {offset} ] && tail -c +{offset + 1} {run}/out | head -c $((S-{offset})); "
+                f"printf '\\n{_DETACHED_MARK} %s %s %s\\n' \"$S\" \"$P\" \"$R\""
+            )
+            code, out, _ = self.exec(poll, stream=False)
+            cut = out.rfind(f"{_DETACHED_MARK} ")
+            if code != 0 or cut < 0:
+                now = time.monotonic()
+                unreachable_since = unreachable_since or now
+                if now - unreachable_since > lost_after:
+                    return 255, "".join(collected) + pending, ""
+                time.sleep(min(delay * 2, 10))
+                continue
+            unreachable_since = None
+            fields = out[cut + len(_DETACHED_MARK):].split()
+            if fields and fields[0] == "GONE":
+                return 255, "".join(collected) + pending, ""
+            chunk = out[:cut].removesuffix("\n")
+            if chunk:
+                pending += chunk
+                *lines, pending = _LINE_ENDS.split(pending)
+                for line in lines:
+                    collected.append(line)
+                    if emit:
+                        emit(line)
+                delay = 0.3
+            else:
+                delay = min(delay * 1.6, _DETACHED_POLL_MAX)
+            offset = int(fields[0]) if fields and fields[0].isdigit() else offset
+            started = len(fields) > 1 and fields[1] == "1"
+            if not started and time.monotonic() - launched_at > _DETACHED_START_WITHIN:
+                self.exec(f"rm -rf {run}", stream=False)
+                return 255, "the command did not start on the remote", ""
+            if len(fields) > 2 and fields[2].isdigit():
+                if pending:
+                    collected.append(pending)
+                    if emit:
+                        emit(pending)
+                self.exec(f"rm -rf {run}", stream=False)
+                return int(fields[2]), "".join(collected), ""
+            time.sleep(delay)
 
     def exec_pipe(
         self,
