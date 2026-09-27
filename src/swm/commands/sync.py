@@ -98,11 +98,14 @@ def pull(instance_id: str, path: str, bucket: str | None, dest: str, exclude: tu
     all_excludes = list(exclude) + (extra_excludes or [])
 
     with session_from_instance(inst) as sess:
-        workspace_pull(
-            sess, remote, bucket_name, ws,
-            dest=dest, extra_excludes=all_excludes or None,
-            force=force,
-        )
+        try:
+            workspace_pull(
+                sess, remote, bucket_name, ws,
+                dest=dest, extra_excludes=all_excludes or None,
+                force=force,
+            )
+        except RuntimeError as exc:
+            raise click.ClickException(str(exc)) from None
 
     console.print("\n[green]✓ Pull complete[/green]")
 

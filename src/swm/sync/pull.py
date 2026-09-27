@@ -10,6 +10,9 @@ from swm.sync._common import ensure_pigz, ensure_zstd, restore_permissions
 from swm.sync.paths import PUSH_STAMP, TAR_PATH, WATCH_LOG
 from swm.sync.watcher import start_watcher
 
+# Times an unfinished transfer is resumed before the pull fails.
+_PULL_RESUMES = 2
+
 
 def _is_link_repair_step(label: str) -> bool:
     lowered = label.lower()
@@ -97,13 +100,32 @@ def workspace_pull(
         console.print("  [dim]Existing data — skipping files already on disk[/dim]")
         noclobber = " --no-clobber"
 
-    _s5cmd_transfer(
+    source = f"'s3://{bucket}/{workspace}/*' '{dest}/'"
+    rc = _s5cmd_transfer(
         session,
         f"Pulling {workspace}/ → {dest}/",
-        f"{env} s5cmd cp{noclobber} --show-progress{excludes} "
-        f"'s3://{bucket}/{workspace}/*' '{dest}/'",
+        f"{env} s5cmd cp{noclobber} --show-progress{excludes} {source}",
         force=force,
     )
+    # A transfer that did not finish is resumed, never taken as a restore.
+    # Into a fresh pod, --if-size-differ also re-fetches a file cut off
+    # mid-download; into existing data, --no-clobber keeps local edits.
+    resume = " --if-size-differ" if is_fresh else " --no-clobber"
+    for attempt in range(1, _PULL_RESUMES + 1):
+        if rc == 0:
+            break
+        console.print(f"  [yellow]Transfer incomplete (exit {rc}); resuming "
+                      f"({attempt}/{_PULL_RESUMES})[/yellow]")
+        rc = _s5cmd_transfer(
+            session,
+            f"Resuming {workspace}/ → {dest}/",
+            f"{env} s5cmd cp{resume} --show-progress{excludes} {source}",
+            force=force,
+        )
+    if rc != 0:
+        raise RuntimeError(
+            f"Workspace pull did not complete (s5cmd exit {rc} after "
+            f"{_PULL_RESUMES} resumes); {dest} is missing files")
 
     restore_permissions(session, dest)
     _repair_framework_links(session, dest)
@@ -227,6 +249,19 @@ def tar_pull(
         f"'{s3_key}' {staged}",
         force=force,
     )
+    for attempt in range(1, _PULL_RESUMES + 1):
+        if rc == 0:
+            break
+        console.print(f"  [yellow]Download incomplete (exit {rc}); retrying "
+                      f"({attempt}/{_PULL_RESUMES})[/yellow]")
+        rc = _s5cmd_transfer(
+            session,
+            f"Retrying {s3_key}",
+            f"{env} s5cmd cp --show-progress "
+            f"--concurrency {_CP_CONCURRENCY} --part-size {_CP_PART_MIB} "
+            f"'{s3_key}' {staged}",
+            force=force,
+        )
     if rc != 0:
         raise RuntimeError("Tarball download failed")
 
