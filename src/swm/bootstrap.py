@@ -262,6 +262,41 @@ def _python_link_repair_script() -> str:
     )
 
 
+def _python_incomplete_install_script() -> str:
+    """Bash that removes a uv-managed CPython whose interpreter is missing or
+    will not start, so the ``uv python install`` that follows reinstalls it.
+
+    uv installs Python by unpacking into ``.temp/`` and renaming the tree
+    into place. Autosync before 0.3.5 did not carry renames to storage, so
+    workspaces set up then restore the install directory without its
+    ``bin/pythonX.Y``; uv then refuses outright ("Missing expected Python
+    executable") instead of reinstalling, and no framework can start. A
+    minor-version slot left dangling by the removal is dropped so uv
+    recreates it; a slot linked to another, healthy patch is kept, and a
+    materialized slot is dropped only when no full install of that minor
+    remains (the link repair cannot fix it, and uv would fail on it).
+    Only plain ``X.Y.Z`` installs are considered.
+    """
+    return (
+        '( cd /workspace/.python 2>/dev/null || exit 0; '
+        'for d in cpython-*-*; do '
+        '  [ -d "$d" ] && [ ! -L "$d" ] || continue; '
+        '  rest="${d#cpython-}"; ver="${rest%%-*}"; '
+        '  case "$ver" in *[!0-9.]*|*.*.*.*) continue ;; *.*.*) ;; *) continue ;; esac; '
+        '  minor="${ver%.*}"; plat="${rest#$ver-}"; '
+        '  "$d/bin/python$minor" -I -c "import encodings" >/dev/null 2>&1 && continue; '
+        '  echo "Removing incomplete Python install $d (interpreter missing or broken)"; '
+        '  rm -rf "$d"; '
+        '  slot="cpython-$minor-$plat"; '
+        '  if [ -L "$slot" ] && [ ! -e "$slot" ]; then rm -f "$slot"; fi; '
+        '  if [ -d "$slot" ] && [ ! -L "$slot" ] '
+        '     && ! ls -d "cpython-$minor".*-"$plat" >/dev/null 2>&1; then '
+        '    rm -rf "$slot"; '
+        '  fi; '
+        'done )'
+    )
+
+
 def ensure_python(
     session: RemoteSession,
     minor: str = PYTHON_DEFAULT_MINOR,
@@ -271,10 +306,13 @@ def ensure_python(
     Delegates to ``uv python install``, which fetches the matching
     python-build-standalone tarball into ``/workspace/.python/``.
     Idempotent — uv reports the install as already-present on reruns.
-    Self-heals a symlink that a workspace sync materialized into a real
-    directory before invoking uv (see _python_link_repair_script).
+    Before invoking uv, removes an install whose interpreter a restore lost
+    (see _python_incomplete_install_script) and self-heals a symlink that a
+    workspace sync materialized into a real directory (see
+    _python_link_repair_script).
     """
     cmd = (
+        f"{_python_incomplete_install_script()} && "
         f"{_python_link_repair_script()} && "
         f"{UV_ENV_EXPORTS} && "
         f"{WORKSPACE_UV} python install {minor} && "
@@ -382,6 +420,127 @@ ln -s "$PY_MINOR_BIN" "$VENV/bin/python"
 "$VENV/bin/python" -c "import encodings, sys; print('  repaired:', sys.executable, '→ Python', sys.version.split()[0])"
 """
     _step(session, f"Checking venv {venv_path}", script)
+    _step(session, f"Checking packages in {venv_path}",
+          _venv_package_repair_script(venv_path))
+
+
+# Runs under the venv's own interpreter. Prints one line per installed
+# distribution whose RECORD lists a file that is gone (or whose METADATA is
+# gone): "PLAIN <requirement>" to reinstall from the default index or its
+# recorded git/archive URL, "LOCAL <name==version+tag>" for a local-version
+# build (PyTorch's +cuXXX wheels), or "SKIP <name==version>" for an editable,
+# local-directory, or file:// install that nothing can refetch.
+# Paths the workspace sync never stores are ignored, or every restore would
+# read as broken.
+_PACKAGE_SCAN_PY = r'''
+import csv, glob, json, os, re, sys
+EXCLUDED = re.compile(@EXCLUDED@)
+prefix = os.path.normpath(sys.prefix)
+bases = sorted(set(os.path.normpath(p) for p in sys.path
+                   if p.endswith("site-packages") and os.path.isdir(p)
+                   and os.path.normpath(p).startswith(prefix + os.sep)))
+for base in bases:
+    for info in sorted(glob.glob(os.path.join(base, "*.dist-info"))):
+        name, _, version = os.path.basename(info)[:-len(".dist-info")].rpartition("-")
+        if not name or not version:
+            continue
+        broken = not os.path.isfile(os.path.join(info, "METADATA"))
+        record = os.path.join(info, "RECORD")
+        if not broken and os.path.isfile(record):
+            with open(record, newline="", encoding="utf-8", errors="replace") as fh:
+                for row in csv.reader(fh):
+                    if not row or not row[0] or row[0].endswith(".pyc"):
+                        continue
+                    path = os.path.normpath(os.path.join(base, row[0]))
+                    if not path.startswith(prefix + os.sep) or EXCLUDED.search(path):
+                        continue
+                    if not os.path.lexists(path):
+                        broken = True
+                        break
+        if not broken:
+            continue
+        spec = name + "==" + version
+        try:
+            with open(os.path.join(info, "direct_url.json"), encoding="utf-8") as fh:
+                direct = json.load(fh)
+        except (OSError, ValueError):
+            direct = None
+        if isinstance(direct, dict):
+            url, vcs = direct.get("url") or "", direct.get("vcs_info") or None
+            if "dir_info" in direct or not url or url.startswith("file:"):
+                print("SKIP " + spec)
+                continue
+            if vcs and vcs.get("vcs") == "git" and vcs.get("commit_id"):
+                spec = name + " @ git+" + url + "@" + vcs["commit_id"]
+            else:
+                spec = name + " @ " + url
+            print("PLAIN " + spec)
+        elif "+" in version:
+            print("LOCAL " + spec)
+        else:
+            print("PLAIN " + spec)
+'''
+
+_PACKAGE_REPAIR_SH = r'''
+set -e
+@UV_ENV@
+VENV="@VENV@"
+if [ ! -x "$VENV/bin/python" ]; then
+    echo "  no runnable venv at $VENV; nothing to check"
+    exit 0
+fi
+if ! SCAN=$("$VENV/bin/python" -I - <<'PYSCAN'
+@SCAN@
+PYSCAN
+); then
+    echo "  could not check packages in $VENV; continuing"
+    exit 0
+fi
+if [ -z "$SCAN" ]; then
+    echo "  packages in $VENV are complete"
+    exit 0
+fi
+echo "  installed packages are missing files (an incomplete restore); reinstalling:"
+printf '%s\n' "$SCAN" | sed 's/^/    /'
+printf '%s\n' "$SCAN" | sed -n 's/^SKIP /  warning: local or editable install, reinstall it by hand: /p'
+REQS=$(mktemp)
+trap 'rm -f "$REQS"' EXIT
+printf '%s\n' "$SCAN" | sed -n 's/^PLAIN //p' > "$REQS"
+if [ -s "$REQS" ]; then
+    @UV@ pip install --python "$VENV/bin/python" --reinstall --no-deps -r "$REQS"
+fi
+printf '%s\n' "$SCAN" | sed -n 's/^LOCAL //p' | while read -r spec; do
+    tag="${spec##*+}"
+    @UV@ pip install --python "$VENV/bin/python" --reinstall --no-deps \
+        --index-url "https://download.pytorch.org/whl/$tag" "$spec" \
+        || echo "  warning: could not reinstall $spec; the framework's own checks will retry"
+done
+'''
+
+
+def _package_scan_py() -> str:
+    # Imported here: swm.sync imports this module at load time.
+    from swm.sync.paths import WATCH_EXCLUDES
+
+    return _PACKAGE_SCAN_PY.replace(
+        "@EXCLUDED@", repr("(" + "|".join(WATCH_EXCLUDES) + ")"))
+
+
+def _venv_package_repair_script(venv_path: str) -> str:
+    """Bash that reinstalls, at the same version and without touching
+    dependencies, every package in *venv_path* that is missing files.
+
+    uv installs each package by unpacking into a temporary directory and
+    renaming it into place. Autosync before 0.3.5 did not carry renames to
+    storage, so a restored venv can hold a package's ``*.dist-info`` record
+    while its code is gone. Every installer then believes the package is
+    present ("Checked N packages") and the framework fails at import time.
+    """
+    return (_PACKAGE_REPAIR_SH
+            .replace("@UV_ENV@", UV_ENV_EXPORTS)
+            .replace("@VENV@", venv_path)
+            .replace("@UV@", WORKSPACE_UV)
+            .replace("@SCAN@", _package_scan_py()))
 
 
 def _install_inotify(session: RemoteSession) -> None:

@@ -1,4 +1,5 @@
-"""Regression tests for _python_link_repair_script (bootstrap).
+"""Regression tests for the workspace-Python repair scripts (bootstrap):
+_python_link_repair_script and _python_incomplete_install_script.
 
 The script is a bash one-liner that runs on pods over SSH; these tests run
 it locally against synthetic /workspace/.python layouts. `sort -V` is GNU
@@ -14,7 +15,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from swm.bootstrap import _python_link_repair_script
+from swm.bootstrap import _python_incomplete_install_script, _python_link_repair_script
 
 PLAT = "linux-x86_64-gnu"
 
@@ -127,3 +128,103 @@ def test_materialized_minor_without_full_install_is_left_alone(tmp_path):
 def test_no_python_dir_is_a_noop(tmp_path):
     result = _run_repair(tmp_path, tmp_path / "absent")
     assert result.returncode == 0, result.stderr
+
+
+# ── _python_incomplete_install_script ────────────────────────────────
+
+
+def _run_incomplete(python_dir: Path) -> subprocess.CompletedProcess:
+    script = _python_incomplete_install_script().replace(
+        "/workspace/.python", str(python_dir))
+    return subprocess.run(["bash", "-c", script], capture_output=True,
+                          text=True, timeout=30, check=False)
+
+
+def test_install_restored_without_its_interpreter_is_removed(tmp_path):
+    """The production failure: the restored install kept its tree but not
+    bin/python3.11, and uv refused with "Missing expected Python
+    executable" instead of reinstalling."""
+    python_dir = tmp_path / ".python"
+    python_dir.mkdir()
+    full = python_dir / f"cpython-3.11.15-{PLAT}"
+    (full / "bin").mkdir(parents=True)
+    (full / "lib").mkdir()
+    slot = python_dir / f"cpython-3.11-{PLAT}"
+    slot.symlink_to(full)
+
+    result = _run_incomplete(python_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert not full.exists()
+    assert not slot.is_symlink() and not slot.exists()
+    assert "Removing incomplete Python install" in result.stdout
+
+
+def test_an_interpreter_that_will_not_start_is_removed(tmp_path):
+    python_dir = tmp_path / ".python"
+    python_dir.mkdir()
+    full = _make_full(python_dir, "15", with_py3_link=True)
+    (full / "bin" / "python3.11").write_text("#!/bin/sh\nexit 1\n")
+
+    result = _run_incomplete(python_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert not full.exists()
+
+
+def test_a_healthy_install_is_untouched(tmp_path):
+    python_dir = tmp_path / ".python"
+    python_dir.mkdir()
+    full = _make_full(python_dir, "15", with_py3_link=True)
+    slot = python_dir / f"cpython-3.11-{PLAT}"
+    slot.symlink_to(full.name)
+
+    result = _run_incomplete(python_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert full.is_dir() and slot.is_symlink()
+    assert result.stdout == ""
+
+
+def test_a_slot_linked_to_another_healthy_patch_is_kept(tmp_path):
+    python_dir = tmp_path / ".python"
+    python_dir.mkdir()
+    broken = python_dir / f"cpython-3.11.9-{PLAT}"
+    (broken / "bin").mkdir(parents=True)
+    healthy = _make_full(python_dir, "15", with_py3_link=True)
+    slot = python_dir / f"cpython-3.11-{PLAT}"
+    slot.symlink_to(healthy.name)
+
+    result = _run_incomplete(python_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert not broken.exists()
+    assert slot.is_symlink() and slot.resolve() == healthy.resolve()
+
+
+def test_a_materialized_slot_goes_only_when_no_install_of_its_minor_remains(tmp_path):
+    python_dir = tmp_path / ".python"
+    python_dir.mkdir()
+    broken = python_dir / f"cpython-3.11.15-{PLAT}"
+    (broken / "bin").mkdir(parents=True)
+    materialized = python_dir / f"cpython-3.11-{PLAT}"
+    materialized.mkdir()
+
+    result = _run_incomplete(python_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert not broken.exists() and not materialized.exists()
+
+
+def test_non_plain_versions_and_minor_slots_are_ignored(tmp_path):
+    python_dir = tmp_path / ".python"
+    python_dir.mkdir()
+    freethreaded = python_dir / f"cpython-3.13.1+freethreaded-{PLAT}"
+    (freethreaded / "bin").mkdir(parents=True)
+    slot_dir = python_dir / f"cpython-3.12-{PLAT}"
+    slot_dir.mkdir()
+
+    result = _run_incomplete(python_dir)
+
+    assert result.returncode == 0, result.stderr
+    assert freethreaded.is_dir() and slot_dir.is_dir()
