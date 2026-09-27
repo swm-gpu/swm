@@ -23,7 +23,7 @@ from swm.sync.paths import (
     WATCH_LOG,
     WATCHER_EXCLUDES_FILE,
 )
-from swm.sync.watcher import is_watcher_alive, start_watcher
+from swm.sync.watcher import start_watcher
 
 _DAEMON_TEMPLATE = Path(__file__).with_name("_autosync_daemon.sh")
 
@@ -233,9 +233,10 @@ def start_autosync(
     if force and not _pull_stamp_exists(session):
         session.exec(f"touch {PUSH_STAMP}", stream=False)
 
-    if not is_watcher_alive(session):
-        if not start_watcher(session, src):
-            return False
+    # Not just when it is down: a watcher an older swm started must be
+    # replaced, and start_watcher is a no-op on a current one.
+    if not start_watcher(session, src):
+        return False
 
     _write_env_file(session, storage_slug)
     script_body = _render_daemon_script(

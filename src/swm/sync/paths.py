@@ -15,6 +15,9 @@ WATCHER_SCRIPT = "/tmp/.swm_start_watcher.sh"
 # restart it so changes to WATCH_EXCLUDES below actually take effect on
 # long-lived pods.
 WATCHER_EXCLUDES_FILE = "/tmp/.swm_watcher.excludes"
+# Same idea for the watched events and line format, so a watcher started by
+# an older swm (bare paths, no moved_from) is replaced on upgrade too.
+WATCHER_SPEC_FILE = "/tmp/.swm_watcher.spec"
 
 # ── Push-time staging ──────────────────────────────────────────────
 

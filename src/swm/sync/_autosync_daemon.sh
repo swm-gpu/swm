@@ -52,6 +52,42 @@ run_bg() {
   return "$rc"
 }
 
+file_paths() {
+  # Paths of the file events in watch-log snapshot $1. The watcher writes
+  # "EVENTS /path"; a bare "/path" line comes from one an older swm started.
+  # Directory (ISDIR) events are left to moved_dirs.
+  awk '/^\// { print; next }
+       /^[A-Z_,]+ \// { if (!index("," $1 ",", ",ISDIR,")) { sub(/^[^ ]+ /, ""); print } }' "$1"
+}
+
+moved_dirs() {
+  # Directories logged with event $1 (MOVED_TO or MOVED_FROM) in snapshot
+  # $2, minus excluded ones, matched with a trailing slash (the form the
+  # excludes are written for).
+  awk -v ev="$1" '/^[A-Z_,]+ \// { f = "," $1 ","
+       if (index(f, ",ISDIR,") && index(f, "," ev ",")) { sub(/^[^ ]+ /, ""); print } }' "$2" \
+    | sort -u | sed 's#$#/#' | grep -Ev "$EXPECTED_EXCLUDES" | sed 's#/$##'
+}
+
+delete_stored_dir() {
+  # Remove every stored object under $1 (relative), a directory that was
+  # moved away, so its old name does not come back on the next restore. Its
+  # files were never logged one by one. Best effort: a persistent error must
+  # not wedge every later cycle, and skipping leaves only the stale copy
+  # there already was. A name containing an s5cmd wildcard is left alone,
+  # since as a pattern it could match other keys.
+  local rel="$1" out
+  case "$rel" in
+    *'*'*|*'?'*)
+      s5note "WARN: kept the stored copy of moved directory $rel (its name contains a wildcard character)"
+      return 0 ;;
+  esac
+  log "deleting the stored copy of moved directory $rel"
+  out=$(s5cmd --log error rm "s3://$BUCKET/$WORKSPACE/$rel/*" 2>&1) && return 0
+  case "$out" in *"no object found"*) return 0 ;; esac
+  s5note "WARN: could not delete the stored copy of moved directory $rel: $out"
+}
+
 quota_refused() {
   # Some network volumes (MooseFS) charge every hardlink its file's full
   # size, so a large new file that fits on the volume once cannot be staged.
@@ -232,15 +268,26 @@ sync_once() {
   # and a watcher started by an older swm may have logged now-excluded
   # paths. Without this, an excluded path that later vanishes becomes an
   # `s5cmd rm` on a nonexistent key and wedges every subsequent cycle.
+  local paths="/tmp/.swm_autosync_paths"
+  local moved_in="/tmp/.swm_autosync_moved_in"
+  local moved_out="/tmp/.swm_autosync_moved_out"
+  file_paths "$snap" | sort -u | grep -Ev "$EXPECTED_EXCLUDES" > "$paths"
+  moved_dirs MOVED_TO "$snap" > "$moved_in"
+  moved_dirs MOVED_FROM "$snap" > "$moved_out"
   {
-    sort -u "$snap" | grep -Ev "$EXPECTED_EXCLUDES" \
-      | while IFS= read -r f; do [ -f "$f" ] && echo "$f"; done
+    while IFS= read -r f; do [ -f "$f" ] && echo "$f"; done < "$paths"
+    # A directory moved into place brings files whose mtimes predate the
+    # stamp: neither their own events nor the scan above cover them.
+    while IFS= read -r d; do
+      [ -d "$d" ] && find "$d" \( -type f -o -type l \) 2>/dev/null
+    done < "$moved_in" | grep -Ev "$EXPECTED_EXCLUDES"
     cat "$found"
   } | sort -u > "$uploads"
   # A dangling symlink still exists as a path: it is skipped by staging,
   # never reconciled into an S3 delete of a key that may not exist.
-  sort -u "$snap" | grep -Ev "$EXPECTED_EXCLUDES" \
-    | while IFS= read -r f; do [ ! -e "$f" ] && [ ! -L "$f" ] && echo "$f"; done > "$deletes"
+  while IFS= read -r f; do
+    [ ! -e "$f" ] && [ ! -L "$f" ] && echo "$f"
+  done < "$paths" > "$deletes"
 
   local n_up n_del
   n_up=$(wc -l < "$uploads" 2>/dev/null || echo 0)
@@ -252,7 +299,7 @@ sync_once() {
   if ! ( set -C; echo $$ > "$TRANSFER_LOCK" ) 2>/dev/null; then
     log "transfer lock taken during scan; skipping cycle"
     cat "$snap" >> "$WATCH_LOG" 2>/dev/null || true
-    rm -f "$cycle_mark" "$snap" "$uploads" "$deletes" "$found"
+    rm -f "$cycle_mark" "$snap" "$uploads" "$deletes" "$found" "$paths" "$moved_in" "$moved_out"
     return 0
   fi
   : > "$S5_OUT"
@@ -343,6 +390,11 @@ sync_once() {
     rm -f "$keylist"
   fi
 
+  while IFS= read -r d; do
+    # Made again since it moved away: its new contents share the prefix.
+    [ -e "$d" ] || [ -L "$d" ] || delete_stored_dir "${d#$SRC/}"
+  done < "$moved_out"
+
   cat "$S5_OUT" >> "$AUTO_LOG" 2>/dev/null
 
   if [ "$cp_rc" -ne 0 ] || [ "$rm_rc" -ne 0 ]; then
@@ -350,14 +402,14 @@ sync_once() {
     # PUSH_STAMP because the bucket is not in sync with the pod.
     log "WARN: transfer failed (cp_rc=$cp_rc rm_rc=$rm_rc) — re-queueing entries"
     cat "$snap" >> "$WATCH_LOG" 2>/dev/null || true
-    rm -f "$cycle_mark" "$snap" "$uploads" "$deletes" "$found"
+    rm -f "$cycle_mark" "$snap" "$uploads" "$deletes" "$found" "$paths" "$moved_in" "$moved_out"
     release_own_lock
     record_failure
     return 0
   fi
 
   touch -r "$cycle_mark" "$PUSH_STAMP"
-  rm -f "$cycle_mark" "$snap" "$uploads" "$deletes" "$found"
+  rm -f "$cycle_mark" "$snap" "$uploads" "$deletes" "$found" "$paths" "$moved_in" "$moved_out"
   release_own_lock
   log "cycle complete: $n_up uploaded, $n_del deleted"
   record_recovery

@@ -23,6 +23,32 @@ _FINDLIST = "/tmp/.swm_push_find_files"
 _WATCH_SNAP = "/tmp/.swm_push_watch_snap"
 _CYCLE_MARK = "/tmp/.swm_push_cycle_mark"
 _IN_PLACE = PUSH_IN_PLACE
+_MOVED_OUT = "/tmp/.swm_push_moved_out"
+
+# Watch-log lines are "EVENTS /path"; a watcher an older swm started writes
+# bare "/path". File paths skip directory (ISDIR) events, which the moved
+# directory lists handle. Mirrors file_paths/moved_dirs in the daemon.
+_FILE_PATHS_AWK = (
+    r'/^\// { print; next } '
+    r'/^[A-Z_,]+ \// { if (!index("," $1 ",", ",ISDIR,")) { sub(/^[^ ]+ /, ""); print } }'
+)
+_MOVED_DIRS_AWK = (
+    r'/^[A-Z_,]+ \// { f = "," $1 ","; '
+    r'if (index(f, ",ISDIR,") && index(f, "," ev ",")) { sub(/^[^ ]+ /, ""); print } }'
+)
+
+
+def _file_paths(log: str) -> str:
+    return f"awk {shlex.quote(_FILE_PATHS_AWK)} {log}"
+
+
+def _moved_dirs(event: str, log: str, exclude_re: str) -> str:
+    """Directories logged moving in (MOVED_TO) or out (MOVED_FROM), minus
+    excluded ones, matched with a trailing slash as the excludes expect."""
+    return (
+        f"awk -v ev={event} {shlex.quote(_MOVED_DIRS_AWK)} {log} | sort -u"
+        f" | sed 's#$#/#' | grep -Ev {exclude_re} | sed 's#/$##'"
+    )
 
 
 def _touch_cycle_mark(session: RemoteSession) -> None:
@@ -37,7 +63,7 @@ def _stamp_to_cycle_mark(session: RemoteSession) -> None:
 
 def _cleanup_incremental_files(session: RemoteSession) -> None:
     session.exec(
-        f"rm -f {_FILELIST} {_FINDLIST} {_WATCH_SNAP} {_CYCLE_MARK} {_IN_PLACE}",
+        f"rm -f {_FILELIST} {_FINDLIST} {_WATCH_SNAP} {_CYCLE_MARK} {_IN_PLACE} {_MOVED_OUT}",
         stream=False,
     )
 
@@ -252,6 +278,40 @@ def _sync_deletions(
     return deleted
 
 
+def _sync_moved_away_dirs(
+    session: RemoteSession,
+    storage_slug: str,
+    bucket: str,
+    workspace: str,
+    src: str,
+) -> int:
+    """Delete the stored copy of each directory moved out of the tree (a
+    rename's old name). Its files were never logged one by one, so they are
+    found by prefix, which the storage API matches literally.
+
+    Returns the number of keys deleted.
+    """
+    _, raw, _ = session.exec(f"cat {_MOVED_OUT} 2>/dev/null", stream=False)
+    prefix = src.rstrip("/") + "/"
+    rels = [line.removeprefix(prefix) for line in raw.splitlines() if line.startswith(prefix)]
+    if not rels:
+        return 0
+
+    from swm.storage import get_storage
+    from swm.storage.base import S3CompatProvider
+
+    provider = get_storage(storage_slug)
+    if not isinstance(provider, S3CompatProvider):
+        return 0
+
+    keys = [k for rel in rels for k in provider.list_keys(bucket, f"{workspace}/{rel}/")]
+    deleted = provider.delete_keys(bucket, keys)
+    console.print(
+        f"  [dim]{deleted} file(s) of {len(rels)} moved directory(ies) removed from storage[/dim]"
+    )
+    return deleted
+
+
 def _push_watcher_tier(
     session: RemoteSession,
     storage_slug: str,
@@ -314,37 +374,51 @@ def _push_watcher_snapshot(
 
     find_cmd = _find_changed_command(src, _CYCLE_MARK, extra_excludes)
     session.exec(f"{find_cmd} > {_FINDLIST}", stream=False)
+    # A directory moved into place brings files whose mtimes predate the
+    # stamp: neither their own events nor the find above cover them.
     session.exec(
-        f"{{ sort -u {_WATCH_SNAP} | grep -Ev {exclude_re}"
+        f"{{ {_file_paths(_WATCH_SNAP)} | sort -u | grep -Ev {exclude_re}"
         f" | while IFS= read -r f; do [ -f \"$f\" ] && echo \"$f\"; done; "
+        f"{_moved_dirs('MOVED_TO', _WATCH_SNAP, exclude_re)}"
+        f" | while IFS= read -r d; do [ -d \"$d\" ] && find \"$d\" \\( -type f -o -type l \\); done"
+        f" | grep -Ev {exclude_re}; "
         f"cat {_FINDLIST}; }} | sort -u > {_FILELIST}",
         stream=False,
     )
     if delete:
+        # A moved-away directory made again since keeps its stored copy: its
+        # new contents share the prefix.
         session.exec(
-            f"sort -u {_WATCH_SNAP} 2>/dev/null | grep -Ev {exclude_re}"
+            f"{_file_paths(_WATCH_SNAP)} 2>/dev/null | sort -u | grep -Ev {exclude_re}"
             f" | while IFS= read -r f; do [ ! -e \"$f\" ] && echo \"$f\"; done"
-            f" > {DELETED_LIST}",
+            f" > {DELETED_LIST}; "
+            f"{_moved_dirs('MOVED_FROM', _WATCH_SNAP, exclude_re)}"
+            f" | while IFS= read -r d; do [ -e \"$d\" ] || [ -L \"$d\" ] || echo \"$d\"; done"
+            f" > {_MOVED_OUT}",
             stream=False,
         )
 
     _, count_out, _ = session.exec(f"wc -l < {_FILELIST}", stream=False)
     changed = int(count_out.strip() or "0")
 
-    deleted_count = 0
+    deleted_count = moved_away = 0
     if delete:
         _, del_out, _ = session.exec(
-            f"wc -l < {DELETED_LIST} 2>/dev/null || echo 0", stream=False,
+            f"wc -l < {DELETED_LIST} 2>/dev/null || echo 0; "
+            f"wc -l < {_MOVED_OUT} 2>/dev/null || echo 0",
+            stream=False,
         )
-        deleted_count = int(del_out.strip() or "0")
+        counts = [int(n) for n in del_out.split()] + [0, 0]
+        deleted_count, moved_away = counts[0], counts[1]
 
     console.print(
         f"  [dim]{changed} file(s) changed"
         + (f", {deleted_count} file(s) deleted" if deleted_count else "")
+        + (f", {moved_away} directory(ies) moved away" if moved_away else "")
         + " since last push[/dim]"
     )
 
-    if changed == 0 and deleted_count == 0:
+    if changed == 0 and deleted_count == 0 and moved_away == 0:
         console.print("\n[green]✓ Nothing to push — workspace is up to date[/green]")
         _stamp_to_cycle_mark(session)
         _cleanup_incremental_files(session)
@@ -361,6 +435,8 @@ def _push_watcher_snapshot(
 
     if rc == 0 and deleted_count > 0:
         _sync_deletions(session, storage_slug, bucket, workspace, src)
+    if rc == 0 and moved_away > 0:
+        _sync_moved_away_dirs(session, storage_slug, bucket, workspace, src)
 
     if rc == 0:
         _stamp_to_cycle_mark(session)

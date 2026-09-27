@@ -550,6 +550,110 @@ def test_in_place_upload_of_a_file_that_changes_meanwhile_is_requeued(daemon: Da
     assert daemon.push_stamp.stat().st_mtime == before
 
 
+# ── renames and directory moves ("EVENTS /path" watch-log lines) ─────────
+
+
+@linux_only
+def test_a_renamed_file_uploads_under_its_new_name_and_drops_its_old_key(daemon: Daemon):
+    ws = daemon.ws
+    renamed = ws / "a2.png"
+    renamed.write_text("a")
+    _age(renamed, 7200)  # a rename keeps the file's mtime
+    daemon.watch_log.write_text(f"MOVED_FROM {ws}/a.png\nMOVED_TO {renamed}\n")
+
+    result = daemon.run_once()
+
+    assert result.returncode == 0, result.stderr
+    assert set(daemon.snapshots()[0]) == {"a2.png"}
+    assert _rm_lines(daemon) == ["--log error rm --raw s3://bucket/ws/a.png"]
+
+
+@linux_only
+def test_a_directory_moved_into_place_uploads_the_files_it_brought(daemon: Daemon):
+    ws = daemon.ws
+    moved = ws / "newdir"
+    (moved / "sub").mkdir(parents=True)
+    (moved / ".cache").mkdir()
+    for p in (moved / "sub" / "c.png", moved / "d.png", moved / ".cache" / "tmp"):
+        p.write_text("x")
+        _age(p, 7200)
+    daemon.watch_log.write_text(f"MOVED_TO,ISDIR {moved}\n")
+
+    result = daemon.run_once()
+
+    assert result.returncode == 0, result.stderr
+    assert set(daemon.snapshots()[0]) == {"newdir/sub/c.png", "newdir/d.png"}
+    assert _rm_lines(daemon) == []
+
+
+@linux_only
+def test_a_directory_moved_away_has_its_stored_copy_deleted(daemon: Daemon):
+    ws = daemon.ws
+    daemon.watch_log.write_text(
+        f"MOVED_FROM,ISDIR {ws}/olddir\nMOVED_FROM,ISDIR {ws}/x/.cache\n")
+
+    result = daemon.run_once()
+
+    assert result.returncode == 0, result.stderr
+    assert _rm_lines(daemon) == ["--log error rm s3://bucket/ws/olddir/*"]
+    log = daemon.log_text()
+    assert "deleting the stored copy of moved directory olddir" in log
+    assert "cycle complete" in log
+
+
+@linux_only
+def test_a_moved_away_directory_made_again_keeps_its_stored_copy(daemon: Daemon):
+    ws = daemon.ws
+    (ws / "out").mkdir()
+    (ws / "out" / "new.png").write_text("n")
+    daemon.watch_log.write_text(
+        f"MOVED_FROM,ISDIR {ws}/out\nCREATE,ISDIR {ws}/out\nCREATE {ws}/out/new.png\n")
+
+    result = daemon.run_once()
+
+    assert result.returncode == 0, result.stderr
+    assert _rm_lines(daemon) == []
+    assert set(daemon.snapshots()[0]) == {"out/new.png"}
+
+
+@linux_only
+def test_a_moved_away_directory_named_like_a_wildcard_is_left_alone(daemon: Daemon):
+    daemon.watch_log.write_text(f"MOVED_FROM,ISDIR {daemon.ws}/we*ird\n")
+
+    result = daemon.run_once()
+
+    assert result.returncode == 0, result.stderr
+    assert _rm_lines(daemon) == []
+    log = daemon.log_text()
+    assert "kept the stored copy of moved directory we*ird" in log
+    assert "cycle complete" in log
+
+
+@linux_only
+def test_a_failed_directory_delete_is_reported_but_never_wedges_the_cycle(daemon: Daemon):
+    daemon.watch_log.write_text(f"MOVED_FROM,ISDIR {daemon.ws}/olddir\n")
+
+    result = daemon.run_once(rc=1)
+
+    assert result.returncode == 0, result.stderr
+    log = daemon.log_text()
+    assert "could not delete the stored copy of moved directory olddir" in log
+    assert "cycle complete" in log
+    assert not daemon.marker.exists()
+
+
+@linux_only
+def test_bare_path_lines_from_an_older_watcher_still_sync(daemon: Daemon):
+    ws = daemon.ws
+    daemon.watch_log.write_text(f"{ws}/gone_old.txt\nDELETE {ws}/gone_new.txt\n")
+
+    result = daemon.run_once()
+
+    assert result.returncode == 0, result.stderr
+    assert sorted(_rm_lines(daemon)[0].split()[4:]) == [
+        "s3://bucket/ws/gone_new.txt", "s3://bucket/ws/gone_old.txt"]
+
+
 @linux_only
 def test_other_link_failures_fail_the_cycle_with_the_real_error(daemon: Daemon):
     (daemon.ws / "a.txt").write_text("a")

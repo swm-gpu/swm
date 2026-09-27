@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 import swm.sync.push as push
+from swm.storage.base import S3CompatProvider
 from swm.sync.paths import TRANSFER_LOCK_HOLDER_TAG
 
 linux_only = pytest.mark.skipif(
@@ -201,6 +202,75 @@ def test_in_place_upload_of_a_file_that_changed_meanwhile_fails_the_push(
 
     assert rc != 0
     assert not Path(pod_paths["PUSH_STAMP"]).stat().st_mtime > time.time() - 30
+
+
+# ── renames and directory moves ────────────────────────────────────
+
+
+class _FakeStore(S3CompatProvider):
+    """In-memory stand-in for the storage API a deleting push calls."""
+
+    def __init__(self, keys: set[str]) -> None:
+        self.keys = set(keys)
+
+    def list_keys(self, bucket: str, prefix: str) -> list[str]:
+        return sorted(k for k in self.keys if k.startswith(prefix))
+
+    def delete_keys(self, bucket: str, keys: list[str]) -> int:
+        self.keys -= set(keys)
+        return len(keys)
+
+
+_FakeStore.__abstractmethods__ = frozenset()
+
+
+def test_watcher_push_uploads_a_directory_moved_into_place(
+    session, workspace, pod_paths, monkeypatch, s5cmd_shim,
+):
+    _write_stamp(pod_paths)
+    _watcher_alive(monkeypatch)
+    moved = workspace / "newdir"
+    (moved / "sub").mkdir(parents=True)
+    brought = moved / "sub" / "c.png"
+    brought.write_text("c")
+    os.utime(brought, (time.time() - 3600, time.time() - 3600))
+    Path(pod_paths["WATCH_LOG"]).write_text(f"MOVED_TO,ISDIR {moved}\n")
+    staged: list[list[str]] = []
+    real_stage = push.stage_hardlinks
+
+    def capture(session, filelist, src, in_place):
+        staged.append(Path(filelist).read_text().splitlines())
+        return real_stage(session, filelist, src, in_place)
+
+    monkeypatch.setattr(push, "stage_hardlinks", capture)
+
+    rc = push.workspace_push(session, "b2", "bucket", "ws", src=str(workspace))
+
+    assert rc == 0
+    assert staged == [[str(brought)]]
+
+
+def test_deleting_push_drops_a_renamed_files_old_key_and_a_moved_away_directory(
+    session, workspace, pod_paths, monkeypatch, s5cmd_shim,
+):
+    _write_stamp(pod_paths)
+    _watcher_alive(monkeypatch)
+    renamed = workspace / "a2.png"
+    renamed.write_text("a")
+    (workspace / "out").mkdir()  # moved away, then made again: keeps its copy
+    Path(pod_paths["WATCH_LOG"]).write_text(
+        f"MOVED_FROM {workspace}/a.png\nMOVED_TO {renamed}\n"
+        f"MOVED_FROM,ISDIR {workspace}/olddir\nMOVED_FROM,ISDIR {workspace}/out\n")
+    store = _FakeStore({"ws/a.png", "ws/olddir/x.png", "ws/olddir/sub/y.png",
+                        "ws/olddir2/z.png", "ws/out/k.png"})
+    monkeypatch.setattr("swm.storage.get_storage", lambda slug: store)
+
+    rc = push.workspace_push(
+        session, "b2", "bucket", "ws", src=str(workspace), delete=True)
+
+    assert rc == 0
+    assert store.keys == {"ws/olddir2/z.png", "ws/out/k.png"}
+    assert f"{workspace}/.swm_staging/push/*" in s5cmd_shim.calls[0]
 
 
 # ── tier 3 ─────────────────────────────────────────────────────────

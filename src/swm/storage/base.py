@@ -194,6 +194,15 @@ class S3CompatProvider(StorageProvider):
 
         return deleted
 
+    def list_keys(self, bucket: str, prefix: str) -> list[str]:
+        """Every key under *prefix*, recursively (unlike ``ls``)."""
+        paginator = self.s3.get_paginator("list_objects_v2")
+        return [
+            obj["Key"]
+            for page in paginator.paginate(Bucket=bucket, Prefix=prefix)
+            for obj in page.get("Contents", [])
+        ]
+
     def delete_keys(self, bucket: str, keys: list[str]) -> int:
         """Delete an explicit list of S3 keys using batch delete_objects.
 

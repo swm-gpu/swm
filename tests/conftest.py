@@ -146,6 +146,7 @@ def pod_paths(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, str]
         "_WATCH_SNAP": str(state / "push_watch_snap"),
         "_CYCLE_MARK": str(state / "push_cycle_mark"),
         "_IN_PLACE": str(state / "push_in_place"),
+        "_MOVED_OUT": str(state / "push_moved_out"),
     }
     for name, value in mapping.items():
         monkeypatch.setattr(push, name, value)

@@ -4,6 +4,28 @@ All notable changes to swm are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.5] - 2026-09-27
+
+### Fixed
+- **Renames and moved directories left storage out of step.** The watcher
+  logged `moved_to` but never `moved_from`, so a renamed file's old name
+  stayed in storage and came back beside the new one on the next restore.
+  A renamed or moved-in directory was logged only as the directory, which
+  the daemon skips, and its files keep their old mtimes, so the change scan
+  missed them as well: the new name never reached storage and the old one
+  came back on restore. The watcher now also logs `moved_from` and writes
+  each line as `EVENTS /path`. A rename's old name is deleted, a directory
+  moved into place has its files uploaded, and a directory moved away has
+  its stored copy deleted by prefix, unless the path exists again or its
+  name contains a wildcard character. In the daemon that delete is best
+  effort and never fails a cycle. The same handling applies to
+  `swm sync push --delete`.
+- **Upgrading swm left the old watcher running.** Starting auto-sync only
+  started a watcher when none was running, so a pod kept the watcher an
+  older swm had started. It is now replaced (pending entries carried over)
+  whenever its events or format are out of date, and readers still accept
+  the bare-path lines older watchers wrote.
+
 ## [0.3.4] - 2026-09-27
 
 ### Fixed

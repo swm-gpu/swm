@@ -7,6 +7,7 @@ against a process that ignores SIGTERM.
 
 from __future__ import annotations
 
+import base64
 import os
 import re
 import signal
@@ -21,8 +22,10 @@ from swm.sync.paths import (
     AUTO_ENV,
     AUTO_PID,
     TRANSFER_LOCK,
+    WATCH_EXCLUDES,
     WATCH_LOG,
     WATCHER_EXCLUDES_FILE,
+    WATCHER_SPEC_FILE,
 )
 
 
@@ -141,13 +144,74 @@ def test_start_autosync_stale_script_uses_draining_stop(monkeypatch):
     calls: list[tuple] = []
     monkeypatch.setattr(autosync, "stop_autosync", lambda s, **kw: calls.append(kw))
     monkeypatch.setattr(autosync, "_pull_stamp_exists", lambda s: True)
-    monkeypatch.setattr(autosync, "is_watcher_alive", lambda s: True)
+    monkeypatch.setattr(autosync, "start_watcher", lambda s, src: True)
     monkeypatch.setattr(autosync, "_write_env_file", lambda s, slug: None)
     monkeypatch.setattr(autosync.time, "sleep", lambda s: None)
 
     autosync.start_autosync(sess, "b2", "bucket", "ws")
 
     assert calls == [{}]
+
+
+def test_start_autosync_refreshes_a_watcher_an_older_swm_started(monkeypatch):
+    """Redeploying the daemon must also replace a running watcher whose event
+    list is stale; start_watcher is a no-op when the watcher is current."""
+    sess = FakeSession()
+    started: list[str] = []
+    monkeypatch.setattr(autosync, "_pull_stamp_exists", lambda s: True)
+    monkeypatch.setattr(autosync, "start_watcher", lambda s, src: started.append(src) or True)
+    monkeypatch.setattr(autosync, "_write_env_file", lambda s, slug: None)
+    monkeypatch.setattr(autosync.time, "sleep", lambda s: None)
+
+    autosync.start_autosync(sess, "b2", "bucket", "ws")
+
+    assert started == ["/workspace"]
+
+
+def _watcher_script(sess: FakeSession) -> str:
+    cmd = next(c for c in sess.commands if "base64 -d > /tmp/.swm_start_watcher.sh" in c)
+    return base64.b64decode(re.search(r"echo '([A-Za-z0-9+/=]+)'", cmd).group(1)).decode()
+
+
+def test_watcher_logs_event_names_including_a_renames_old_name(monkeypatch):
+    sess = FakeSession({"command -v inotifywait": "yes"})
+    monkeypatch.setattr(watcher.time, "sleep", lambda s: None)
+
+    watcher.start_watcher(sess, "/workspace")
+
+    script = _watcher_script(sess)
+    assert "-e modify,create,delete,moved_to,moved_from " in script
+    assert "--format '%e %w%f' " in script
+    assert WATCHER_SPEC_FILE in script
+
+
+def test_start_watcher_replaces_a_watcher_with_an_older_event_list(monkeypatch):
+    """Same excludes, but a watcher started by swm <= 0.3.4 logs bare paths and
+    no moved_from; it is restarted with its pending entries carried over."""
+    sess = FakeSession({
+        "kill -0": "alive",
+        WATCHER_EXCLUDES_FILE: "|".join(WATCH_EXCLUDES),
+        "command -v inotifywait": "yes",
+    })
+    monkeypatch.setattr(watcher.time, "sleep", lambda s: None)
+
+    assert watcher.start_watcher(sess, "/workspace") is True
+
+    cmds = sess.commands
+    assert _index(cmds, f"cp -f {WATCH_LOG} ") < _index(cmds, "bash /tmp/.swm_start_watcher.sh")
+
+
+def test_start_watcher_leaves_a_current_watcher_running(monkeypatch):
+    sess = FakeSession({
+        "kill -0": "alive",
+        WATCHER_EXCLUDES_FILE: "|".join(WATCH_EXCLUDES),
+        WATCHER_SPEC_FILE: watcher.WATCH_SPEC,
+    })
+    monkeypatch.setattr(watcher.time, "sleep", lambda s: None)
+
+    assert watcher.start_watcher(sess, "/workspace") is True
+
+    assert not any("start_watcher.sh" in c for c in sess.commands)
 
 
 def test_start_watcher_restart_carries_pending_entries(monkeypatch):

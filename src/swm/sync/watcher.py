@@ -12,12 +12,20 @@ from swm.sync.paths import (
     WATCH_PID,
     WATCHER_EXCLUDES_FILE,
     WATCHER_SCRIPT,
+    WATCHER_SPEC_FILE,
 )
 
 # Pending change-log entries are parked here across a watcher restart: the
 # start script truncates WATCH_LOG, and losing in-flight paths/deletions on
 # every swm upgrade that changes WATCH_EXCLUDES is not acceptable.
 _WATCH_CARRY = "/tmp/.swm_watch_carry"
+
+# Each log line is "EVENTS /path" (e.g. "MOVED_FROM,ISDIR /workspace/out"):
+# a rename's old name and a moved directory are only recognisable by their
+# events. Readers still accept the bare "/path" lines older watchers wrote.
+_WATCH_EVENTS = "modify,create,delete,moved_to,moved_from"
+_WATCH_FORMAT = "%e %w%f"
+WATCH_SPEC = f"{_WATCH_EVENTS} {_WATCH_FORMAT}"
 
 
 def _current_excludes_regex() -> str:
@@ -46,6 +54,12 @@ def _excludes_fingerprint_matches(session: RemoteSession) -> bool:
     return out.rstrip("\n") == desired
 
 
+def _spec_matches(session: RemoteSession) -> bool:
+    """True iff the running watcher logs the current events and format."""
+    _, out, _ = session.exec(f"cat {WATCHER_SPEC_FILE} 2>/dev/null", stream=False)
+    return out.rstrip("\n") == WATCH_SPEC
+
+
 def start_watcher(session: RemoteSession, src: str = "/workspace") -> bool:
     """Start an inotifywait daemon to track filesystem changes.
 
@@ -57,7 +71,8 @@ def start_watcher(session: RemoteSession, src: str = "/workspace") -> bool:
 
     Returns True if the watcher is running with the current excludes.
     """
-    if _pid_alive(session) and _excludes_fingerprint_matches(session):
+    if (_pid_alive(session) and _excludes_fingerprint_matches(session)
+            and _spec_matches(session)):
         return True
 
     restarting = _pid_alive(session)
@@ -77,15 +92,17 @@ def start_watcher(session: RemoteSession, src: str = "/workspace") -> bool:
 
     exclude_re = _current_excludes_regex()
     excludes_b64 = base64.b64encode(exclude_re.encode()).decode()
+    spec_b64 = base64.b64encode(WATCH_SPEC.encode()).decode()
     script_body = (
         "#!/bin/bash\n"
         f"rm -f {WATCH_LOG}\n"
         f": > {WATCH_LOG}\n"
         f"echo '{excludes_b64}' | base64 -d > {WATCHER_EXCLUDES_FILE}\n"
+        f"echo '{spec_b64}' | base64 -d > {WATCHER_SPEC_FILE}\n"
         f"nohup inotifywait -m -r "
         f"--exclude '({exclude_re})' "
-        f"-e modify,create,delete,moved_to "
-        f"--format '%w%f' "
+        f"-e {_WATCH_EVENTS} "
+        f"--format '{_WATCH_FORMAT}' "
         f"'{src}' >> {WATCH_LOG} 2>/dev/null &\n"
         f"echo $! > {WATCH_PID}\n"
     )
@@ -114,7 +131,7 @@ def stop_watcher(session: RemoteSession) -> None:
     session.exec(
         f"test -f {WATCH_PID} && kill $(cat {WATCH_PID}) 2>/dev/null; "
         "pkill -f 'inotifywait -m -r --exclude' 2>/dev/null || true; "
-        f"rm -f {WATCH_PID} {WATCHER_EXCLUDES_FILE}",
+        f"rm -f {WATCH_PID} {WATCHER_EXCLUDES_FILE} {WATCHER_SPEC_FILE}",
         stream=False,
     )
 
