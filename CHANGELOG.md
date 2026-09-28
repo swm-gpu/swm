@@ -4,6 +4,20 @@ All notable changes to swm are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.10] - 2026-09-28
+
+### Fixed
+- **ComfyUI and SwarmUI move to the PyTorch build each pod calls for.**
+  Since 0.3.8 their PyTorch step reinstalled only when torch could not run
+  a CUDA op, so a build carried over from an older GPU stayed on newer
+  ones: the Qwen Image 2.1 workspace kept the cu126 build a V100 needs. On
+  an RTX A5000 with a 580 driver that build still ran, and ComfyUI 0.37
+  started with its comfy-kitchen CUDA kernels disabled ("You need pytorch
+  with cu130 or higher"). The step now also reinstalls when the installed
+  build's CUDA version differs from the one this pod's driver and GPU call
+  for (the same selection as a fresh install); ROCm builds are left alone.
+  vLLM, Axolotl, and LLM Studio pin torch exactly and keep a working build.
+
 ## [0.3.9] - 2026-09-28
 
 ### Fixed
