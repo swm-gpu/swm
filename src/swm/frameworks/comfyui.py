@@ -6,7 +6,7 @@ from swm.bootstrap import (
     WORKSPACE_UV,
 )
 from swm.frameworks import Framework, Step, nvidia_ld_exports
-from swm.frameworks._gpu import torch_check, torch_install
+from swm.frameworks._gpu import torch_install, torch_matches
 from swm.frameworks._model_store import (
     DIFFUSION_BUCKETS,
     DIFFUSION_CONSUMES,
@@ -24,8 +24,8 @@ _PIP_CACHE = "/workspace/.cache/pip"
 # 10-100x faster and avoids any get-pip bootstrap dance.
 _UV_PIP = f"{WORKSPACE_UV} pip install --python {_PYTHON}"
 
-_TORCH_CHECK = torch_check(_PYTHON)
-_TORCH_INSTALL = torch_install(_PYTHON, _UV_PIP, keep_version=False)
+_TORCH_CHECK = torch_matches(_PYTHON)
+_TORCH_INSTALL = torch_install(_PYTHON, _UV_PIP, keep_version=False, best_build=True)
 
 FRAMEWORK = Framework(
     name="comfyui",

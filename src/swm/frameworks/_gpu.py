@@ -87,6 +87,16 @@ def cuda_index(python: str) -> str:
     return f'$({python} -c \'{CUDA_INDEX_SNIPPET}\' 2>/dev/null || echo cu128)'
 
 
+# The index tag of the CUDA build torch was compiled against ("cu126"), or
+# "rocm"; prints nothing when torch cannot run a CUDA op here.
+_BUILD_SNIPPET = """\
+import torch
+torch.zeros(1, device="cuda").add(1)
+torch.cuda.synchronize()
+print("rocm" if getattr(torch.version, "hip", None) else "cu" + "".join((torch.version.cuda or "").split(".")[:2]))
+"""
+
+
 def torch_check(python: str) -> str:
     """Shell that exits 0 only when torch can run a CUDA op on this GPU."""
     return (
@@ -96,11 +106,28 @@ def torch_check(python: str) -> str:
     )
 
 
+def torch_matches(python: str) -> str:
+    """Shell that exits 0 only when torch runs a CUDA op here *and* is the
+    build this pod's driver and GPU call for.
+
+    Working is not enough for ComfyUI: its comfy-kitchen kernels need the
+    CUDA 13 build on every GPU that can run one. A cu126 build carried over
+    from a V100 still passes torch_check on an A5000 with a 580 driver, and
+    ComfyUI then starts with those kernels disabled.
+    """
+    return (
+        f"{{ B=$({python} -c '{_BUILD_SNIPPET}' 2>/dev/null); "
+        'case "$B" in rocm) ;; "") false ;; '
+        f'*) [ "$B" = "{cuda_index(python)}" ] ;; esac; }}'
+    )
+
+
 def torch_install(python: str, uv_pip: str, *, keep_version: bool,
-                  force: bool = False) -> str:
+                  force: bool = False, best_build: bool = False) -> str:
     """Shell that makes the torch stack usable on this pod's GPU.
 
-    Unless *force*, does nothing when the CUDA op already works. Otherwise
+    Unless *force*, does nothing when the CUDA op already works — or, with
+    *best_build*, when torch is also the build this pod calls for. Otherwise
     reinstalls the installed torch/torchvision/torchaudio versions as the
     build for this pod's driver and GPU. When those versions have no such
     build, *keep_version* frameworks (vLLM, Axolotl, LLM Studio pin torch
@@ -117,7 +144,7 @@ def torch_install(python: str, uv_pip: str, *, keep_version: bool,
         f"{uv_pip} --reinstall --index-url {PYTORCH_INDEX}/$IDX "
         "torch torchvision torchaudio"
     )
-    guard = "false" if force else check
+    guard = "false" if force else torch_matches(python) if best_build else check
     return (
         f"if {guard}; then echo '  PyTorch can use this GPU'; else "
         f"IDX={cuda_index(python)}; "

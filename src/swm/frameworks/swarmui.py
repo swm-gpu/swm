@@ -8,7 +8,7 @@ and the same GPU handling as the standalone ComfyUI framework.
 
 from swm.bootstrap import PYTHON_DEFAULT_MINOR, UV_ENV_EXPORTS, WORKSPACE_UV
 from swm.frameworks import Framework, Step, nvidia_ld_exports
-from swm.frameworks._gpu import torch_check, torch_install
+from swm.frameworks._gpu import torch_install, torch_matches
 from swm.frameworks._model_store import (
     DIFFUSION_BUCKETS,
     DIFFUSION_CONSUMES,
@@ -23,8 +23,8 @@ _BUNDLED_COMFY = "/workspace/SwarmUI/dlbackend/ComfyUI"
 _BACKEND_VENV = f"{_BUNDLED_COMFY}/venv"
 _BACKEND_PY = f"{_BACKEND_VENV}/bin/python"
 _UV_PIP = f"{WORKSPACE_UV} pip install --python {_BACKEND_PY}"
-_TORCH_CHECK = torch_check(_BACKEND_PY)
-_TORCH_INSTALL = torch_install(_BACKEND_PY, _UV_PIP, keep_version=False)
+_TORCH_CHECK = torch_matches(_BACKEND_PY)
+_TORCH_INSTALL = torch_install(_BACKEND_PY, _UV_PIP, keep_version=False, best_build=True)
 
 _LINK_SWARMUI = link_store_script(f"{_BUNDLED_COMFY}/models", DIFFUSION_BUCKETS)
 _ENV = (
