@@ -4,6 +4,26 @@ All notable changes to swm are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.11] - 2026-10-05
+
+### Fixed
+- **A retried restore could not take over from the attempt it replaced.**
+  Before a transfer, swm starts a lock holder on the pod that lives for up
+  to 180 minutes unless the session that started it releases it, and a
+  session that dies mid-restore never does. In production a worker lost
+  its network during a 61 GB restore; the job moved to another worker,
+  whose pull failed at once with "A transfer is already running (PID
+  1575)". `bootstrap_workspace_on_pod` now takes `force` and hands it to
+  `workspace_pull`. A forced pull also stops an s5cmd still pulling the
+  same workspace into the same directory; s5cmd renames a download into
+  place only once it is complete, so stopping one leaves no truncated file.
+- **A pull whose connection dropped could block or double its own resume.**
+  `workspace_pull` took and released the lock around each attempt. When
+  the release could not reach the pod, the resume found the pull's own
+  holder and failed, and an attempt still running after the drop
+  downloaded the same files beside the resume. The pull now holds one lock
+  across its attempts and stops the earlier attempt before resuming.
+
 ## [0.3.10] - 2026-09-28
 
 ### Fixed
