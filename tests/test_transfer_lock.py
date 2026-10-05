@@ -310,3 +310,61 @@ def test_transfer_lock_releases_on_exception(session, lock):
     assert not lock.exists()
     time.sleep(0.3)
     assert not _alive(holder)
+
+
+# ── a pull taking over from a session that died ────────────────────
+
+
+def _sleeping_s5cmd(tmp_path: Path) -> Path:
+    """A long-running stand-in for an s5cmd a dead session left behind."""
+    fake = tmp_path / "leftover" / "s5cmd"
+    fake.parent.mkdir()
+    fake.write_text("#!/bin/bash\nsleep 30\n")
+    fake.chmod(0o755)
+    return fake
+
+
+def test_stop_pulls_kills_only_a_pull_of_the_same_workspace(session, procs, tmp_path):
+    from swm.sync import pull
+
+    fake = _sleeping_s5cmd(tmp_path)
+    same = procs(f"{fake} cp --no-clobber --show-progress s3://bucket/u1/ws/* /workspace/")
+    other = procs(f"{fake} cp --show-progress s3://bucket/u1/other/* /workspace/")
+    lookalike = procs("bash -c 'sleep 30; true # s3://bucket/u1/ws/* /workspace/'")
+
+    pull._stop_pulls(session, "s3://bucket/u1/ws/* /workspace/")
+    time.sleep(0.3)
+
+    assert not _alive(same)
+    assert _alive(other)
+    assert _alive(lookalike)
+
+
+def test_forced_pull_takes_over_from_a_dead_session(
+    session, lock, procs, tmp_path, pod_paths, s5cmd_shim, monkeypatch,
+):
+    """Production, Oct 5: a worker died mid-restore, and its retry failed on
+    "A transfer is already running" because the dead attempt's lock holder
+    outlived it. Its s5cmd may outlive it too."""
+    from swm.sync import pull
+
+    monkeypatch.setattr(pull, "PUSH_STAMP", pod_paths["PUSH_STAMP"])
+    monkeypatch.setattr(pull, "WATCH_LOG", pod_paths["WATCH_LOG"])
+    monkeypatch.setattr(pull, "_s3_env", lambda slug: "SWM_TEST_ENV=1")
+    monkeypatch.setattr(pull, "start_watcher", lambda session, dest: False)
+    dest = tmp_path / "dest"
+    holder = procs(_manual_holder_cmd())
+    lock.write_text(f"{holder}\n")
+    leftover = procs(f"{_sleeping_s5cmd(tmp_path)} cp --show-progress s3://bucket/ws/* {dest}/")
+
+    with pytest.raises(RuntimeError, match="already running"):
+        pull.workspace_pull(session, "b2", "bucket", "ws", dest=str(dest))
+    assert _alive(holder) and _alive(leftover)
+
+    pull.workspace_pull(session, "b2", "bucket", "ws", dest=str(dest), force=True)
+    time.sleep(0.3)
+
+    assert not _alive(holder)
+    assert not _alive(leftover)
+    assert s5cmd_shim.calls == [f"cp --show-progress s3://bucket/ws/* {dest}/"]
+    assert not lock.exists()

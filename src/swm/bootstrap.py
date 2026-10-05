@@ -659,11 +659,17 @@ def bootstrap_workspace_on_pod(
     extra_excludes: list[str] | None = None,
     autosync_interval: int = 60,
     console_obj: Console | None = None,
+    force: bool = False,
 ) -> list[tuple[str, str]]:
     """Configure storage, pull (or watcher-init), and start auto-sync on a pod.
 
     Returns a list of ``(label, recovery_command)`` tuples for any sub-step
     that failed. An empty list means full success.
+
+    *force* lets the pull take over from an earlier session that died
+    mid-restore (see :func:`workspace_pull`). Only a caller that knows
+    nothing else on the pod is transferring should set it, such as a retried
+    provisioning on the pod its first attempt created.
     """
     from swm.sync import start_watcher
     from swm.sync.autosync import AutosyncUnsafeError, start_autosync
@@ -738,7 +744,7 @@ def bootstrap_workspace_on_pod(
             else:
                 workspace_pull(
                     session, storage_slug, bucket, workspace,
-                    extra_excludes=extra_excludes,
+                    extra_excludes=extra_excludes, force=force,
                 )
             pull_ok = True
         except Exception as exc:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import shlex
 
-from swm.bootstrap import _s3_env, _s5cmd_transfer, console
+from swm.bootstrap import _s3_env, _s5cmd_transfer, console, transfer_lock
 from swm.remote.ssh import RemoteSession, _sh_quote
 from swm.sync._common import ensure_pigz, ensure_zstd, restore_permissions
 from swm.sync.paths import PUSH_STAMP, TAR_PATH, WATCH_LOG
@@ -69,6 +69,24 @@ def _repair_framework_links(session: RemoteSession, dest: str) -> None:
         console.print(f"  [dim]Framework repair checked {repaired} install(s)[/dim]")
 
 
+def _stop_pulls(session: RemoteSession, same_pull: str) -> None:
+    """Kill any s5cmd still pulling this workspace into the same place.
+
+    One is left running when the session that started it died, or when its
+    connection dropped before the pod noticed. Beside the replacement it
+    would download the same files again. Killing one mid-file is safe:
+    s5cmd writes each download to a temp file and renames it into place only
+    once complete, so no truncated file is left for a resume to keep.
+    """
+    session.exec(
+        "for p in $(pgrep -x s5cmd 2>/dev/null); do "
+        "case \"$(tr '\\0' ' ' < /proc/$p/cmdline 2>/dev/null)\" in "
+        f"*{shlex.quote(same_pull)}*) kill -9 \"$p\" 2>/dev/null;; esac; "
+        "done; true",
+        stream=False,
+    )
+
+
 def workspace_pull(
     session: RemoteSession,
     storage_slug: str,
@@ -83,6 +101,9 @@ def workspace_pull(
     On a fresh pod (empty *dest*), downloads everything directly — no
     per-file existence checks.  On a pod with existing data, uses
     ``--no-clobber`` to skip files that already exist.
+
+    *force* takes the transfer lock from a session that died holding it, and
+    stops the pull it left running, instead of failing.
     """
     env = _s3_env(storage_slug)
     excludes = ""
@@ -101,27 +122,37 @@ def workspace_pull(
         noclobber = " --no-clobber"
 
     source = f"'s3://{bucket}/{workspace}/*' '{dest}/'"
-    rc = _s5cmd_transfer(
-        session,
-        f"Pulling {workspace}/ → {dest}/",
-        f"{env} s5cmd cp{noclobber} --show-progress{excludes} {source}",
-        force=force,
-    )
-    # A transfer that did not finish is resumed, never taken as a restore.
-    # Into a fresh pod, --if-size-differ also re-fetches a file cut off
-    # mid-download; into existing data, --no-clobber keeps local edits.
-    resume = " --if-size-differ" if is_fresh else " --no-clobber"
-    for attempt in range(1, _PULL_RESUMES + 1):
-        if rc == 0:
-            break
-        console.print(f"  [yellow]Transfer incomplete (exit {rc}); resuming "
-                      f"({attempt}/{_PULL_RESUMES})[/yellow]")
+    # How a pull of this workspace into dest reads in the process table.
+    same_pull = f"s3://{bucket}/{workspace}/* {dest}/"
+    # One lock across the pull and its resumes. Released in between, a holder
+    # that could not be torn down over a dropped connection blocked the
+    # pull's own resume.
+    with transfer_lock(session, force=force):
+        if force:
+            _stop_pulls(session, same_pull)
         rc = _s5cmd_transfer(
             session,
-            f"Resuming {workspace}/ → {dest}/",
-            f"{env} s5cmd cp{resume} --show-progress{excludes} {source}",
+            f"Pulling {workspace}/ → {dest}/",
+            f"{env} s5cmd cp{noclobber} --show-progress{excludes} {source}",
             force=force,
         )
+        # A transfer that did not finish is resumed, never taken as a restore.
+        # Into a fresh pod, --if-size-differ also re-fetches a file cut off
+        # mid-download; into existing data, --no-clobber keeps local edits.
+        resume = " --if-size-differ" if is_fresh else " --no-clobber"
+        for attempt in range(1, _PULL_RESUMES + 1):
+            if rc == 0:
+                break
+            console.print(f"  [yellow]Transfer incomplete (exit {rc}); resuming "
+                          f"({attempt}/{_PULL_RESUMES})[/yellow]")
+            # A dropped connection can leave the last attempt still running.
+            _stop_pulls(session, same_pull)
+            rc = _s5cmd_transfer(
+                session,
+                f"Resuming {workspace}/ → {dest}/",
+                f"{env} s5cmd cp{resume} --show-progress{excludes} {source}",
+                force=force,
+            )
     if rc != 0:
         raise RuntimeError(
             f"Workspace pull did not complete (s5cmd exit {rc} after "
