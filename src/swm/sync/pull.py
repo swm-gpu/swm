@@ -178,9 +178,14 @@ TAR_SUFFIXES: dict[str, str] = {".tar.zst": "zstd", ".tar.gz": "gzip"}
 # constraint, so a slow part costs only its own time.
 _CP_CONCURRENCY = 64
 _CP_PART_MIB = 100
-# GNU tar emits one heartbeat line per 1 GiB of archive read (102400 records
-# of 10 KiB) so a long extract is visibly alive without a progress bar.
-_TAR_CHECKPOINT = "--checkpoint=102400 --checkpoint-action=echo"
+# tar writes extracted data one record per write(), so the record size is the
+# extract's write size. The default 10 KiB record costs one round-trip per
+# 10 KiB on a FUSE-mounted volume (RunPod's /workspace is MooseFS over FUSE):
+# a 61 GB restore wrote at 93 MB/s where the same volume took 371 MB/s with
+# 1 MiB records and 500 MB/s from dd; 4 MiB records gained nothing more. The
+# checkpoint counts records, so 1024 of 1 MiB keeps GNU tar's heartbeat at one
+# line per GiB. Both flags ride the GNU guard: busybox tar knows neither.
+_TAR_GNU_FLAGS = "-b 2048 --checkpoint=1024 --checkpoint-action=echo"
 
 
 def tar_staging_path(codec: str) -> str:
@@ -232,13 +237,13 @@ def tar_extract_pipeline(decompressor: str, staged: str, dest: str) -> str:
     archive the decompressor happens to tolerate could report success, and
     the statuses are echoed so a failure names its stage.
     """
-    checkpoint = (
-        "CKPT=''; tar --version 2>/dev/null | grep -q GNU && "
-        f"CKPT='{_TAR_CHECKPOINT}'; "
+    gnu_flags = (
+        "TARF=''; tar --version 2>/dev/null | grep -q GNU && "
+        f"TARF='{_TAR_GNU_FLAGS}'; "
     )
     return (
-        "set -o pipefail; " + checkpoint
-        + f"{decompressor} < '{staged}' | tar $CKPT -xf - -C '{dest}'; "
+        "set -o pipefail; " + gnu_flags
+        + f"{decompressor} < '{staged}' | tar $TARF -xf - -C '{dest}'; "
         'pcs=("${PIPESTATUS[@]}"); '
         'echo "extract stages: decompress=${pcs[0]:-1} extract=${pcs[1]:-1}"; '
         '[ "${pcs[0]:-1}" -eq 0 ] && [ "${pcs[1]:-1}" -eq 0 ]'
