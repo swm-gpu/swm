@@ -4,6 +4,20 @@ All notable changes to swm are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.12] - 2026-10-05
+
+### Fixed
+- **A tar restore wrote at 90 MB/s on a volume that could take 500.**
+  `tar_pull` extracted with tar's default 10 KiB record, and tar writes one
+  record per `write()`. On a FUSE-mounted volume (RunPod's `/workspace` is
+  MooseFS over FUSE) each write is a round-trip to the mount daemon, so a
+  61 GB restore spent 13 minutes extracting an archive that took 12 to
+  download; `dd` wrote 500 MB/s to the same volume. The extract now uses
+  1 MiB records (`-b 2048`): 371 MB/s on that volume in a side-by-side
+  test, with 4 MiB records gaining nothing more. The per-GiB heartbeat is
+  kept (`--checkpoint=1024`, since checkpoints count records) and both
+  flags stay behind the GNU tar probe, as busybox tar knows neither.
+
 ## [0.3.11] - 2026-10-05
 
 ### Fixed
