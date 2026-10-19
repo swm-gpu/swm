@@ -4,6 +4,20 @@ All notable changes to swm are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **A per-pod budget never warned.**
+  `swm costs budget set 20 --scope pod:abc123 --period total` creates a
+  budget, and `swm costs budget show` reports that budget's spend and its
+  share of the limit, but no warning was ever printed for it: `check_budget`
+  matched only the `global` and `provider:<slug>` scopes and had no way to
+  name a pod, so a pod-scoped budget could not be checked at all. It now
+  takes the pod it is about and warns on that pod's own budget, and the pod
+  id is accepted in either spelling — the bare id the sessions table stores
+  (`pod:abc123`) or the qualified id `swm pod list` prints
+  (`pod:runpod:abc123`).
+
 ## [0.3.12] - 2026-10-05
 
 ### Fixed

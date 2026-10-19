@@ -214,6 +214,21 @@ def delete_budget(scope: str, period: str) -> bool:
     return cur.rowcount > 0
 
 
+def pod_scope_id(scope: str) -> str | None:
+    """Return the pod id a ``pod:<id>`` scope refers to, or None.
+
+    Both spellings of the id are accepted: the bare provider id
+    (``pod:abc123``) that the sessions table stores, and the qualified id
+    the CLI prints (``pod:runpod:abc123``).
+    """
+    if not scope.startswith("pod:"):
+        return None
+    raw = scope.split(":", 1)[1]
+    if ":" in raw:
+        raw = raw.split(":", 1)[1]
+    return raw or None
+
+
 def spend_in_period(
     scope: str,
     period: str,
@@ -248,8 +263,9 @@ def spend_in_period(
         clauses.append("provider = ?")
         params.append(scope.split(":", 1)[1])
     elif scope.startswith("pod:"):
+        # An empty pod id matches no session at all, rather than every one.
         clauses.append("pod_id = ?")
-        params.append(scope.split(":", 1)[1])
+        params.append(pod_scope_id(scope) or "")
 
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
 
