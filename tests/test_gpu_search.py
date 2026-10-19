@@ -260,3 +260,93 @@ class TestCostTrackerRate:
             lambda self, q: {"gpuTypes": _RUNPOD_TYPES})
         # L40 has a $0.82 secure row and a $0.69 community row.
         assert tracker._lookup_rate("runpod", "NVIDIA L40", 1) == 0.69
+
+
+class TestBudgetScopes:
+    """Per-pod budgets are documented but were never warned on.
+
+    ``swm costs budget set 20 --scope pod:abc123 --period total`` creates a
+    budget that ``swm costs budget show`` reports as over the limit, yet
+    ``check_budget`` never warned about it: it matched only the ``global`` and
+    ``provider:<slug>`` scopes and had no way to name a pod.
+    """
+
+    @pytest.fixture
+    def costs_db(self, tmp_path, monkeypatch):
+        import swm.costs.db as db
+
+        monkeypatch.setattr(db, "DB_PATH", tmp_path / "costs.db")
+        monkeypatch.setattr(db, "_conn", None)
+        yield db
+        if db._conn is not None:
+            db._conn.close()
+        db._conn = None
+
+    def _finished_session(self, db, pod_id, provider, cost_per_hr, hours):
+        """Record a finished session worth ``cost_per_hr * hours``."""
+        from datetime import datetime, timedelta, timezone
+
+        db.insert_session(pod_id=pod_id, provider=provider,
+                          cost_per_hr=cost_per_hr)
+        started = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+        db.get_db().execute(
+            "UPDATE sessions SET started_at = ? WHERE pod_id = ?",
+            (started, pod_id),
+        )
+        db.get_db().commit()
+        db.end_session(pod_id, provider)
+
+    def test_pod_scoped_budget_warns(self, costs_db):
+        from swm.costs.budget import check_budget, set_budget
+
+        set_budget("pod:abc123", 20.0, "total")
+        self._finished_session(costs_db, "abc123", "runpod", 10.0, 3)
+
+        # $30 spent against a $20 pod budget.
+        warning = check_budget("runpod", pod_id="abc123")
+        assert warning is not None
+        assert "pod:abc123" in warning
+        assert "OVER BUDGET" in warning
+
+    def test_pod_scoped_budget_ignores_other_pods(self, costs_db):
+        from swm.costs.budget import check_budget, set_budget
+
+        set_budget("pod:abc123", 20.0, "total")
+        self._finished_session(costs_db, "abc123", "runpod", 10.0, 3)
+
+        # A different pod on the same provider must not inherit the warning.
+        assert check_budget("runpod", pod_id="other999") is None
+
+    def test_qualified_pod_scope_matches_the_pod(self, costs_db):
+        from swm.costs.budget import check_budget, set_budget
+
+        # `swm pod list` prints qualified ids, so that form has to work too.
+        set_budget("pod:runpod:abc123", 20.0, "total")
+        self._finished_session(costs_db, "abc123", "runpod", 10.0, 3)
+
+        warning = check_budget("runpod", pod_id="abc123")
+        assert warning is not None
+        assert "pod:runpod:abc123" in warning
+
+    def test_provider_scoped_budget_still_warns(self, costs_db):
+        from swm.costs.budget import check_budget, set_budget
+
+        set_budget("provider:runpod", 20.0, "total")
+        self._finished_session(costs_db, "abc123", "runpod", 10.0, 3)
+
+        warning = check_budget("runpod")
+        assert warning is not None
+        assert "provider:runpod" in warning
+
+    def test_pod_budget_show_and_warning_agree(self, costs_db):
+        from swm.costs.budget import budget_status, check_budget, set_budget
+
+        set_budget("pod:abc123", 20.0, "total")
+        self._finished_session(costs_db, "abc123", "runpod", 10.0, 3)
+
+        # `swm costs budget show` already reported the pod budget as over
+        # the limit; the warning has to say the same thing.
+        status = budget_status()
+        assert status[0]["scope"] == "pod:abc123"
+        assert status[0]["pct"] == 150.0
+        assert check_budget("runpod", pod_id="abc123") is not None

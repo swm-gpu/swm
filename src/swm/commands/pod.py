@@ -372,7 +372,7 @@ def create(
         from swm.costs.budget import check_budget
 
         record_start(inst, workspace=ws_name)
-        warning = check_budget(provider)
+        warning = check_budget(provider, inst.id)
         if warning:
             for line in warning.splitlines():
                 console.print(f"  [yellow]⚠ {line}[/yellow]")
@@ -573,7 +573,7 @@ def start(instance_id: str):
         from swm.costs.budget import check_budget
 
         record_start(inst)
-        warning = check_budget(provider.slug)
+        warning = check_budget(provider.slug, inst.id)
         if warning:
             for line in warning.splitlines():
                 console.print(f"  [yellow]⚠ {line}[/yellow]")
