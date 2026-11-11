@@ -214,19 +214,26 @@ def delete_budget(scope: str, period: str) -> bool:
     return cur.rowcount > 0
 
 
-def pod_scope_id(scope: str) -> str | None:
-    """Return the pod id a ``pod:<id>`` scope refers to, or None.
+def parse_pod_scope(scope: str) -> tuple[str | None, str] | None:
+    """Split a ``pod:`` scope into ``(provider, pod_id)``, or None.
 
-    Both spellings of the id are accepted: the bare provider id
-    (``pod:abc123``) that the sessions table stores, and the qualified id
-    the CLI prints (``pod:runpod:abc123``).
+    ``pod:abc123`` is the bare id the sessions table stores and matches that
+    id on any provider. ``pod:runpod:abc123`` uses the qualified id
+    ``swm pod list`` prints and matches only that provider's pod. The middle
+    token counts as a provider only when it is a known slug, so a misspelled
+    ``pod:vastia:999`` stays the literal id ``vastia:999`` and matches
+    nothing rather than another provider's pod ``999``.
     """
     if not scope.startswith("pod:"):
         return None
     raw = scope.split(":", 1)[1]
-    if ":" in raw:
-        raw = raw.split(":", 1)[1]
-    return raw or None
+    slug, sep, pod_id = raw.partition(":")
+    if sep:
+        from swm.providers import PROVIDER_SLUGS
+
+        if slug in PROVIDER_SLUGS:
+            return slug, pod_id
+    return None, raw
 
 
 def spend_in_period(
@@ -235,7 +242,8 @@ def spend_in_period(
 ) -> float:
     """Compute total estimated spend matching *scope* within *period*.
 
-    *scope* is ``global``, ``provider:<slug>``, or ``pod:<id>``.
+    *scope* is ``global``, ``provider:<slug>``, ``pod:<id>``, or
+    ``pod:<slug>:<id>``.
     *period* is ``daily``, ``weekly``, ``monthly``, or ``total``.
     Includes running sessions valued at rate × elapsed so far.
     """
@@ -262,10 +270,13 @@ def spend_in_period(
     if scope.startswith("provider:"):
         clauses.append("provider = ?")
         params.append(scope.split(":", 1)[1])
-    elif scope.startswith("pod:"):
-        # An empty pod id matches no session at all, rather than every one.
+    elif (pod := parse_pod_scope(scope)) is not None:
+        provider, pod_id = pod
         clauses.append("pod_id = ?")
-        params.append(pod_scope_id(scope) or "")
+        params.append(pod_id)
+        if provider:
+            clauses.append("provider = ?")
+            params.append(provider)
 
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
 

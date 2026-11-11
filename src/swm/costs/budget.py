@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from swm.costs.db import (
     get_budgets,
-    pod_scope_id,
+    parse_pod_scope,
     set_budget as _db_set_budget,
     spend_in_period,
 )
@@ -22,8 +22,11 @@ def _applies_to(scope: str, provider: str, pod_id: str | None) -> bool:
     """Whether *scope* is a budget that applies to this provider / pod."""
     if scope == "global" or scope == f"provider:{provider}":
         return True
-    scoped_pod = pod_scope_id(scope)
-    return bool(pod_id) and scoped_pod is not None and scoped_pod == pod_id
+    pod = parse_pod_scope(scope)
+    if not pod_id or pod is None:
+        return False
+    scoped_provider, scoped_pod = pod
+    return scoped_pod == pod_id and scoped_provider in (None, provider)
 
 
 def check_budget(provider: str, pod_id: str | None = None) -> str | None:

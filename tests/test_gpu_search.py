@@ -328,15 +328,45 @@ class TestBudgetScopes:
         assert warning is not None
         assert "pod:runpod:abc123" in warning
 
+    def test_qualified_pod_scope_ignores_other_providers(self, costs_db):
+        from swm.costs.budget import budget_status, check_budget, set_budget
+
+        # GCP and Azure ids are instance names, so two clouds can share one.
+        set_budget("pod:gcp:wan", 20.0, "total")
+        self._finished_session(costs_db, "wan", "gcp", 1.0, 3)
+        self._finished_session(costs_db, "wan", "azure", 10.0, 3)
+
+        assert check_budget("azure", pod_id="wan") is None
+        assert budget_status()[0]["spent"] == 3.0
+
+    def test_unknown_provider_in_pod_scope_matches_nothing(self, costs_db):
+        from swm.costs.budget import budget_status, check_budget, set_budget
+
+        set_budget("pod:vastia:999", 20.0, "total")
+        self._finished_session(costs_db, "999", "vastai", 10.0, 3)
+
+        assert check_budget("vastai", pod_id="999") is None
+        assert budget_status()[0]["spent"] == 0.0
+
     def test_provider_scoped_budget_still_warns(self, costs_db):
         from swm.costs.budget import check_budget, set_budget
 
         set_budget("provider:runpod", 20.0, "total")
         self._finished_session(costs_db, "abc123", "runpod", 10.0, 3)
 
-        warning = check_budget("runpod")
+        warning = check_budget("runpod", pod_id="abc123")
         assert warning is not None
         assert "provider:runpod" in warning
+
+    def test_global_budget_still_warns_with_a_pod(self, costs_db):
+        from swm.costs.budget import check_budget, set_budget
+
+        set_budget("global", 20.0, "total")
+        self._finished_session(costs_db, "abc123", "runpod", 10.0, 3)
+
+        warning = check_budget("runpod", pod_id="abc123")
+        assert warning is not None
+        assert "global" in warning
 
     def test_pod_budget_show_and_warning_agree(self, costs_db):
         from swm.costs.budget import budget_status, check_budget, set_budget
