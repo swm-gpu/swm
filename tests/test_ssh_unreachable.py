@@ -205,7 +205,7 @@ def _create(monkeypatch, wait):
 
     # The cost database path is fixed at import, outside the isolated config.
     monkeypatch.setattr(tracker, "record_start", lambda *_a, **_k: None)
-    monkeypatch.setattr(budget, "check_budget", lambda _slug: None)
+    monkeypatch.setattr(budget, "check_budget", lambda *_a, **_k: None)
 
     pending = RunPodProvider()._to_instance(_runpod_pod(runtime=None))
 
@@ -238,6 +238,7 @@ def test_pod_create_exits_zero_when_ssh_is_ready(monkeypatch):
     result = _create(monkeypatch, lambda _provider, _iid: ready)
     assert result.exit_code == 0, result.output
     assert "Pod ready" in result.output
+    assert "Cost tracking" not in result.output
 
 
 def test_pod_status_shows_the_provider_detail(monkeypatch):
