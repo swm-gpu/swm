@@ -3,7 +3,7 @@ Thanks for the PR. A few asks to keep review fast:
 
   - Keep the change focused. One feature, fix, or cleanup per PR.
   - Reference the issue or discussion this addresses, if any.
-  - Fill in the testing notes below; we don't have an automated suite yet.
+  - Fill in the testing notes below; there's no CI on pull requests yet.
 
 See CONTRIBUTING.md for scope and code style.
 -->
@@ -21,10 +21,11 @@ Closes #
 ## Testing
 
 <!--
-Provider drivers and lifecycle changes can't be unit-tested today. Please
-include the manual repro you ran.
+Run `HOME=$(mktemp -d) pytest -q` and paste the summary line. Provider
+drivers and lifecycle changes also need the real run you did.
 -->
 
+- `pytest` result:
 - Commands run:
   ```
   $ swm ...

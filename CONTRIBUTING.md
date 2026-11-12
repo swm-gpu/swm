@@ -9,12 +9,12 @@ clear scope, and provider behavior that matches what each cloud actually does.
 We say **yes** to:
 
 - Bug fixes with a clear reproduction (especially provider-specific quirks).
-- New provider drivers under `src/swm/providers/` that follow the existing
-  interface (search → create → inspect → destroy → cost).
+- New provider drivers under `src/swm/providers/` that implement the
+  `CloudProvider` interface (see "Adding a new provider" below).
 - New framework definitions under `src/swm/frameworks/` (one file per
   framework, declarative `Step` lists).
 - Documentation, examples, and clearer error messages.
-- Tests once we have a test harness (see "Testing" below).
+- Tests for new or changed behavior (see "Testing" below).
 
 We say **no** (or "not yet") to:
 
@@ -32,7 +32,7 @@ If you're not sure, open a [Discussion][discussions] before writing code.
 git clone https://github.com/swm-gpu/swm.git
 cd swm
 python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev,all]"
+pip install -e ".[all]" pytest
 swm --version
 ```
 
@@ -45,9 +45,10 @@ the release CI runner.
 # install your editable copy into a clean shell
 pip install -e .
 
-# point at a scratch config so you don't touch your real one
-export SWM_CONFIG_HOME=$(mktemp -d)
-swm config init
+# config and the cost database live under ~/.config/swm, so a throwaway
+# HOME keeps your real ones untouched
+export HOME=$(mktemp -d)
+swm config path
 swm gpus -g a100 --max-price 2
 ```
 
@@ -61,8 +62,8 @@ single provider is enough (RunPod and Vast.ai have the cheapest test pods).
 - Type hints on all public functions. `from __future__ import annotations` at
   the top of every module.
 - `rich` for any user-facing output. No bare `print`.
-- Provider drivers must raise `swm.errors.ProviderError` (or a subclass), never
-  leak raw HTTP exceptions to the user.
+- Provider drivers raise `RuntimeError` with a message the user can act on,
+  never a raw HTTP exception. CLI commands raise `click.ClickException`.
 - One blank line between logical blocks. No trailing whitespace.
 
 There is no formatter pinned yet. `ruff format` produces output close to what
@@ -70,15 +71,23 @@ the codebase currently looks like; we'll commit a config in a follow-up.
 
 ## Testing
 
-swm does not have an automated test suite yet. Until it does, contributions
-should include in the PR description:
+The test suite lives in `tests/` and runs with pytest. Use a throwaway `HOME`
+so the tests never read your real config or credentials:
+
+```bash
+HOME=$(mktemp -d) pytest -q
+```
+
+Tests never call a real provider. Provider tests stub the HTTP payloads; see
+`tests/test_gpu_search.py` for the pattern. Add or update tests for the
+behavior you change.
+
+Provider drivers and lifecycle changes also need a real run, because stubbed
+payloads can't prove a pod comes up. Include in the PR description:
 
 1. The commands you ran (`swm gpus`, `swm pod create ...`, etc.).
 2. The provider(s) you tested against.
 3. Expected vs. observed output, or a screenshot for visual changes.
-
-This is temporary. A `tests/` directory with pytest + recorded HTTP fixtures
-is on the roadmap.
 
 ## Branch and PR workflow
 
@@ -90,32 +99,46 @@ is on the roadmap.
    `#N` in the body when relevant.
 5. Open the PR against `main`. Fill in the PR template. A maintainer will
    review within a few days.
-6. CI must be green before merge. Maintainers may push small style fixups
-   directly to your branch rather than block on round-trips.
+6. There is no CI on pull requests yet. Run the test suite locally and include
+   the result in the PR. Maintainers may push small fixups directly to your
+   branch rather than block on round-trips.
 
 ## Adding a new provider
 
-A provider driver is a single file at `src/swm/providers/<name>.py` exporting
-a `Provider` subclass. Look at `runpod.py` or `vastai.py` as references:
-they're the most complete and battle-tested. The interface is:
+A provider driver is a single file at `src/swm/providers/<name>.py` with a
+subclass of `CloudProvider` from `src/swm/providers/base.py`. Look at
+`runpod.py` or `vastai.py` as references: they're the most complete and
+battle-tested. The required members are:
 
-- `search(filters)` → list of available instance offers
-- `create(offer, ...)` → spin up a pod, return its qualified ID
-- `inspect(pod_id)` → live state (running / starting / stopped, cost so far)
-- `destroy(pod_id)` → tear it down idempotently
-- `cost(pod_id)` → best-effort spend estimate
+- `name`, `slug`: display name and the short id used in `slug:id` pod ids
+- `is_configured()`: whether the user has credentials set
+- `list_gpus(gpu_count=None)`: offers as `GpuInfo`, one row per real offer,
+  with the hourly price for the whole configuration
+- `list_instances()`: the user's instances as `Instance`
+- `create_instance(config)`: start an instance from a `CreateConfig`
+- `start_instance(id)`, `stop_instance(id)`: resume or pause; raise
+  `RuntimeError` with a clear message if the provider can't
+- `terminate_instance(id)`: destroy it, safely repeatable
 
-Register the new provider in `src/swm/providers/__init__.py::_PROVIDERS`. Add
-its slug to `src/swm/commands/_helpers.py::_PROVIDER_PREFIXES` so qualified
-IDs route correctly.
+Search filters are applied locally by default. To push them into the
+provider's API, override `_search_gpus` and list the fields it enforces in
+`native_search_fields`. A filter that is in neither `native_search_fields`
+nor `local_search_fields` is refused with `UnsupportedSearchFilters`, so drop
+any field the provider can't honor (for example region, if offers carry no
+region) instead of letting it silently return nothing.
+
+Register the class in `ALL_PROVIDERS` in `src/swm/providers/__init__.py`, and
+add its slug to `_PROVIDER_PREFIXES` in `src/swm/commands/_helpers.py` so
+qualified ids route correctly. Add tests with recorded API payloads, and
+include a real end-to-end run in the PR (see "Testing").
 
 ## Adding a new framework
 
 A framework definition is a single file at `src/swm/frameworks/<name>.py`
-exporting a `Framework` instance. See `comfyui.py` and `vllm_server.py` for
-the canonical patterns. Most fields are declarative `Step` lists (install,
-post_install, pre_start). Register in
-`src/swm/frameworks/__init__.py::FRAMEWORKS`.
+exporting a `Framework` instance named `FRAMEWORK`. See `comfyui.py` and
+`vllm_server.py` for the canonical patterns. Most fields are declarative
+`Step` lists (install, post_install, pre_start). Register the module name in
+`_FRAMEWORK_MODULES` in `src/swm/frameworks/__init__.py`.
 
 ## Code of conduct
 
