@@ -861,9 +861,17 @@ def _pull_url(sess, resolved, filename_override: str | None):
 
 
 def _disk_usage(sess, path: str) -> int:
-    """Return on-disk size of *path* in bytes (0 if missing)."""
+    """Return on-disk size of *path* in bytes (0 if missing).
+
+    ``-L`` dereferences symlinks inside HF repo cache directories
+    (``snapshots/<rev>/*`` points into ``../../blobs/`` and, on
+    ``huggingface_hub >= 1.x``, into the shared ``../../../blobs/<xx>/<sha256>``
+    pool outside the repo dir). GNU ``du`` still deduplicates inodes within a
+    single walk, so files under ``blobs/`` inside the repo dir are not counted
+    twice.
+    """
     _, out, _ = sess.exec(
-        f"du -sb {shlex.quote(path)} 2>/dev/null | cut -f1 || echo 0",
+        f"du -sbL {shlex.quote(path)} 2>/dev/null | cut -f1 || echo 0",
         stream=False,
     )
     try:

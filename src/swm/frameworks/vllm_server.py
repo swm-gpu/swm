@@ -57,8 +57,14 @@ _ENV = (
     f"{UV_ENV_EXPORTS} && "
     f"export PIP_CACHE_DIR={_PIP_CACHE} "
     f"HF_HOME={_HF_CACHE} "
-    f"VLLM_WORKER_MULTIPROC_METHOD=spawn && "
+    f"VLLM_WORKER_MULTIPROC_METHOD=spawn "
+    'VLLM_USE_FLASHINFER_SAMPLER="${VLLM_USE_FLASHINFER_SAMPLER:-0}" && '
     f"{nvidia_ld_exports(_VENV)}"
+)
+
+_LAUNCHER_CHECK = (
+    f'[ -x {_LAUNCHER} ] && grep -q -- \'\\"$@\\"\' {_LAUNCHER} '
+    f'&& grep -q "VLLM_USE_FLASHINFER_SAMPLER" {_LAUNCHER}'
 )
 
 _WRITE_LAUNCHER = (
@@ -70,12 +76,18 @@ _WRITE_LAUNCHER = (
     'echo "Serving $MODEL on $TP GPU(s)"\n'
     f"export HF_HOME={_HF_CACHE}\n"
     f"export VLLM_WORKER_MULTIPROC_METHOD=spawn\n"
+    # FlashInfer JIT-compiles its sampler with the system nvcc, which on
+    # images shipping CUDA 12.1 fails with `Unknown option '--compress-mode=size'`.
+    # Defaulting to the PyTorch sampler avoids the crash while still allowing
+    # an explicit override in the environment.
+    'export VLLM_USE_FLASHINFER_SAMPLER="${VLLM_USE_FLASHINFER_SAMPLER:-0}"\n'
     f'exec {_VENV}/bin/vllm serve "$MODEL" \\\n'
     f"    --host 0.0.0.0 --port 8000 \\\n"
     '    --tensor-parallel-size "$TP" \\\n'
     f"    --enable-auto-tool-choice \\\n"
     f"    --tool-call-parser hermes \\\n"
-    f"    --max-model-len 8192\n"
+    f"    --max-model-len 8192 \\\n"
+    '    "$@"\n'
     f"SWM_EOF\n"
     f"chmod +x {_LAUNCHER}"
 )
@@ -155,7 +167,7 @@ FRAMEWORK = Framework(
         Step(
             label="Creating launcher script",
             command=_WRITE_LAUNCHER,
-            check=f"[ -x {_LAUNCHER} ]",
+            check=_LAUNCHER_CHECK,
         ),
     ],
     post_install=[
@@ -205,7 +217,7 @@ FRAMEWORK = Framework(
         Step(
             label="Ensuring launcher script exists",
             command=_WRITE_LAUNCHER,
-            check=f"[ -x {_LAUNCHER} ]",
+            check=_LAUNCHER_CHECK,
         ),
     ],
 )

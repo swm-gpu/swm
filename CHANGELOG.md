@@ -4,9 +4,34 @@ All notable changes to swm are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.13] - 2026-11-12
 
 ### Fixed
+- **vLLM ignored extra launch arguments and failed on FlashInfer sampler builds.**
+  `/workspace/vllm/start.sh` hardcoded `--max-model-len 8192` and did not
+  forward `"$@"`, so flags passed via `extra_args` were dropped. In addition,
+  FlashInfer's JIT sampler fails to compile on images shipping CUDA 12.1
+  `nvcc` (`Unknown option '--compress-mode=size'`). The launcher now forwards
+  `"$@"` after its defaults, defaults `VLLM_USE_FLASHINFER_SAMPLER=0` unless
+  overridden, and upgrades older `start.sh` scripts on `pre_start`.
+- **Whole-repo HF pulls (`llm`) under-reported model size on `huggingface_hub >= 1.x`.**
+  `_disk_usage` ran `du -sb` without `-L`, so symlinks in `snapshots/<rev>/`
+  pointing into the shared `hub/blobs/` pool were not dereferenced (a 31 GB
+  FP8 repo recorded 10 MB). It now runs `du -sbL`.
+- **Transfer progress arrived all at once, so a pull looked stuck.** Since
+  0.3.9, s5cmd transfers run detached with their output in a file on the
+  pod, and s5cmd's progress bar starts each redraw with `\r` only on a
+  terminal. Into the file the redraws ran together with no line end, so
+  nothing reached the screen until the transfer finished, and then all of
+  it at once: one restore had written 492 KB of redraws with no line break
+  after six minutes. Transfers now run under a pseudo-terminal (util-linux
+  `script`) when the pod has one, and the bar updates live again as it did
+  over `ssh -tt`. This applies to `swm sync pull`, workspace restores on
+  `swm pod create`, `swm sync push`, and the final push on `swm pod down`.
+- **Detached commands left storage keys readable by any account.** Each
+  detached command's script, which for an s5cmd transfer includes the
+  storage credentials, was written mode 0644 in a 0755 directory under
+  `/tmp/swm-run`. Each run directory is now created mode 700.
 - **A per-pod budget never warned.**
   `swm costs budget set 20 --scope pod:abc123 --period total` creates a
   budget, and `swm costs budget show` reports that budget's spend and its

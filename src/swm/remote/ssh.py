@@ -290,9 +290,13 @@ class RemoteSession:
         line_callback: "Callable[[str], None] | None" = None,
         *,
         lost_after: float = _DETACHED_LOST_AFTER,
+        pty: bool = False,
     ) -> tuple[int, str, str]:
         """Run *command* so that it survives a dropped SSH connection, with
         the same streaming and return contract as :meth:`exec`.
+
+        *pty* runs it under a pseudo-terminal (util-linux ``script``) when the
+        pod has one, for commands that draw progress only on a terminal.
 
         A long command on one SSH connection dies with it: some hosts' sshd
         (``ClientAliveCountMax 2``) drops a connection within ~25 s once
@@ -305,16 +309,26 @@ class RemoteSession:
         """
         run = f"{_DETACHED_ROOT}/{uuid.uuid4().hex[:16]}"
         script = base64.b64encode(command.encode()).decode()
+        runner = f"bash {run}/cmd.sh"
+        if pty:
+            # s5cmd's progress bar starts each redraw with "\r" only on a
+            # terminal; into a file the redraws run together with no line
+            # end, and nothing reaches the follower until the command exits.
+            runner = (
+                f"if script --version 2>/dev/null | grep -q util-linux; then "
+                f"script -qfec \"{runner}\" /dev/null; else {runner}; fi"
+            )
         # mkdir is the once-only guard, so a retried launch whose first
         # attempt did start (its reply lost) never starts a second copy.
+        # Mode 700: cmd.sh can carry storage credentials.
         launch = (
-            f"mkdir -p {_DETACHED_ROOT} && if mkdir {run} 2>/dev/null; then "
+            f"mkdir -p {_DETACHED_ROOT} && if mkdir -m 700 {run} 2>/dev/null; then "
             f"echo {script} | base64 -d > {run}/cmd.sh && : > {run}/out && "
             # setsid makes it a process group we can stop; without it (a
             # minimal image), nohup alone still detaches it from the session.
             f"SID=$(command -v setsid || true); "
             f"($SID nohup bash -c 'echo $$ > {run}/pid; "
-            f"bash {run}/cmd.sh >> {run}/out 2>&1 < /dev/null; "
+            f"{runner} >> {run}/out 2>&1 < /dev/null; "
             f"echo $? > {run}/rc.tmp && mv {run}/rc.tmp {run}/rc' "
             f">/dev/null 2>&1 < /dev/null &); fi; echo {_DETACHED_MARK}"
         )

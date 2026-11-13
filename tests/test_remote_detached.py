@@ -143,3 +143,71 @@ def test_the_run_directory_is_removed_after_success():
     code, _, _ = _run(LocalSession(), "true")
     assert code == 0
     assert list(Path(ssh._DETACHED_ROOT).iterdir()) == []
+
+
+def test_the_run_directory_is_private():
+    """cmd.sh can carry storage credentials."""
+    code, _, lines = _run(
+        LocalSession(),
+        "python3 -c 'import os, sys; "
+        "print(oct(os.stat(os.path.dirname(sys.argv[1])).st_mode & 0o777))' \"$0\"",
+    )
+    assert code == 0
+    assert lines == ["0o700\n"]
+
+
+_UTIL_LINUX_SCRIPT = """#!/bin/bash
+if [ "$1" = "--version" ]; then echo "script from util-linux 2.37.2"; exit 0; fi
+printf '%s\\n' "$@" > "$SWM_SCRIPT_ARGS"
+bash -c "$2"
+"""
+
+
+def _fake_script(tmp_path, body: str) -> None:
+    fake = tmp_path / "bin" / "script"
+    fake.write_text(body)
+    fake.chmod(0o755)
+
+
+def test_pty_runs_the_command_under_script_and_keeps_its_exit_code(tmp_path, monkeypatch):
+    args = tmp_path / "script.args"
+    monkeypatch.setenv("SWM_SCRIPT_ARGS", str(args))
+    _fake_script(tmp_path, _UTIL_LINUX_SCRIPT)
+
+    code, _, lines = _run(LocalSession(), "echo one; exit 3", pty=True)
+
+    assert code == 3
+    assert lines == ["one\n"]
+    recorded = args.read_text().splitlines()
+    assert recorded[0] == "-qfec"
+    assert recorded[1].endswith("/cmd.sh")
+    assert recorded[2] == "/dev/null"
+
+
+def test_pty_falls_back_to_plain_bash_without_util_linux_script(tmp_path):
+    # BSD and BusyBox `script` take other flags.
+    _fake_script(tmp_path, "#!/bin/bash\nexit 1\n")
+
+    code, _, lines = _run(LocalSession(), "echo one; exit 3", pty=True)
+
+    assert code == 3
+    assert lines == ["one\n"]
+
+
+def test_s5cmd_transfers_run_under_a_pty(monkeypatch):
+    """s5cmd draws its progress bar live only on a terminal."""
+    from swm import bootstrap
+
+    seen: dict = {}
+
+    class Recorder:
+        def exec_detached(self, command, **kwargs):
+            seen.update(kwargs, command=command)
+            return 0, "", ""
+
+    monkeypatch.setattr(bootstrap, "_acquire_transfer_lock",
+                        lambda session, force=False: False)
+
+    assert bootstrap._s5cmd_transfer(Recorder(), "copy", "s5cmd cp a b") == 0
+    assert seen["command"] == "s5cmd cp a b"
+    assert seen["pty"] is True

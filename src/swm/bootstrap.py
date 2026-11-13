@@ -80,12 +80,13 @@ class StepFailed(RuntimeError):
         self.output = output
 
 
-def run_long(session, command: str, **kwargs) -> tuple[int, str, str]:
+def run_long(session, command: str, *, pty: bool = False, **kwargs) -> tuple[int, str, str]:
     """Run a command that may take minutes, surviving a dropped connection
-    when the session supports it (RemoteSession.exec_detached)."""
+    when the session supports it (RemoteSession.exec_detached), under a
+    pseudo-terminal there when *pty* is set."""
     detached = getattr(session, "exec_detached", None)
     if detached is not None:
-        return detached(command, **kwargs)
+        return detached(command, pty=pty, **kwargs)
     return session.exec(command, **kwargs)
 
 
@@ -1026,9 +1027,10 @@ def _s5cmd_transfer(
         # Detached, never on one live connection: a transfer ran under
         # `ssh -tt`, so a dropped connection SIGHUP'd s5cmd mid-restore and
         # a truncated workspace came back as "finished with warnings". Its
-        # progress goes to this process's terminal, not a job log.
+        # progress goes to this process's terminal, not a job log, and the
+        # pty keeps s5cmd drawing it live as it did under `ssh -tt`.
         code, _, _ = run_long(session, s5cmd_cmd, stream=False,
-                              line_callback=_to_terminal)
+                              line_callback=_to_terminal, pty=True)
     finally:
         if acquired:
             _release_transfer_lock(session)
