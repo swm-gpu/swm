@@ -140,6 +140,8 @@ def test_an_import_crash_is_fixed_by_the_targeted_repair():
     result, steps = _start(pod)
     assert result.repairs == ["repaired (Python packages are missing or broken)"]
     assert "Installing custom-node requirements" in steps.steps
+    # Rung 2 clears the fast-path markers so repair_venv runs a full RECORD scan.
+    assert pod.ran("rm -f /workspace/.swm_tar_restored '/workspace/ComfyUI/venv/.swm_venv_ok'") == 1
     # A package failure does not spend a PyTorch download on the GPU stack.
     assert "Reinstalling PyTorch for this GPU" not in steps.steps
     assert len(pod.launched) == 2

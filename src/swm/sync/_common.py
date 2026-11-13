@@ -18,9 +18,8 @@ def restore_permissions(session: RemoteSession, dest: str) -> None:
     _step(
         session,
         "Restoring execute permissions",
-        f"find '{dest}' -path '*/bin/*' -type f -exec chmod +x {{}} + "
-        f"&& find '{dest}' -name '*.sh' -type f -exec chmod +x {{}} + "
-        f"&& find '{dest}' -name '*.so' -type f -exec chmod +x {{}} +",
+        f"find '{dest}' \\( -path '*/bin/*' -o -name '*.sh' -o -name '*.so' \\) "
+        f"-type f -exec chmod +x {{}} +",
     )
 
 

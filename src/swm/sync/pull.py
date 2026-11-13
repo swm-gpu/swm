@@ -185,7 +185,10 @@ _CP_PART_MIB = 100
 # 1 MiB records and 500 MB/s from dd; 4 MiB records gained nothing more. The
 # checkpoint counts records, so 1024 of 1 MiB keeps GNU tar's heartbeat at one
 # line per GiB. Both flags ride the GNU guard: busybox tar knows neither.
-_TAR_GNU_FLAGS = "-b 2048 --checkpoint=1024 --checkpoint-action=echo"
+_TAR_GNU_FLAGS = (
+    "-b 2048 --no-same-owner --no-overwrite-dir "
+    "--checkpoint=1024 --checkpoint-action=echo"
+)
 
 
 def tar_staging_path(codec: str) -> str:
@@ -318,11 +321,11 @@ def tar_pull(
 
     session.exec(f"rm -f {staged}", stream=False)
 
-    restore_permissions(session, dest)
     _repair_framework_links(session, dest)
 
     session.exec(
-        f": > {WATCH_LOG} 2>/dev/null; touch {PUSH_STAMP}", stream=False,
+        f": > {WATCH_LOG} 2>/dev/null; touch {PUSH_STAMP}; touch '{dest}/.swm_tar_restored'",
+        stream=False,
     )
     if start_watcher(session, dest):
         console.print("  [dim]Watcher started for change tracking[/dim]")

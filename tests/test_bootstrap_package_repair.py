@@ -152,6 +152,20 @@ def test_repair_is_a_noop_on_a_complete_venv(tmp_path, venv):
 
     assert result.returncode == 0, result.stderr
     assert "are complete" in result.stdout
+    assert (venv / ".swm_venv_ok").is_file()
+    assert not log.exists()
+
+
+def test_repair_fast_path_skips_scan_when_venv_ok_marker_exists(tmp_path, venv):
+    site = _site_packages(venv)
+    _dist(site, "broken", "1.0", {"broken/__init__.py": False})
+    (venv / ".swm_venv_ok").touch()
+    fake, log = _fake_uv(tmp_path)
+
+    result = _run_repair(venv, fake)
+
+    assert result.returncode == 0, result.stderr
+    assert "already verified" in result.stdout
     assert not log.exists()
 
 

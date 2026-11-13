@@ -22,6 +22,8 @@ def test_extract_uses_1mib_records_and_keeps_one_checkpoint_per_gib():
     pipeline = pull.tar_extract_pipeline("cat", "/w/.swm_workspace.tar.zst", "/w")
 
     assert "-b 2048" in pull._TAR_GNU_FLAGS
+    assert "--no-same-owner" in pull._TAR_GNU_FLAGS
+    assert "--no-overwrite-dir" in pull._TAR_GNU_FLAGS
     assert "--checkpoint=1024 " in pull._TAR_GNU_FLAGS
     assert 2048 * 512 * 1024 == GIB
     assert "tar --version 2>/dev/null | grep -q GNU && TARF=" in pipeline
@@ -86,3 +88,48 @@ def test_pipeline_extracts_a_real_archive_through_the_system_tar(tmp_path):
     assert "extract stages: decompress=0 extract=0" in run.stdout
     assert (dest / "a.bin").stat().st_size == 3 * 1024 * 1024 + 7
     assert (dest / "dir" / "b.txt").read_bytes() == b"\xab" * 13
+
+
+def test_tar_pull_skips_restore_permissions_and_touches_tar_restored_marker(
+    session, tmp_path, pod_paths, monkeypatch,
+):
+    monkeypatch.setattr(pull, "PUSH_STAMP", pod_paths["PUSH_STAMP"])
+    monkeypatch.setattr(pull, "WATCH_LOG", pod_paths["WATCH_LOG"])
+    monkeypatch.setattr(pull, "_s3_env", lambda slug: "SWM_TEST_ENV=1")
+    monkeypatch.setattr(pull, "_ensure_decompressor", lambda s, c: "cat")
+    monkeypatch.setattr(pull, "_s5cmd_transfer", lambda s, label, cmd, force=False: 0)
+    monkeypatch.setattr(pull, "_repair_framework_links", lambda s, d: None)
+    monkeypatch.setattr(pull, "start_watcher", lambda s, d: False)
+    permissions_called = []
+    monkeypatch.setattr(
+        pull, "restore_permissions",
+        lambda s, d: permissions_called.append(d),
+    )
+
+    dest = tmp_path / "ws"
+    pull.tar_pull(session, "b2", "bucket", "ws.tar.zst", dest=str(dest))
+
+    assert permissions_called == []
+    assert (dest / ".swm_tar_restored").is_file()
+
+
+def test_restore_permissions_runs_single_find_pass(session, tmp_path):
+    from swm.sync._common import restore_permissions
+
+    dest = tmp_path / "ws"
+    (dest / "venv" / "bin").mkdir(parents=True)
+    bin_file = dest / "venv" / "bin" / "python"
+    sh_file = dest / "run.sh"
+    so_file = dest / "lib.so"
+    txt_file = dest / "notes.txt"
+    for f in (bin_file, sh_file, so_file, txt_file):
+        f.write_text("x")
+        f.chmod(0o644)
+
+    restore_permissions(session, str(dest))
+
+    assert len(session.commands) == 1
+    assert session.commands[0].count("find ") == 1
+    for f in (bin_file, sh_file, so_file):
+        assert os.access(f, os.X_OK)
+    assert not os.access(txt_file, os.X_OK)

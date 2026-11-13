@@ -472,6 +472,11 @@ def ensure_framework_running(
         raise _failed(fw, failure)
 
     runner.announce(f"Repairing {fw.label}")
+    if fw.venv:
+        session.exec(
+            f"rm -f /workspace/.swm_tar_restored '{fw.venv}/.swm_venv_ok'",
+            stream=False,
+        )
     failure = runner.attempt(port, extra_args, install=True, repair=kind)
     if failure is None:
         return runner.started(port, qualified_id, [f"repaired ({_KIND_TEXT[kind]})"])

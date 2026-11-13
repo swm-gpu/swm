@@ -511,6 +511,11 @@ if [ ! -x "$VENV/bin/python" ]; then
     echo "  no runnable venv at $VENV; nothing to check"
     exit 0
 fi
+if [ -f "$VENV/.swm_venv_ok" ] || [ -f "/workspace/.swm_tar_restored" ]; then
+    touch "$VENV/.swm_venv_ok" 2>/dev/null || true
+    echo "  packages in $VENV already verified"
+    exit 0
+fi
 if ! SCAN=$("$VENV/bin/python" -I - <<'PYSCAN'
 @SCAN@
 PYSCAN
@@ -519,6 +524,7 @@ PYSCAN
     exit 0
 fi
 if [ -z "$SCAN" ]; then
+    touch "$VENV/.swm_venv_ok" 2>/dev/null || true
     echo "  packages in $VENV are complete"
     exit 0
 fi
@@ -537,6 +543,7 @@ printf '%s\n' "$SCAN" | sed -n 's/^LOCAL //p' | while read -r spec; do
         --index-url "https://download.pytorch.org/whl/$tag" "$spec" \
         || echo "  warning: could not reinstall $spec; the framework's own checks will retry"
 done
+touch "$VENV/.swm_venv_ok" 2>/dev/null || true
 '''
 
 
