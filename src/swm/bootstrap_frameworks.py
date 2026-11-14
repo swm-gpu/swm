@@ -157,8 +157,9 @@ def _describe(failure: _Failure) -> str:
 def _self_safe(pattern: str) -> str:
     """The same regex, rewritten so it cannot match the shell that runs the
     check (that shell's command line contains the pattern text)."""
-    if pattern and pattern[0].isalnum():
-        return f"[{pattern[0]}]{pattern[1:]}"
+    for idx, ch in enumerate(pattern):
+        if ch.isalnum() and (idx == 0 or pattern[idx - 1] != "\\"):
+            return f"{pattern[:idx]}[{ch}]{pattern[idx + 1:]}"
     return pattern
 
 

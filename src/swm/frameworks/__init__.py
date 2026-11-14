@@ -138,6 +138,7 @@ _FRAMEWORK_MODULES = [
     "ollama",
     "open_webui",
     "vllm_server",
+    "webapp",
 ]
 
 _registry: dict[str, Framework] | None = None
